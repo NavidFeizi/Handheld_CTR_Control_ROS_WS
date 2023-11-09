@@ -1,0 +1,17 @@
+# serial number of the sensors can be read from the terminal once the EM tracker is initialized
+sensor_config:
+  - sensor:
+      name: probe
+      serial_number: 39B33001
+      srom_filename: 
+      load_srom: false
+  - sensor:
+      name: reference
+      serial_number: 3B2A8800
+      srom_filename: 610094_ctrref.rom
+      load_srom: true
+  - sensor:
+      name: tip
+      serial_number: 3CD50C00
+      srom_filename: 610158_ctrtip.rom
+      load_srom: true

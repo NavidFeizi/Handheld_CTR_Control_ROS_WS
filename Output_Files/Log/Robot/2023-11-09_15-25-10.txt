@@ -1,0 +1,11 @@
+[Robot : 2023-11-09 15:25:10] Node 1: Controller brand: FaulhaberPPU: 5729.577951:   Gear ratio: 1.000000:   Encoder resoluton: 5729.577951
+[Robot : 2023-11-09 15:25:10] Node 2: Controller brand: FaulhaberPPU: 1000000.000000:   Gear ratio: 1.000000:   Encoder resoluton: 1000000.000000
+[Robot : 2023-11-09 15:25:10] Node 3: Controller brand: FaulhaberPPU: 5729.577951:   Gear ratio: 1.000000:   Encoder resoluton: 5729.577951
+[Robot : 2023-11-09 15:25:10] Node 4: Controller brand: FaulhaberPPU: 1000000.000000:   Gear ratio: 1.000000:   Encoder resoluton: 1000000.000000
+[Robot : 2023-11-09 15:25:10] Node 3: Booting
+[Robot : 2023-11-09 15:25:10] Node 3: No fault to reset
+[Robot : 2023-11-09 15:25:10] Node 1: Booting
+[Robot : 2023-11-09 15:25:10] Node 1: No fault to reset
+[Robot : 2023-11-09 15:25:10] Node 3: Booted successfully.
+[Robot : 2023-11-09 15:25:10] Node 1: Booted successfully.
+[Robot : 2023-11-09 15:25:15] Bootup Timed Out!  --->  Reseting All Nodes ----------------------
