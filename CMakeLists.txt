@@ -18,12 +18,9 @@ set(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR}/lib)
 
 # addind the library and main executable directories to the project tree
 add_subdirectory(ctr_library) # static CTR Library
-# add_subdirectory(ndi_api) # NDI API as dynamic/shared library
-# add_subdirectory(em_tracker) # static EM Tracker library
 add_subdirectory(executable) # main executable
 add_subdirectory(lib_robot)         # static robot 
-add_subdirectory(lib_emtracker)     # static emtracker library
-add_subdirectory(lib_keyinput)     # static emtracker library
+add_subdirectory(lib_emtracker)     # static library for commanding Maxon motors
 
 # LAPACK libraries
 find_package(LAPACK REQUIRED)
@@ -40,12 +37,6 @@ set(Boost_USE_STATIC_RUNTIME OFF)
 
 find_package(Boost REQUIRED)
 
-# # BLAS libraries
-# set(BLA_VENDOR OpenBLAS)
-
-# # set(BLA_STATIC                   ON)  # use static linkage
-# find_package(OpenBLAS CONFIG REQUIRED)
-
 set(BLA_VENDOR OpenBLAS)
 set(BLA_STATIC                   ON)  # use static linkage
 find_package(BLAS)
@@ -59,15 +50,6 @@ elseif(NOT Boost_FOUND)
     error(STATUS "Boost has not been found!")
 endif(Boost_FOUND)
 
-# if(OpenBLAS_FOUND)
-#     message(STATUS "OpenBLAS has been found!")
-#     include_directories(${OpenBLAS_INCLUDE_DIRS})
-#     target_link_libraries(${PROJECT_NAME} PRIVATE OpenBLAS::OpenBLAS)
-#     target_link_libraries(TRACK PRIVATE OpenBLAS::OpenBLAS)
-# elseif(NOT OpenBLAS_FOUND)
-#     error(STATUS "openBLAS library has not been found")
-# endif(OpenBLAS_FOUND)
-
 if (BLAS_FOUND)
     message(STATUS "BLAS has been found!")
     include_directories(${BLAS_INCLUDE_DIRS})
@@ -75,7 +57,6 @@ if (BLAS_FOUND)
 elseif(NOT BLAS_FOUND)
     error(STATUS "BLAS library has not been found")
 endif()
-
 
 # Check for the LAPACK libray, if found print message, include dirs and link libraries.
 if(LAPACK_FOUND)
