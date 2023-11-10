@@ -950,8 +950,8 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	// Current position error
 	tipError = target - tipPos_EM;
 
-	std::cout << "|DC_error| = " << blaze::norm(DC_error) << " make \t DC_error = " << blaze::trans(DC_error)
-			  << "|tipError| = " << blaze::norm(tipError) << " make \t Current error = " << blaze::trans(tipError) << std::endl;
+	// std::cout << "|DC_error| = " << blaze::norm(DC_error) << " make \t DC_error = " << blaze::trans(DC_error)
+	// 		  << "|tipError| = " << blaze::norm(tipError) << " make \t Current error = " << blaze::trans(tipError) << std::endl;
 
 	// Euclidean distance to target
 	double dist2Tgt = blaze::norm(tipError);
@@ -963,7 +963,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 
 		if (dist2Tgt <= posTol)
 		{
-			std::cout << "CTR end-effector already at the target!" << std::endl;
+			// std::cout << "CTR end-effector already at the target!" << std::endl;
 			return status;
 		}
 	}
@@ -984,7 +984,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	blaze::StaticVector<double, 3UL> betaMax, betaMin;
 
 	size_t N_itr = 0UL;			  // iterations counter
-	const size_t maxIter = 150UL;// maximum admissible number of iterations in the position control loop
+	const size_t maxIter = 75UL; // maximum admissible number of iterations in the position control loop
 
 	// parameters for local optimization (joint limits avoidance)
 	double ke = 15.00;
@@ -1095,7 +1095,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 		}
 	}
 
-	std::cout << "Exiting posCTR() with error: " << minError << " at iteration i = " << N_itr << std::endl;
+	// std::cout << "Exiting posCTR() with error: " << minError << " at iteration i = " << N_itr << std::endl;
 
 	// Actuating the CTR to the configuration which yields the minimum position error
 	initGuess = initGuessMin;

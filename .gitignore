@@ -1,5 +1,6 @@
 # CMake
 build/
+Output_Files/
 CMakeFiles/
 CMakeScripts/
 Testing/

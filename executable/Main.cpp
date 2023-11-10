@@ -9,7 +9,6 @@
 #include <sstream>
 #include <string>
 #include <boost/tokenizer.hpp>
-#include <unistd.h>
 #include <chrono>
 #include "Robot.hpp"
 
@@ -23,10 +22,11 @@ blaze::StaticVector<double, 6UL> qRobot2q(const std::vector<double> &input);
 int main()
 {
     // dump files for CTR calibration
-    std::ofstream EM_Trajectory, Joint_Positions;
+    std::ofstream EM_Trajectory, Joint_Positions, Log;
     // If the file already exists, its previous content is deleted and replaced by the new one.
     EM_Trajectory.open("../../Output_Files/EM_Trajectory.dat", std::ios::out | std::ios::trunc);
     Joint_Positions.open("../../Output_Files/Joint_Values.dat", std::ios::out | std::ios::trunc);
+    Log.open("../../Output_Files/Log.dat", std::ios::out | std::ios::trunc);
 
     if (!EM_Trajectory.is_open())
     {
@@ -139,7 +139,7 @@ int main()
     CTR_robot.setConfiguration(q);
 
     // lambda function that actuates the Maxon motors
-    auto actuateMaxonMotors = [](blaze::StaticVector<double, 6UL> &q, const blaze::StaticVector<double, 6UL> &q_IK, std::unique_ptr<CTRobot>& rbt) -> void
+    auto actuateMaxonMotors = [](blaze::StaticVector<double, 6UL> &q, const blaze::StaticVector<double, 6UL> &q_IK, std::unique_ptr<CTRobot> &rbt) -> void
     {
         std::vector<double> aux(4, 0.00), q_inRobot = q2qRobot(q_IK);
 
@@ -150,15 +150,15 @@ int main()
 
         rbt->Set_Target_AbsPosition(q_inRobot);
 
-        std::cout << "Target sent to the robot:  "
-                  << "R1: " << q_inRobot[0UL] * 180.00 * M_1_PI << " [deg]"
-                  << "   "
-                  << "T1: " << q_inRobot[1UL] * 1.00E3 << " [mm]"
-                  << "   "
-                  << "R2: " << q_inRobot[2UL] * 180.00 * M_1_PI << " [deg]"
-                  << "   "
-                  << "T2: " << q_inRobot[3UL] * 1.00E3 << " [mm]"
-                  << "   " << std::endl;
+        // std::cout << "Target sent to the robot:  "
+        //           << "R1: " << q_inRobot[0UL] * 180.00 * M_1_PI << " [deg]"
+        //           << "   "
+        //           << "T1: " << q_inRobot[1UL] * 1.00E3 << " [mm]"
+        //           << "   "
+        //           << "R2: " << q_inRobot[2UL] * 180.00 * M_1_PI << " [deg]"
+        //           << "   "
+        //           << "T2: " << q_inRobot[3UL] * 1.00E3 << " [mm]"
+        //           << "   " << std::endl;
 
         rbt->Wait_until_reach();
 
@@ -167,17 +167,28 @@ int main()
         q = qRobot2q(aux);
     };
 
+    // actuates the robot to the first target in the trajectpry
+    target = blaze::subvector<1UL, 3UL>(blaze::trans(blaze::row<0UL>(Trajectory)));
+
+    for (size_t iter = 0UL; iter < 4UL; ++iter)
+    {
+        CTR_robot.posCTRL(initGuess, target, pos_tol);
+        q_0 = CTR_robot.getConfiguration();
+        // actuates the motors
+        actuateMaxonMotors(q, q_0, rbt);
+    }
+
     std::chrono::milliseconds minimumSampleTime(50);
 
     double error = 100.00;
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+    // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     size_t row = 0UL;
-    double elapsed_time, end_time;
+    double elapsed_time, end_time, loop_time;
+    std::chrono::high_resolution_clock::time_point start_time, current_time, loop_start_time;
 
-    std::chrono::high_resolution_clock::time_point start_time, current_time;
-
+    loop_time = 0.00;
     elapsed_time = 0.00;
     end_time = Trajectory(numRows - 1UL, 0UL);
     start_time = std::chrono::high_resolution_clock::now();
@@ -185,6 +196,7 @@ int main()
     while ((elapsed_time < end_time) && (row < numRows - 1UL))
     {
         // updates the target based on trajectory time stamp
+        loop_start_time = std::chrono::high_resolution_clock::now();
         if (elapsed_time >= Trajectory(row, 0UL))
         {
             target[0UL] = Trajectory(row, 1UL);
@@ -216,35 +228,30 @@ int main()
         // reading EM tip position -- after motor actuation
         std::tie(position_FG, position_CTR) = CTR_robot.acquireEMData();
 
-        // updates the error for display
-        error = blaze::norm(target - position_CTR);
-
         // writes (EM) tip position data to dump file
         EM_Trajectory << position_CTR[0UL] << ","
                       << position_CTR[1UL] << ","
                       << position_CTR[2UL] << std::endl;
 
-        tipPos_Cosserat = CTR_robot.getTipPos();
+        std::cout << "Row: " << row + 1 << " of " << numRows << " \t|\t error: " << std::setprecision(3) << blaze::norm(position_CTR - target) * 1.00E3 << " [mm]" << std::endl;
 
-        
-
-        std::cout << "CTR Configuration: " << blaze::trans(CTR_robot.getConfiguration())
-                  << "Model predc: " << blaze::trans(tipPos_Cosserat)
-                  << "EM readings: " << blaze::trans(position_CTR)
-                  << "Error norm: " << blaze::norm(target - position_CTR) * 1.00E3 << " [mm]" << std::endl
-                  << "Row = " << row << std::endl
-                  << "Elapsed time = " << elapsed_time << "[ms]\n"
-                  << "--------------------------------------\n"
-                  << std::endl;
+        Log << loop_time << std::endl;
 
         current_time = std::chrono::high_resolution_clock::now();
-        elapsed_time = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
+        loop_time = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - loop_start_time).count();
+        elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time).count();
+
+        if (loop_time < 50.0)
+        {
+            std::this_thread::sleep_for(minimumSampleTime - (current_time - loop_start_time));
+        }
     }
 
     rbt->Enable_Operation(false);
     // close the dump file
     EM_Trajectory.close();
     Joint_Positions.close();
+    Log.close();
 
     return 0;
 }
