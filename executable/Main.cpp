@@ -120,7 +120,7 @@ int main()
     CTR_robot.actuate_CTR(initGuess, q_0);
 
     // Trajectory to be tracked by the control loop ==> Either a Helix or a Hypocycloid
-    blaze::HybridMatrix<double, 2000UL, 3UL> Trajectory;
+    blaze::HybridMatrix<double, 1000UL, 4UL> Trajectory;
     // speficy which trajectory to consider
     std::string trajectory("Helix");
     readFromCSV(Trajectory, trajectory);
