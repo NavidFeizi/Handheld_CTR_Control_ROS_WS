@@ -10,6 +10,7 @@
 #include <string>
 #include <boost/tokenizer.hpp>
 #include <unistd.h>
+#include <chrono>
 #include "Robot.hpp"
 
 template <typename MatrixType>
@@ -164,7 +165,7 @@ int main()
         // reads the actual robot joint positions from the controllers
         rbt->Get_Position(&aux);
         q = qRobot2q(aux);
-    }
+    };
 
     std::chrono::milliseconds minimumSampleTime(50);
 
@@ -173,7 +174,9 @@ int main()
     std::this_thread::sleep_for(std::chrono::milliseconds(10000));
 
     size_t row = 0UL;
-    double start_time, end_time, elapsed_time, current_time;
+    double elapsed_time, end_time;
+
+    std::chrono::high_resolution_clock::time_point start_time, current_time;
 
     elapsed_time = 0.00;
     end_time = Trajectory(numRows - 1UL, 0UL);
@@ -235,7 +238,7 @@ int main()
                   << std::endl;
 
         current_time = std::chrono::high_resolution_clock::now();
-        elapsed_time = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time);
+        elapsed_time = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
     }
 
     rbt->Enable_Operation(false);
