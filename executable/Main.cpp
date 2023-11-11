@@ -122,7 +122,7 @@ int main()
     // Trajectory to be tracked by the control loop ==> Either a Helix or a Hypocycloid
     blaze::HybridMatrix<double, 1000UL, 4UL> Trajectory;
     // speficy which trajectory to consider
-    std::string trajectory("Helix");
+    std::string trajectory("Square");
     readFromCSV(Trajectory, trajectory);
 
     // position target for the CTR

@@ -6,7 +6,7 @@ from mpl_toolkits.mplot3d import Axes3D
 # try:
 # Read data from the .dat file
 control = np.genfromtxt("Output_Files/EM_Trajectory.dat", delimiter=",", dtype=float)
-truth = np.genfromtxt("Trajectories/Helix.csv", delimiter=",", dtype=float)
+truth = np.genfromtxt("Trajectories/Square.csv", delimiter=",", dtype=float)
 
 # Separate the columns into x, y, and z
 x = control[:, 0] * 1.00e3

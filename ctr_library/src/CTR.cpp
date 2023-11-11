@@ -984,7 +984,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	blaze::StaticVector<double, 3UL> betaMax, betaMin;
 
 	size_t N_itr = 0UL;			  // iterations counter
-	const size_t maxIter = 75UL; // maximum admissible number of iterations in the position control loop
+	const size_t maxIter = 100UL; // maximum admissible number of iterations in the position control loop
 
 	// parameters for local optimization (joint limits avoidance)
 	double ke = 15.00;
