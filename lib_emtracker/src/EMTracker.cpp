@@ -71,8 +71,10 @@ EMTracker::EMTracker()
   this->recorder = std::make_shared<Recorder>(Log_directory + filename + ".csv");
   // relative transformation of the tip pos in the CTR frame
   this->Tran_Tip_Rel = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  this->Tran_Tip_Rel_flt = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   this->Tran_Tip_Abs = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   this->Tran_Probe = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  this->Tran_Probe_flt = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   // print the reading in the read loop or not?
   this->flag_print = false;
   this->flag_load_sroms = true;
@@ -111,6 +113,10 @@ EMTracker::EMTracker()
     std::cerr << "No sensor matching information" << std::endl;
   }
   std::cout << "EM Tracker initialized" << std::endl;
+
+  // Parameters for Kalman Filterring
+  this->KLF_tip = std::make_shared<KalmanFilter>(1.00, 1.00);
+  this->KLF_probe = std::make_shared<KalmanFilter>(1.00, 1.00);
 }
 
 /* Destructor */
@@ -416,6 +422,7 @@ void EMTracker::Read_Loop()
   double azimuth, elevation, roll;
   std::vector<double> vec;
   std::vector<double> vec_probe;
+  std::vector<double> vec_probe_flt;
 
   // load calculated transformation in case srom is not used for EM reference transformation to
   // the robot's frame
@@ -442,9 +449,16 @@ void EMTracker::Read_Loop()
       EMTracker::ToolData2QuatTransform(sensors_data[sensorConfigMap["probe"].probleHandle_num], &tran_0probe);
       Combine_Quat_Transformation(tran_01_inv, tran_0probe, &tran_1probe);
       vec_probe = qvmVec2StdVec(tran_1probe.translation);
+
+      this->KLF_tip->Loop(vec_probe, &vec_probe_flt);
+
       this->Tran_Probe[0] = vec_probe[0];
       this->Tran_Probe[1] = vec_probe[1];
       this->Tran_Probe[2] = vec_probe[2];
+
+      this->Tran_Probe_flt[0] = vec_probe_flt[0];
+      this->Tran_Probe_flt[1] = vec_probe_flt[1];
+      this->Tran_Probe_flt[2] = vec_probe_flt[2];
     }
 
     // If an SROM for the transformation from the reference sensor to the CTR frame is loaded,
@@ -470,15 +484,22 @@ void EMTracker::Read_Loop()
     this->Tran_Tip_Rel[4] = elevation;
     this->Tran_Tip_Rel[5] = roll;
 
-    // update the calculated transformation values
-    QuaternionToEuler(tran_03.rotation, &azimuth, &elevation, &roll);
-    vec = qvmVec2StdVec(tran_03.translation);
-    this->Tran_Tip_Abs[0] = vec[0];
-    this->Tran_Tip_Abs[1] = vec[1];
-    this->Tran_Tip_Abs[2] = vec[2];
-    this->Tran_Tip_Abs[3] = azimuth;
-    this->Tran_Tip_Abs[4] = elevation;
-    this->Tran_Tip_Abs[5] = roll;
+    std::vector<double> vec_ftl(3, 0.0);
+    this->KLF_tip->Loop(vec, &vec_ftl);
+
+    this->Tran_Tip_Rel_flt[0] = vec_ftl[0];
+    this->Tran_Tip_Rel_flt[1] = vec_ftl[1];
+    this->Tran_Tip_Rel_flt[2] = vec_ftl[2];
+
+    // // update the calculated transformation values
+    // QuaternionToEuler(tran_03.rotation, &azimuth, &elevation, &roll);
+    // vec = qvmVec2StdVec(tran_03.translation);
+    // this->Tran_Tip_Abs[0] = vec[0];
+    // this->Tran_Tip_Abs[1] = vec[1];
+    // this->Tran_Tip_Abs[2] = vec[2];
+    // this->Tran_Tip_Abs[3] = azimuth;
+    // this->Tran_Tip_Abs[4] = elevation;
+    // this->Tran_Tip_Abs[5] = roll;
 
     this->recorder->Record(tran_01, tran_23, tran_1probe);
 
@@ -497,23 +518,27 @@ void EMTracker::Read_Loop()
 }
 
 /** @brief reg tip positon in the CTR frame*/
-void EMTracker::Get_TipPosition(blaze::StaticVector<double, 3UL> *tipPos_fg, blaze::StaticVector<double, 3UL> *tipPos_ctr)
+void EMTracker::Get_TipPosition(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 3UL> *Translation_flt)
 {
-  (*tipPos_fg)[0] = this->Tran_Tip_Rel[0];
-  (*tipPos_fg)[1] = this->Tran_Tip_Rel[1];
-  (*tipPos_fg)[2] = this->Tran_Tip_Rel[2];
+  (*Translation)[0] = this->Tran_Tip_Rel[0];
+  (*Translation)[1] = this->Tran_Tip_Rel[1];
+  (*Translation)[2] = this->Tran_Tip_Rel[2];
 
-  (*tipPos_ctr)[0] = this->Tran_Tip_Rel[0];
-  (*tipPos_ctr)[1] = this->Tran_Tip_Rel[1];
-  (*tipPos_ctr)[2] = this->Tran_Tip_Rel[2];
+  (*Translation_flt)[0] = this->Tran_Tip_Rel_flt[0];
+  (*Translation_flt)[1] = this->Tran_Tip_Rel_flt[1];
+  (*Translation_flt)[2] = this->Tran_Tip_Rel_flt[2];
 }
 
 /** @brief probe positon in the CTR frame*/
-void EMTracker::Get_Probe_Position(blaze::StaticVector<double, 3UL> *Translation)
+void EMTracker::Get_Probe_Position(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 3UL> *Translation_flt)
 {
   (*Translation)[0] = this->Tran_Probe[0];
   (*Translation)[1] = this->Tran_Probe[1];
   (*Translation)[2] = this->Tran_Probe[2];
+
+  (*Translation_flt)[0] = this->Tran_Probe_flt[0];
+  (*Translation_flt)[1] = this->Tran_Probe_flt[1];
+  (*Translation_flt)[2] = this->Tran_Probe_flt[2];
 }
 
 /** @brief Converts sensor position and orientation from ToolData type to std::vector of translation

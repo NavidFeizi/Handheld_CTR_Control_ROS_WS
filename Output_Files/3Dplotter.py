@@ -5,18 +5,26 @@ from mpl_toolkits.mplot3d import Axes3D
 
 # try:
 # Read data from the .dat file
-control = np.genfromtxt("Output_Files/EM_Trajectory.dat", delimiter=",", dtype=float)
-truth = np.genfromtxt("Trajectories/Square.csv", delimiter=",", dtype=float)
+data = np.genfromtxt("Output_Files/EM_Trajectory.dat", delimiter=",", dtype=float)
+truth = np.genfromtxt("Trajectories/Helix.csv", delimiter=",", dtype=float)
+
+# data = np.genfromtxt("Output_Files/EM_Trajectory_Helix_good.dat", delimiter=",", dtype=float)
+# truth = np.genfromtxt("Output_Files/Helix_good.csv", delimiter=",", dtype=float)
 
 # Separate the columns into x, y, and z
-x = control[:, 0] * 1.00e3
-y = control[:, 1] * 1.00e3
-z = control[:, 2] * 1.00e3
+x_em = data[:, 0] * 1.00E3
+y_em = data[:, 1] * 1.00E3
+z_em = data[:, 2] * 1.00E3
+
+# # Separate the columns into x, y, and z
+# x_model = data[:, 3] * 1.00E3
+# y_model = data[:, 4] * 1.00E3
+# z_model = data[:, 5] * 1.00E3
 
 # Data points of ground truth
-x2 = truth[:, 1] * 1.00e3
-y2 = truth[:, 2] * 1.00e3
-z2 = truth[:, 3] * 1.00e3
+x_truth = truth[:, 1] * 1.00E3
+y_truth = truth[:, 2] * 1.00E3
+z_truth = truth[:, 3] * 1.00E3
 
 # # # Compute error
 # error_x = x - x2
@@ -28,11 +36,22 @@ fig = plt.figure()
 ax = fig.add_subplot(111, projection="3d")
 
 ax.scatter(
-    x, y, z, c="b", label="Controlled Trajectory", s=20, depthshade=False
+    x_em, y_em, z_em, c="b", label="Controlled Trajectory", s=20, depthshade=False
 )  # Scatter plot with blue bullet markers
+# ax.scatter(
+#     x_model, y_model, z_model, c="g", label="model", s=10, depthshade=False
+# )  # Scatter plot with blue bullet markers
+# ax.plot(
+#     x_em, y_em, z_em, c="b", label="Controlled Trajectory", linewidth=2)  # Scatter plot with blue bullet markers
+# ax.plot(
+#     x_model, y_model, z_model, c="g", label="model", linewidth=2)  #
 ax.plot(
-    x2, y2, z2, c="r", label="Ground Truth", linewidth=2
-)  # Scatter plot with red circles
+    x_truth, y_truth, z_truth, c="r", label="Ground Truth", linewidth=2)  # Scatter plot with red circles
+
+ax.set_box_aspect(
+    [np.ptp(arr) for arr in [ax.get_xlim(), ax.get_ylim(), ax.get_zlim()]]
+)
+
 
 # Set labels for the axes using LaTeX
 ax.set_xlabel(r"$\mathrm{X\ Label}$ [mm]")

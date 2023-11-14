@@ -912,12 +912,12 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	readjustInitialGuesses(initGuess);
 
 	// container variables for EM reading
-	blaze::StaticVector<double, 3UL> tipPos_FG, tipPos_EM;
+	blaze::StaticVector<double, 3UL> position_CTR, position_CTR_KF;
 
 	// proportional, derivative, and integral gains for position control
 	blaze::DiagonalMatrix<blaze::StaticMatrix<double, 3UL, 3UL, blaze::columnMajor>> Kp, Kd, Ki;
 	blaze::diagonal(Kp) = 1.000; // 1.000
-	blaze::diagonal(Ki) = 0.050; // 0.050
+	blaze::diagonal(Ki) = 0.070; // 0.050
 	blaze::diagonal(Kd) = 0.001; // 0.001
 
 	// Capturing the CTR's current joint configuration
@@ -942,13 +942,13 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	blaze::StaticVector<double, 3UL> x_CTR_init(x_CTR);
 
 	// acquiring the current tip position as read by the EM sensor
-	std::tie(tipPos_FG, tipPos_EM) = this->acquireEMData();
+	std::tie(position_CTR, position_CTR_KF) = this->acquireEMData();
 
 	// computing the disagreement between model and EM readings as a DC error
-	blaze::StaticVector<double, 3UL> DC_error(tipPos_EM - x_CTR_init);
+	blaze::StaticVector<double, 3UL> DC_error(position_CTR_KF - x_CTR_init);
 
 	// Current position error
-	tipError = target - tipPos_EM;
+	tipError = target - position_CTR_KF;
 
 	// std::cout << "|DC_error| = " << blaze::norm(DC_error) << " make \t DC_error = " << blaze::trans(DC_error)
 	// 		  << "|tipError| = " << blaze::norm(tipError) << " make \t Current error = " << blaze::trans(tipError) << std::endl;
@@ -1622,11 +1622,11 @@ void CTR::setBVPMethod(const mathOp::rootFindingMethod &mthd)
 // function that performs readings to acquire EM Data from the NDI EM tracker
 std::tuple<blaze::StaticVector<double, 3UL>, blaze::StaticVector<double, 3UL>> CTR::acquireEMData()
 {
-	blaze::StaticVector<double, 3UL> position_FG, position_CTR;
+	blaze::StaticVector<double, 3UL> position_CTR, position_CTR_KF;
 	// Acquires EM readins of the sensors
-	this->m_EMTrack->Get_TipPosition(&position_FG, &position_CTR);
+	this->m_EMTrack->Get_TipPosition(&position_CTR, &position_CTR_KF);
 
-	return std::make_tuple(position_FG * 1.00E-3, position_FG * 1.00E-3);
+	return std::make_tuple(position_CTR * 1.00E-3, position_CTR_KF * 1.00E-3);
 }
 
 // function that actuates the CTR motors to a particular configuration

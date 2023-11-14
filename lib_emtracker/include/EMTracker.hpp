@@ -17,6 +17,7 @@
 #include "PortHandleInfo.h"
 #include "ToolData.h"
 #include "RigidTransformation.hpp"
+#include "KalmanFilter.hpp"
 // #include "KalmanFilter.h"
 #include <thread>
 #include <filesystem>
@@ -105,12 +106,14 @@ public:
   void Start_Read_Thread();
 
   /**/
-  void Get_TipPosition(blaze::StaticVector<double, 3UL> *tipPos_fg, blaze::StaticVector<double, 3UL> *tipPos_ctr);
+  void Get_TipPosition(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 3UL> *Translation_flt);
 
-  void Get_Probe_Position(blaze::StaticVector<double, 3UL> *Translation);
+  void Get_Probe_Position(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 3UL> *Translation_flt);
 
 private:
   std::shared_ptr<Recorder> recorder;
+  std::shared_ptr<KalmanFilter> KLF_tip;
+  std::shared_ptr<KalmanFilter> KLF_probe;
   std::shared_ptr<CombinedApi> combinedAPI;
   std::vector<ToolData> enabledTools;
   std::map<std::string, SensorConfig> sensorConfigMap;
@@ -119,8 +122,10 @@ private:
   bool flag_print = false;
   std::thread emThread;
   std::vector<double> Tran_Tip_Rel;
+  std::vector<double> Tran_Tip_Rel_flt;
   std::vector<double> Tran_Tip_Abs;
   std::vector<double> Tran_Probe;
+  std::vector<double> Tran_Probe_flt;
   std::string config_Dir;
   unsigned int num_landmark;
 

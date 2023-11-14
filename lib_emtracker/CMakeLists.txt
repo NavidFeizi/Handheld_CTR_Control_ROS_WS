@@ -4,6 +4,7 @@ project(TRACK)
 file(GLOB EMT_LIB_SOURCES 
     src/EMTracker.cpp
     src/RigidTransformation.cpp
+    src/KalmanFilter.cpp
     )
 
 # Create a static library named EMTlib using the listed source files

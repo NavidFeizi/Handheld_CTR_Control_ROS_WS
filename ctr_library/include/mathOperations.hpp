@@ -32,10 +32,10 @@ namespace mathOp
 		return (degree * deg2rad);
 	}
 
-	// Function that computes the congruent angle of theta in [-4Pi, 4Pi]
+	// Function that computes the congruent angle of theta in [0Pi, 2Pi]
 	inline double congruentAngle(double angle)
 	{
-		static constexpr double FOUR_PI = 6.00 * M_PI;
+		static constexpr double FOUR_PI = 2.00 * M_PI;
 
 		return ( std::fabs(angle) <= FOUR_PI ) ? angle : std::remainder(angle, FOUR_PI);
 	}

@@ -50,7 +50,7 @@ int main()
     rbt->Start_Thread();
     rbt->Enable_Operation(true);
     std::cout << "Robot enabled" << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     std::cout << "Waiting to get home!" << std::endl;
     rbt->Wait_until_reach();
     std::cout << "Homed!" << std::endl;
@@ -121,15 +121,17 @@ int main()
 
     // Trajectory to be tracked by the control loop ==> Either a Helix or a Hypocycloid
     blaze::HybridMatrix<double, 1000UL, 4UL> Trajectory;
+
     // speficy which trajectory to consider
-    std::string trajectory("Square");
+    std::string trajectory("Helix");
     readFromCSV(Trajectory, trajectory);
 
     // position target for the CTR
-    blaze::StaticVector<double, 3UL> target, position_FG, position_CTR, tipPos_Cosserat;
+    blaze::StaticVector<double, 3UL> target, position_CTR, position_CTR_KF, tipPos;
 
     const size_t numRows = Trajectory.rows();
     blaze::StaticVector<double, 6UL> q;
+    std::vector<double> q_inRobot(6UL, 0.00);
 
     // save the actual robot joint positions in the file
     std::vector<double> temp(4, 0.00);
@@ -139,9 +141,9 @@ int main()
     CTR_robot.setConfiguration(q);
 
     // lambda function that actuates the Maxon motors
-    auto actuateMaxonMotors = [](blaze::StaticVector<double, 6UL> &q, const blaze::StaticVector<double, 6UL> &q_IK, std::unique_ptr<CTRobot> &rbt) -> void
+    auto actuateMaxonMotors = [&temp, &q_inRobot](blaze::StaticVector<double, 6UL> &q, const blaze::StaticVector<double, 6UL> &q_IK, std::unique_ptr<CTRobot> &rbt) -> void
     {
-        std::vector<double> aux(4, 0.00), q_inRobot = q2qRobot(q_IK);
+        q_inRobot = q2qRobot(q_IK);
 
         // actuating the revolute joints with the shortest possible rotation
         q_inRobot[0UL] = mathOp::shortestRotation(q[3UL], q_inRobot[0UL]);
@@ -159,41 +161,55 @@ int main()
         //           << "   "
         //           << "T2: " << q_inRobot[3UL] * 1.00E3 << " [mm]"
         //           << "   " << std::endl;
-
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
         rbt->Wait_until_reach();
 
         // reads the actual robot joint positions from the controllers
-        rbt->Get_Position(&aux);
-        q = qRobot2q(aux);
+        rbt->Get_Position(&temp);
+        q = qRobot2q(temp);
     };
 
     // actuates the robot to the first target in the trajectpry
     target = blaze::subvector<1UL, 3UL>(blaze::trans(blaze::row<0UL>(Trajectory)));
 
-    for (size_t iter = 0UL; iter < 4UL; ++iter)
+    for (size_t iter = 0UL; iter < 20UL; ++iter)
     {
         CTR_robot.posCTRL(initGuess, target, pos_tol);
         q_0 = CTR_robot.getConfiguration();
         // actuates the motors
         actuateMaxonMotors(q, q_0, rbt);
+
+        rbt->Get_Position(&temp);
+        q = qRobot2q(temp);
+
+        q[3UL] = mathOp::congruentAngle(q[3UL]);
+        q[4UL] = mathOp::congruentAngle(q[4UL]);
+        q[5UL] = mathOp::congruentAngle(q[5UL]);
+
+        CTR_robot.setConfiguration(q);
     }
 
     std::chrono::milliseconds minimumSampleTime(50);
 
     double error = 100.00;
 
-    // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
     size_t row = 0UL;
     double elapsed_time, end_time, loop_time;
     std::chrono::high_resolution_clock::time_point start_time, current_time, loop_start_time;
+
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+
+    std::tie(position_CTR, position_CTR_KF) = CTR_robot.acquireEMData();
+    std::cout << "position_CTR_KF = " << blaze::trans(position_CTR_KF) << std::endl;
+
+    std::this_thread::sleep_for(std::chrono::seconds(2));
 
     loop_time = 0.00;
     elapsed_time = 0.00;
     end_time = Trajectory(numRows - 1UL, 0UL);
     start_time = std::chrono::high_resolution_clock::now();
 
-    while ((elapsed_time < end_time) && (row < numRows - 1UL))
+    while ((elapsed_time < end_time) && (row < numRows))
     {
         // updates the target based on trajectory time stamp
         loop_start_time = std::chrono::high_resolution_clock::now();
@@ -223,17 +239,24 @@ int main()
                         << q[5UL] << std::endl;
 
         // actuates the CTR object to the same configuration as read from the Faulhaber motor controllers
-        CTR_robot.actuate_CTR(initGuess, q);
+        q[3UL] = mathOp::congruentAngle(q[3UL]);
+        q[4UL] = mathOp::congruentAngle(q[4UL]);
+        q[5UL] = mathOp::congruentAngle(q[5UL]);
+
+        CTR_robot.setConfiguration(q);
 
         // reading EM tip position -- after motor actuation
-        std::tie(position_FG, position_CTR) = CTR_robot.acquireEMData();
+        std::tie(position_CTR, position_CTR_KF) = CTR_robot.acquireEMData();
 
         // writes (EM) tip position data to dump file
-        EM_Trajectory << position_CTR[0UL] << ","
-                      << position_CTR[1UL] << ","
-                      << position_CTR[2UL] << std::endl;
+        EM_Trajectory << position_CTR_KF[0UL] << ","
+                      << position_CTR_KF[1UL] << ","
+                      << position_CTR_KF[2UL]
+                      << std::endl;
 
-        std::cout << "Row: " << row + 1 << " of " << numRows << " \t|\t error: " << std::setprecision(3) << blaze::norm(position_CTR - target) * 1.00E3 << " [mm]" << std::endl;
+        error = blaze::norm(position_CTR_KF - target) * 1.00E3;
+
+        std::cout << "Row: " << row << " of " << numRows << "\t|\t error: " << std::setprecision(4) << error << " [mm]" << std::endl;
 
         Log << loop_time << std::endl;
 
