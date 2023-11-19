@@ -22,7 +22,7 @@ blaze::StaticVector<double, 6UL> qRobot2q(const std::vector<double> &input);
 int main()
 {
     // dump files for CTR calibration
-    std::ofstream EM_Trajectory, Joint_Positions, Log;
+    std::ofstream EM_Trajectory, Joint_Positions, Log, filteredUnfiltered;
     // If the file already exists, its previous content is deleted and replaced by the new one.
     EM_Trajectory.open("../../Output_Files/EM_Trajectory.dat", std::ios::out | std::ios::trunc);
     Joint_Positions.open("../../Output_Files/Joint_Values.dat", std::ios::out | std::ios::trunc);
@@ -37,8 +37,8 @@ int main()
     constexpr double inf = std::numeric_limits<double>::infinity();
 
     /** initialize the robot **/
-    std::vector<double> max_acc = {1000.0 * M_PI / 180, 50.00E-3, 1000.0 * M_PI / 180, 50.00E-3}; // [deg/s^2] and [mm/s^2]
-    std::vector<double> max_vel = {200.0 * M_PI / 180, 10.00E-3, 200.0 * M_PI / 180, 10.00E-3};   // [deg/s] and [mm/s]
+	std::vector<double> max_acc = {200.0 * M_PI / 180, 10.0 / 1000, 200.0 * M_PI / 180, 10.0 / 1000}; // [deg/s^2] and [mm/s^2]
+	std::vector<double> max_vel = {200.0 * M_PI / 180, 10.0 / 1000, 200.0 * M_PI / 180, 10.0 / 1000}; // [deg/s] and [mm/s]
     int sample_time = 50;                                                                         //[ms]
     int operation_mode = 1;
     bool position_limit = true;
@@ -56,12 +56,12 @@ int main()
     std::cout << "Homed!" << std::endl;
 
     //  # # # # # # # # ---- Properties of Nitinol Tubes ---- # # # # # # # #
-    double E1 = 45.9446E9; // Young's modulus GPa - Tube 1
-    double E2 = 178.312E9; // Young's modulus GPa - Tube 2
-    double E3 = 200.000E9; // Young's modulus GPa - Tube 3
-    double G1 = 25.3602E9; // Shear modulus GPa - Tube 1
-    double G2 = 94.7906E9; // Shear modulus GPa - Tube 2
-    double G3 = 100.000E9; // Shear modulus GPa - Tube 3
+    double E1 = 50.000E9; // Young's modulus GPa - Tube 1
+	double E2 = 179.808E9; // Young's modulus GPa - Tube 2
+	double E3 = 289.295E9; // Young's modulus GPa - Tube 3
+	double G1 = 58.9514E9;   // Shear modulus GPa - Tube 1
+	double G2 = 399.993E9;   // Shear modulus GPa - Tube 2
+	double G3 = 400.000E9;   // Shear modulus GPa - Tube 3
 
     // Precurvature radii for the tubes
     double R1 = 41.00E-3; // (4.1cm curvature radius)
@@ -74,7 +74,7 @@ int main()
     blaze::StaticVector<double, 3UL> u3 = {1.00 / R3, 0.00, 0.00};
 
     // --** --Lengths of the tubes' straight sections (meters) -- ** --
-    blaze::StaticVector<double, 3UL> ls = {195.00E-3, 105.00E-3, 101.00E-3};
+    blaze::StaticVector<double, 3UL> ls = {151.00E-3, 61.00E-3, 62.00E-3};
 
     // --** --Lengths of the tubes' curved sections (meters) -- ** --
     blaze::StaticVector<double, 3UL> lc = {58.00E-3, 78.00E-3, 0.00};
@@ -92,7 +92,7 @@ int main()
     std::array<std::shared_ptr<Tube>, 3UL> Tb = {T1, T2, T3};
 
     // initial joint actuation values "home position" - q = [Beta Alpha]
-    blaze::StaticVector<double, 3UL> Beta_0 = {-152.00E-3, -82.00E-3, 0.00}; // -115, -100, -80
+    blaze::StaticVector<double, 3UL> Beta_0 = {-109.00E-3, -39.00E-3, 0.00}; // -115, -100, -80
     blaze::StaticVector<double, 3UL> Alpha_0 = {0.00, 0.00, 0.00};
 
     blaze::StaticVector<double, 6UL> q_0;
@@ -102,7 +102,7 @@ int main()
     // Determining the accuracy of BVP solutions
     double Tol = 1.00E-6;
     // Determining the accuracy of the position control loop
-    double pos_tol = 1.00E-3;
+    double pos_tol = 8.00E-4;
 
     // Method for solving the BVP Problem
     // 1: Newton-Raphson
@@ -123,7 +123,7 @@ int main()
     blaze::HybridMatrix<double, 1000UL, 4UL> Trajectory;
 
     // speficy which trajectory to consider
-    std::string trajectory("Helix");
+    std::string trajectory("Square");
     readFromCSV(Trajectory, trajectory);
 
     // position target for the CTR
@@ -172,7 +172,7 @@ int main()
     // actuates the robot to the first target in the trajectpry
     target = blaze::subvector<1UL, 3UL>(blaze::trans(blaze::row<0UL>(Trajectory)));
 
-    for (size_t iter = 0UL; iter < 20UL; ++iter)
+    for (size_t iter = 0UL; iter < 25UL; ++iter)
     {
         CTR_robot.posCTRL(initGuess, target, pos_tol);
         q_0 = CTR_robot.getConfiguration();
@@ -200,6 +200,7 @@ int main()
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
     std::tie(position_CTR, position_CTR_KF) = CTR_robot.acquireEMData();
+
     std::cout << "position_CTR_KF = " << blaze::trans(position_CTR_KF) << std::endl;
 
     std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -251,7 +252,10 @@ int main()
         // writes (EM) tip position data to dump file
         EM_Trajectory << position_CTR_KF[0UL] << ","
                       << position_CTR_KF[1UL] << ","
-                      << position_CTR_KF[2UL]
+                      << position_CTR_KF[2UL] << ","
+                      << target[0UL] << ","
+                      << target[1UL] << ","
+                      << target[2UL]
                       << std::endl;
 
         error = blaze::norm(position_CTR_KF - target) * 1.00E3;
@@ -281,28 +285,27 @@ int main()
 
 std::vector<double> q2qRobot(const blaze::StaticVector<double, 6UL> &input)
 {
-    std::vector<double> offset = {152.00E-3, 82.00E-3, 0.00, 0.00, 0.00, 0.00}; // tran inner, tran middle, tran outer, rot inner, rot middle, rot outer
-    std::vector<double> out = {
-        input[3UL] + offset[3UL],
-        input[0UL] + offset[0UL],
-        input[4UL] + offset[4UL],
-        input[1UL] + offset[1UL]};
-    return out;
+	std::vector<double> offset = {147.00E-3, 77.00E-3, 0.00, 0.00, 0.00, 0.00}; // tran inner, tran middle, tran outer, rot inner, rot middle, rot outer
+	std::vector<double> out = {
+		input[3UL] + offset[3UL],
+		input[0UL] + offset[0UL],
+		input[4UL] + offset[4UL],
+		input[1UL] + offset[1UL]};
+	return out;
 }
-
 blaze::StaticVector<double, 6UL> qRobot2q(const std::vector<double> &input)
 {
-    std::vector<double> offset = {152.00E-3, 82.00E-3, 0.00, 0.00, 0.00, 0.00}; // tran inner, tran middle, tran outer, rot inner, rot middle, rot outer
+	std::vector<double> offset = {147.00E-3, 77.00E-3, 0.00, 0.00, 0.00, 0.00}; // tran inner, tran middle, tran outer, rot inner, rot middle, rot outer
 
-    const blaze::StaticVector<double, 6UL> out = {
-        (input[1] - offset[0]),
-        (input[3] - offset[1]),
-        0.00,
-        (input[0] - offset[3]),
-        (input[2] - offset[4]),
-        0.00};
+	const blaze::StaticVector<double, 6UL> out = {
+		(input[1] - offset[0]),
+		(input[3] - offset[1]),
+		0.00,
+		(input[0] - offset[3]),
+		(input[2] - offset[4]),
+		0.00};
 
-    return out;
+	return out;
 }
 
 // function that reads relevant clinical data from CSV files for each case

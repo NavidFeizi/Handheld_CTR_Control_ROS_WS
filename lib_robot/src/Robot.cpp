@@ -31,11 +31,11 @@ CTRobot::CTRobot(int sample_time,
   this->operation_mode = operation_mode;
 
   this->lowerBounds = {-6 * M_PI, 0.0, -6 * M_PI, 0.0};
-  this->upperBounds = {6 * M_PI, 100.0E-3, 6 * M_PI, 60.0E-3};
+  this->upperBounds = {6 * M_PI, 97.0E-3, 6 * M_PI, 52.0E-3};
 
-  this->posOffsets = {0.0, -152.0E-3, 0.0, -82.0E-3};
+  this->posOffsets = {0.0, -147.0E-3, 0.0, -77.0E-3};
   this->clearance_min = 29.0E-3;
-  this->clearance_max = 70.0E-3;
+  this->clearance_max = 71.0E-3;
   this->flag_position_limit = position_limit;
 
   /* Create log file and name it with time*/
@@ -517,7 +517,7 @@ int CTRobot::Position_limits_check(std::vector<double> posTarget)
   CTRobot::Convert_pos_to_CTR_frame(posTarget, &posInCTRFrame);
   if ((posInCTRFrame[3] - posInCTRFrame[1]) < clearance_min)
   {
-    std::cout << "dynamic position lower limit reached - clearance is:" << posInCTRFrame[3] - posInCTRFrame[1] << " - preventing collision => position target ignored" << std::endl;
+    std::cout << "dynamic position lower limit reached - preventing collision => position target ignored" << std::endl;
     return -1;
   }
   if ((posInCTRFrame[3] - posInCTRFrame[1]) > clearance_max)

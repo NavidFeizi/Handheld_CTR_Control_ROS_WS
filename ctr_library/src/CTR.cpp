@@ -917,7 +917,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	// proportional, derivative, and integral gains for position control
 	blaze::DiagonalMatrix<blaze::StaticMatrix<double, 3UL, 3UL, blaze::columnMajor>> Kp, Kd, Ki;
 	blaze::diagonal(Kp) = 1.000; // 1.000
-	blaze::diagonal(Ki) = 0.070; // 0.050
+	blaze::diagonal(Ki) = 0.050; // 0.050
 	blaze::diagonal(Kd) = 0.001; // 0.001
 
 	// Capturing the CTR's current joint configuration
@@ -987,7 +987,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	const size_t maxIter = 100UL; // maximum admissible number of iterations in the position control loop
 
 	// parameters for local optimization (joint limits avoidance)
-	double ke = 15.00;
+	double ke = 2.00;
 
 	// penalty function for implementing actuator collision avoidance
 	auto f1 = blaze::subvector<0UL, 3UL>(f);
@@ -1013,7 +1013,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 		betaMax[2UL] = std::min({-deltaBar, L[1UL] + this->m_beta[1UL] - L[2UL], L[0UL] + this->m_beta[0UL] - L[2UL]});
 
 		// Inverse kinematics ==> penalty function for local optimization (actuator collision avoidance)
-		f1 = 1.00E-4 * blaze::pow(blaze::abs((betaMax + betaMin - 2.00 * this->m_beta) / (betaMax - betaMin + 1.00E-10)), ke) * blaze::sign(this->m_beta - (betaMax + betaMin) * 0.50);
+		f1 = blaze::pow(blaze::abs((betaMax + betaMin - 2.00 * this->m_beta) / (betaMax - betaMin + 1.00E-10)), ke) * blaze::sign(this->m_beta - (betaMax + betaMin) * 0.50);
 
 		// resolved rates -- Nullspacec local optimization (joint limit avoidance)
 		dqdt = J_inv * (Kp * tipError + Kd * d_tipError + Ki * int_tipError) + (I - blaze::trans(J_inv * J)) * (-f);
