@@ -123,7 +123,7 @@ int main()
     blaze::HybridMatrix<double, 1000UL, 4UL> Trajectory;
 
     // speficy which trajectory to consider
-    std::string trajectory("Square");
+    std::string trajectory("Helix");
     readFromCSV(Trajectory, trajectory);
 
     // position target for the CTR

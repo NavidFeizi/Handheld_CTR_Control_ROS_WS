@@ -55,9 +55,9 @@ class Recorder
 public:
   Recorder(const std::string &filename);
 
-  void Record(const quatTransformation &ctrFrame,
-              const quatTransformation &ctrFrame2Tip,
-              const quatTransformation &ctrFrame2Probe);
+  void Record(const quatTransformation &Reference,
+                      const quatTransformation &Tip);
+
   void Close();
 
 private:
@@ -132,7 +132,7 @@ private:
   std::string getToolInfo(std::string toolHandle);
   void onErrorPrintDebugmessage_1(std::string methodName, int errorCode);
   void InitializeAndEnableSensors();
-  void MathcSensors();
+  void MatchSensors();
   void LoadToolDefinitions2Ports();
   void Read_Loop();
   void ToolData2Vector(const ToolData &toolData, std::vector<double> *toolCoord);

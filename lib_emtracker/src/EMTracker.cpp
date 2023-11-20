@@ -18,23 +18,19 @@ Recorder::Recorder(const std::string &filename) : filename_(filename)
   file.open(filename);
   if (file.is_open())
   {
-    file << "Time,X_[ctr2tip],Y_[ctr2tip],Z_[ctr2tip],Q0_[ctr2tip],Qx_[ctr2tip],Qy_[ctr2tip],QZ_[ctr2tip]"
+    file << "Time,X_[ref],Y_[ref],Z_[ref],Q0_[ref],Qx_[ref],Qy_[ref],QZ_[ref]"
          << ","
-         << "X_[em2ctr],Y_[em2ctr],Z_[em2ctr],Q0_[em2ctr],Qx_[em2ctr],Qy_[em2ctr],Qz_[em2ctr]"
-         << ","
-         << "X_[ctr2probe],Y_[ctr2probe],Z_[ctr2probe],Q0_[ctr2probe],Qx_[ctr2probe],Qy_[ctr2probe],Qz_[ctr2probe]"
-         << "\n";
+         << "X_[tip],Y_[tip],Z_[tip],Q0_[tip],Qx_[tip],Qy_[tip],Qz_[tip]" << std::endl;
     start_time_ = std::chrono::high_resolution_clock::now(); // Record start time
   }
   else
   {
-    std::cerr << "Error opening file: " << filename << std::endl;
+    std::cerr << "Error opening file to record: " << filename << std::endl;
   }
 }
 
-void Recorder::Record(const quatTransformation &ctrFrame,
-                      const quatTransformation &ctrFrame2Tip,
-                      const quatTransformation &ctrFrame2Probe)
+void Recorder::Record(const quatTransformation &Reference,
+                      const quatTransformation &Tip)
 {
   if (file.is_open())
   {
@@ -42,12 +38,10 @@ void Recorder::Record(const quatTransformation &ctrFrame,
     double elapsed_seconds = std::chrono::duration<double>(current_time - start_time_).count();
 
     file << elapsed_seconds << ","
-         << boost::qvm::X(ctrFrame.translation) << "," << boost::qvm::Y(ctrFrame.translation) << "," << boost::qvm::Z(ctrFrame.translation) << ","
-         << boost::qvm::S(ctrFrame.rotation) << "," << boost::qvm::X(ctrFrame.rotation) << "," << boost::qvm::Y(ctrFrame.rotation) << "," << boost::qvm::Z(ctrFrame.rotation) << ","
-         << boost::qvm::X(ctrFrame2Tip.translation) << "," << boost::qvm::Y(ctrFrame2Tip.translation) << "," << boost::qvm::Z(ctrFrame2Tip.translation) << ","
-         << boost::qvm::S(ctrFrame2Tip.rotation) << "," << boost::qvm::X(ctrFrame2Tip.rotation) << "," << boost::qvm::Y(ctrFrame2Tip.rotation) << "," << boost::qvm::Z(ctrFrame2Tip.rotation) << ","
-         << boost::qvm::X(ctrFrame2Probe.translation) << "," << boost::qvm::Y(ctrFrame2Probe.translation) << "," << boost::qvm::Z(ctrFrame2Probe.translation) << ","
-         << boost::qvm::S(ctrFrame2Probe.rotation) << "," << boost::qvm::X(ctrFrame2Probe.rotation) << "," << boost::qvm::Y(ctrFrame2Probe.rotation) << "," << boost::qvm::Z(ctrFrame2Probe.rotation) << "\n";
+         << boost::qvm::X(Reference.translation) << "," << boost::qvm::Y(Reference.translation) << "," << boost::qvm::Z(Reference.translation) << ","
+         << boost::qvm::S(Reference.rotation) << "," << boost::qvm::X(Reference.rotation) << "," << boost::qvm::Y(Reference.rotation) << "," << boost::qvm::Z(Reference.rotation) << ","
+         << boost::qvm::X(Tip.translation) << "," << boost::qvm::Y(Tip.translation) << "," << boost::qvm::Z(Tip.translation) << ","
+         << boost::qvm::S(Tip.rotation) << "," << boost::qvm::X(Tip.rotation) << "," << boost::qvm::Y(Tip.rotation) << "," << boost::qvm::Z(Tip.rotation) << std::endl;
   }
   else
   {
@@ -68,6 +62,10 @@ void Recorder::Close()
 EMTracker::EMTracker()
 {
   std::string filename = "Recordings";
+  if (!std::filesystem::exists(Log_directory))
+  {
+    std::filesystem::create_directory(Log_directory);
+  }
   this->recorder = std::make_shared<Recorder>(Log_directory + filename + ".csv");
   // relative transformation of the tip pos in the CTR frame
   this->Tran_Tip_Rel = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -106,7 +104,7 @@ EMTracker::EMTracker()
   if (!Read_SensorConfig_from_YAML(this->config_Dir + "config.yaml", &sensorConfigMap))
   {
     // match the sensors' serial number with the serial numbers in sensorConfigMap
-    EMTracker::MathcSensors();
+    EMTracker::MatchSensors();
   }
   else
   {
@@ -195,7 +193,7 @@ void EMTracker::InitializeAndEnableSensors()
 /** @brief  This function matches the serial number of the sensors (from soldered srom) with the
  * serial numbers in "config.yaml" to name the sensors based on the "config.yaml" file.
  */
-void EMTracker::MathcSensors()
+void EMTracker::MatchSensors()
 {
   // portHandles of the enabled ports (sensors)
   std::vector<PortHandleInfo> portHandles = this->combinedAPI->portHandleSearchRequest(PortHandleSearchRequestOption::Enabled);
@@ -501,7 +499,7 @@ void EMTracker::Read_Loop()
     // this->Tran_Tip_Abs[4] = elevation;
     // this->Tran_Tip_Abs[5] = roll;
 
-    this->recorder->Record(tran_01, tran_23, tran_1probe);
+    this->recorder->Record(tran_01, tran_03);
 
     // print the transformation
     if (this->flag_print)
@@ -906,77 +904,3 @@ void SleepSeconds(unsigned numSeconds)
   sleep(numSeconds); // sleep(sec)
 #endif
 }
-
-// /* ------------------------ Obsolete functions --------------------------*/
-// /* ------------------------ Obsolete functions --------------------------*/
-// /* ------------------------ Obsolete functions --------------------------*/
-// // function to get an average of the reference coordinate
-// std::tuple<boost::qvm::quat<double>, boost::qvm::quat<double>> EMTracker::GetReferenceCoords()
-// {
-//   int num_skipSmaples = 20;
-//   int num_samples = 100;
-//   int counter = 0;
-//   std::vector<double> P = {0, 0, 0};
-//   std::vector<double> q = {0, 0, 0, 0};
-//   std::cout << "EMtracker => Recording reference coordinate!" << std::endl;
-//   while (counter < num_skipSmaples + num_samples + 1)
-//   {
-//     std::vector<ToolData> toolData = capi.getTrackingDataBX(); // get tracking info from the EMTracker device
-//     if (counter > num_skipSmaples)
-//     {
-//       std::vector<double> RefCoords = EMTracker::ToolData2Vector(toolData[0]); // channel 1
-//       P[0] += RefCoords[0];                                                   // reference positoin
-//       P[1] += RefCoords[1];
-//       P[2] += RefCoords[2];
-//       q[0] += RefCoords[3]; // reference quaternions
-//       q[1] += RefCoords[4];
-//       q[2] += RefCoords[5];
-//       q[3] += RefCoords[6];
-//     }
-//     else
-//     {
-//       // std::cout << "EMtracker => Skipping!" << std::endl;
-//     }
-//     counter++;
-//   }
-//   boost::qvm::quat<double> quat_01 = {{q[0] / num_samples, q[1] / num_samples, q[2] / num_samples, q[3] / num_samples}};
-//   boost::qvm::quat<double> tran_01 = {{0, P[0] / num_samples, P[1] / num_samples, P[2] / num_samples}};
-//   std::cout << "EMtracker => Reference coordinate averaging done!" << std::endl;
-//   return std::make_tuple(tran_01, quat_01);
-// }
-
-// std::vector<double> EMTracker::read_relative()
-// {
-//   std::vector<ToolData> toolData = capi.getTrackingDataBX();               // get tracking info from the EMTracker device
-//   std::vector<double> ToolCoords = EMTracker::SensorDataConv(toolData[1]); // channel 2
-//   AP_tool[0] = ToolCoords[0];                                              // tool position
-//   AP_tool[1] = ToolCoords[1];
-//   AP_tool[2] = ToolCoords[2];
-
-//   // update filtered values if sensor value is valid (non-missing sensor)
-//   double norm_P = std::inner_product(AP_tool.begin(), AP_tool.end(), AP_tool.begin(), 0);
-//   if (norm_P != 0.0)
-//   {
-//     AP_toolFilt = AP_tool;
-//     // AP_toolFilt = this->KLF_1->Loop(AP_tool);
-//   }
-
-//   std::vector<double> P_toolFilt = EMTracker::RelativePos(AP_toolFilt);
-//   std::vector<double> P_tool = EMTracker::RelativePos(AP_tool);
-
-//   // preparing and sending messages on topics
-//   // std::cout << "X(mm): " << P_tool[0]  << "Y(mm): " << P_tool[1] << "Z(mm): " << P_tool[2] << std::endl;
-//   return P_tool;
-// }
-
-// // function that return the relative positon of the tool sensor in the robot coordinate frame
-// std::vector<double> EMTracker::RelativePos(std::vector<double> &tran_03)
-// {
-//   boost::qvm::quat<double> V_03_0 = {{0.0, tran_03[0], tran_03[1], tran_03[2]}};       // tip translation from EM frame in EM frame
-//   boost::qvm::quat<double> V_13_0 = V_03_0 - tran_01;                                  // tip translation from ference frame in EM frame
-//   boost::qvm::quat<double> V_13_1 = boost::qvm::conjugate(quat_01) * V_13_0 * quat_01; // tip translation from ference frame in ference frame
-//   boost::qvm::quat<double> V_23_1 = (V_13_1 - tran_12);                                // tip translation from robot frame in ference frame
-//   boost::qvm::quat<double> V_23_2 = boost::qvm::conjugate(quat_12) * V_23_1 * quat_12; // tip translation from robot frame in robot frame
-//   std::vector<double> rotatePos = {{boost::qvm::X(V_23_2), boost::qvm::Y(V_23_2), boost::qvm::Z(V_23_2)}};
-//   return {rotatePos[0], rotatePos[1], rotatePos[2]};
-// }

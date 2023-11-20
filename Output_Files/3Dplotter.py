@@ -22,14 +22,14 @@ y_trajectory = data[:, 4] * 1.00E3
 z_trajectory = data[:, 5] * 1.00E3
 
 # Data points of ground truth
-x_truth = truth[:, 1] * 1.00E3
-y_truth = truth[:, 2] * 1.00E3
-z_truth = truth[:, 3] * 1.00E3
+x_truth = data[:, 3] * 1.00E3
+y_truth = data[:, 4] * 1.00E3
+z_truth = data[:, 5] * 1.00E3
 
 # # # Compute error
-error_x = x_em - x_trajectory
-error_y = y_em - y_trajectory
-error_z = z_em - z_trajectory
+error_x = abs(x_em - x_trajectory)
+error_y = abs(y_em - y_trajectory)
+error_z = abs(z_em - z_trajectory)
 
 # Create a 3D scatter plot
 fig = plt.figure()
