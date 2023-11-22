@@ -948,9 +948,9 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	blaze::StaticVector<double, 3UL> DC_error(position_CTR_KF - x_CTR_init);
 
 	// Current position error
-	DC_error = 0.00;
-	tipError = target - this->getTipPos();
-	// tipError = target - position_CTR_KF;
+	// DC_error = 0.00;
+	// tipError = target - this->getTipPos();
+	tipError = target - position_CTR_KF;
 
 	// std::cout << "|DC_error| = " << blaze::norm(DC_error) << " make \t DC_error = " << blaze::trans(DC_error)
 	// 		  << "|tipError| = " << blaze::norm(tipError) << " make \t Current error = " << blaze::trans(tipError) << std::endl;

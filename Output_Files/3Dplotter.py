@@ -5,8 +5,8 @@ from mpl_toolkits.mplot3d import Axes3D
 
 # try:
 # Read data from the .dat file
-data = np.genfromtxt("Output_Files/EM_Trajectory.dat", delimiter=",", dtype=float)
-truth = np.genfromtxt("Trajectories/Square.csv", delimiter=",", dtype=float)
+data = np.genfromtxt("Output_Files/EM_Trajectory_New_Helix_best_4.dat", delimiter=",", dtype=float)
+truth = np.genfromtxt("Trajectories/Helix.csv", delimiter=",", dtype=float)
 
 # data = np.genfromtxt("Output_Files/EM_Trajectory_Helix_good.dat", delimiter=",", dtype=float)
 # truth = np.genfromtxt("Output_Files/Helix_good.csv", delimiter=",", dtype=float)

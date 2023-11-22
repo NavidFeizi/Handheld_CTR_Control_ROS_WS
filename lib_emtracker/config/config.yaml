@@ -5,11 +5,11 @@ sensor_config:
       serial_number: 39B33001
       srom_filename: 
       load_srom: false
-#   - sensor:
-#       name: reference
-#       serial_number: 3B2A8800
-#       srom_filename: 610094_ctrref.rom
-#       load_srom: true
+  # - sensor:
+  #     name: reference
+  #     serial_number: 3B2A8800
+  #     srom_filename: 610094_ctrref.rom
+  #     load_srom: true
   - sensor:
       name: tip
       serial_number: 3CD50C00
