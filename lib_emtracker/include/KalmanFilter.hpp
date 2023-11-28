@@ -1,19 +1,18 @@
 #pragma once
 
 #include <blaze/Blaze.h>
-#include <cmath>
 
 class KalmanFilter
 {
 public:
     // default constructor
-    KalmanFilter();
+    KalmanFilter() = delete;
 
     // KalmanFilter constructor
-    KalmanFilter(const double q, const double r);
+    KalmanFilter(const double delta_t, const blaze::StaticMatrix<double, 6UL, 6UL> Q_, const blaze::StaticMatrix<double, 3UL, 3UL> R_);
 
     // KalmanFilter desctructor
-    ~KalmanFilter();
+    ~KalmanFilter() = default;
 
     // copy constructor
     KalmanFilter(const KalmanFilter &rhs);
@@ -28,19 +27,18 @@ public:
     KalmanFilter &operator=(KalmanFilter &&rhs) noexcept;
 
     // update core of the Kalman filter
-    void Loop(std::vector<double> &measurement, std::vector<double> *estimate);
-
+    void Loop(std::vector<double> &measurement, std::vector<double> &estimate);
 
 private:
     double dt;
     blaze::StaticMatrix<double, 6UL, 6UL> A;
     blaze::StaticMatrix<double, 3UL, 6UL> C;
-    blaze::StaticVector<double, 6UL> X_ep, X;
-    blaze::StaticMatrix<double, 6UL, 6UL> Pxx_ep, Pxx;
-    blaze::StaticMatrix<double, 6UL, 3UL> K;
-    // blaze::DiagonalMatrix<blaze::StaticMatrix<double, 6UL, 6UL>> Q;
-    // blaze::DiagonalMatrix<blaze::StaticMatrix<double, 3UL, 3UL>> R;
-
+    blaze::StaticVector<double, 6UL> x;
+    blaze::StaticVector<double, 3UL> y, y_hat;
+    blaze::StaticMatrix<double, 6UL, 6UL> Pxx;
+    blaze::IdentityMatrix<double> I;
+    blaze::StaticMatrix<double, 6UL, 3UL> W;
+    blaze::StaticMatrix<double, 3UL, 3UL> S_inv;
     blaze::StaticMatrix<double, 6UL, 6UL> Q;
     blaze::StaticMatrix<double, 3UL, 3UL> R;
 };

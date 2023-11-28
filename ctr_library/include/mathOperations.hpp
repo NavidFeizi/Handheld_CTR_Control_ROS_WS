@@ -32,7 +32,7 @@ namespace mathOp
 		return (degree * deg2rad);
 	}
 
-	// Function that computes the congruent angle of theta in [0Pi, 2Pi]
+	// Function that computes the congruent angle of theta in [0Pi, 6Pi]
 	inline double congruentAngle(double angle)
 	{
 		static constexpr double SIX_PI = 6.00 * M_PI;
@@ -43,7 +43,7 @@ namespace mathOp
 	// Function that computes the shortest angle revolution between two robot configurations
 	inline double shortestRotation(double currentAngle, double targetAngle)
 	{
-		const double twoPi = 2.0 * M_PI;
+		const double twoPi = 2.00 * M_PI;
 		double clockwise = std::remainder(targetAngle - currentAngle, twoPi);
 		double counterclockwise = std::remainder(currentAngle - targetAngle, twoPi);
 

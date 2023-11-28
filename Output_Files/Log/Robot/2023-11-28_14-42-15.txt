@@ -1,0 +1,145 @@
+[Robot : 2023-11-28 14:42:15] Node 1: Controller brand: FaulhaberPPU: 5729.577951:   Gear ratio: 1.000000:   Encoder resoluton: 5729.577951
+[Robot : 2023-11-28 14:42:15] Node 2: Controller brand: FaulhaberPPU: 1000000.000000:   Gear ratio: 1.000000:   Encoder resoluton: 1000000.000000
+[Robot : 2023-11-28 14:42:15] Node 3: Controller brand: FaulhaberPPU: 5729.577951:   Gear ratio: 1.000000:   Encoder resoluton: 5729.577951
+[Robot : 2023-11-28 14:42:15] Node 4: Controller brand: FaulhaberPPU: 1000000.000000:   Gear ratio: 1.000000:   Encoder resoluton: 1000000.000000
+[Robot : 2023-11-28 14:42:15] Node 2: Booting
+[Robot : 2023-11-28 14:42:15] Node 2: No fault to reset
+[Robot : 2023-11-28 14:42:15] Node 1: Booting
+[Robot : 2023-11-28 14:42:15] Node 1: No fault to reset
+[Robot : 2023-11-28 14:42:15] Node 4: Booting
+[Robot : 2023-11-28 14:42:15] Node 4: No fault to reset
+[Robot : 2023-11-28 14:42:15] Node 3: Booting
+[Robot : 2023-11-28 14:42:15] Node 3: No fault to reset
+[Robot : 2023-11-28 14:42:15] Node 2: Booted successfully.
+[Robot : 2023-11-28 14:42:15] Node 1: Booted successfully.
+[Robot : 2023-11-28 14:42:15] Node 4: Booted successfully.
+[Robot : 2023-11-28 14:42:15] Node 3: Booted successfully.
+[Robot : 2023-11-28 14:42:15] ---------------------- Nodes Booted Successfully ----------------------
+[Robot : 2023-11-28 14:42:15] Node 2: Switch on disabled   =>  Ready to Switch On   =>  Switched On 
+[Robot : 2023-11-28 14:42:15] Node 1: Switch on disabled   =>  Ready to Switch On   =>  Switched On 
+[Robot : 2023-11-28 14:42:15] Node 4: Switch on disabled   =>  Ready to Switch On   =>  Switched On 
+[Robot : 2023-11-28 14:42:15] ---------------------- Nodes Switched ON ----------------------
+[Robot : 2023-11-28 14:42:15] Node 3: Switch on disabled   =>  Ready to Switch On   =>  Switched On 
+[Robot : 2023-11-28 14:42:15] Node 2: Enabling test
+[Robot : 2023-11-28 14:42:15] Node 2: Enabled
+[Robot : 2023-11-28 14:42:15] Node 1: Enabling test
+[Robot : 2023-11-28 14:42:15] Node 1: Enabled
+[Robot : 2023-11-28 14:42:15] Node 4: Enabling test
+[Robot : 2023-11-28 14:42:15] Node 4: Enabled
+[Robot : 2023-11-28 14:42:15] Node 3: Enabling test
+[Robot : 2023-11-28 14:42:15] Node 3: Enabled
+[Robot : 2023-11-28 14:42:15] ---------------------- Nodes Enabled ----------------------
+[Robot : 2023-11-28 14:42:15] Node 2: Setting mode of operation to 1
+[Robot : 2023-11-28 14:42:15] Node 1: Setting mode of operation to 1
+[Robot : 2023-11-28 14:42:15] ---------------------- At Least One Node Disabled ----------------------
+[Robot : 2023-11-28 14:42:15] Node 2: Disabling 
+[Robot : 2023-11-28 14:42:15] Node 1: Disabling 
+[Robot : 2023-11-28 14:42:15] Node 2: Mode of operation = 1
+[Robot : 2023-11-28 14:42:15] Node 1: Mode of operation = 1
+[Robot : 2023-11-28 14:42:15] Node 2: Setting profile position parameters to: ACC: 1000 [0.01mm/s^2] or [0.1deg/s^2]  |  DCC: 1000 [0.01mm/s^2] or [0.1deg/s^2]  |  Vel: 1000 [0.01mm/s] or [0.1deg/s]  
+[Robot : 2023-11-28 14:42:15] Node 1: Setting profile position parameters to: ACC: 2000 [0.01mm/s^2] or [0.1deg/s^2]  |  DCC: 2000 [0.01mm/s^2] or [0.1deg/s^2]  |  Vel: 2000 [0.01mm/s] or [0.1deg/s]  
+[Robot : 2023-11-28 14:42:15] Node 2: Setting TPDO1 transmission type to 1
+[Robot : 2023-11-28 14:42:15] Node 2: Setting TPDO2 transmission type to 1
+[Robot : 2023-11-28 14:42:15] Node 2: Encoder memory = 0.054873
+[Robot : 2023-11-28 14:42:15] Node 1: Setting TPDO1 transmission type to 1
+[Robot : 2023-11-28 14:42:15] Node 1: Setting TPDO2 transmission type to 1
+[Robot : 2023-11-28 14:42:15] Node 1: Encoder memory = -0.634776
+[Robot : 2023-11-28 14:42:15] Node 2: Setting encoder value 
+[Robot : 2023-11-28 14:42:15] Node 1: Setting encoder value 
+[Robot : 2023-11-28 14:42:16] Node 2: Setting mode of operation to 6
+[Robot : 2023-11-28 14:42:16] Node 1: Setting mode of operation to 6
+[Robot : 2023-11-28 14:42:16] Node 2: Disabling 
+[Robot : 2023-11-28 14:42:16] Node 2: Mode of operation = 6
+[Robot : 2023-11-28 14:42:16] Node 1: Disabling 
+[Robot : 2023-11-28 14:42:16] Node 1: Mode of operation = 6
+[Robot : 2023-11-28 14:42:16] Node 2: encoder set value: 0.054873
+[Robot : 2023-11-28 14:42:16] ---------------------- Nodes Enabled ----------------------
+[Robot : 2023-11-28 14:42:16] Node 3: Setting mode of operation to 1
+[Robot : 2023-11-28 14:42:16] Node 1: encoder set value: -0.634776
+[Robot : 2023-11-28 14:42:16] ---------------------- At Least One Node Disabled ----------------------
+[Robot : 2023-11-28 14:42:16] Node 3: Disabling 
+[Robot : 2023-11-28 14:42:16] Node 3: Mode of operation = 1
+[Robot : 2023-11-28 14:42:16] Node 3: Setting profile position parameters to: ACC: 2000 [0.01mm/s^2] or [0.1deg/s^2]  |  DCC: 2000 [0.01mm/s^2] or [0.1deg/s^2]  |  Vel: 2000 [0.01mm/s] or [0.1deg/s]  
+[Robot : 2023-11-28 14:42:16] Node 2: Checkpoint 5
+[Robot : 2023-11-28 14:42:16] Node 1: Checkpoint 5
+[Robot : 2023-11-28 14:42:16] Node 3: Setting TPDO1 transmission type to 1
+[Robot : 2023-11-28 14:42:16] Node 3: Setting TPDO2 transmission type to 1
+[Robot : 2023-11-28 14:42:16] Node 3: Encoder memory = -0.746128
+[Robot : 2023-11-28 14:42:16] Node 3: Setting encoder value 
+[Robot : 2023-11-28 14:42:16] Node 2: enable: 1: bit10: 1: bit12: 1: bit13: 0
+[Robot : 2023-11-28 14:42:16] Node 2: Current position set to 0.054873
+[Robot : 2023-11-28 14:42:16] Node 1: enable: 1: bit10: 1: bit12: 1: bit13: 0
+[Robot : 2023-11-28 14:42:16] Node 1: Current position set to -0.634776
+[Robot : 2023-11-28 14:42:17] Node 2: Checkpoint 6
+[Robot : 2023-11-28 14:42:17] Node 2: Setting mode of operation to 0
+[Robot : 2023-11-28 14:42:17] Node 2: Disabling 
+[Robot : 2023-11-28 14:42:17] Node 1: Checkpoint 6
+[Robot : 2023-11-28 14:42:17] Node 1: Setting mode of operation to 0
+[Robot : 2023-11-28 14:42:17] Node 2: Mode of operation = 0
+[Robot : 2023-11-28 14:42:17] Node 1: Disabling 
+[Robot : 2023-11-28 14:42:17] Node 1: Mode of operation = 0
+[Robot : 2023-11-28 14:42:17] Node 2: Checkpoint 7
+[Robot : 2023-11-28 14:42:17] Node 2: Setting mode of operation to 1
+[Robot : 2023-11-28 14:42:17] Node 2: Disabling 
+[Robot : 2023-11-28 14:42:17] Node 2: Mode of operation = 1
+[Robot : 2023-11-28 14:42:17] Node 1: Checkpoint 7
+[Robot : 2023-11-28 14:42:17] Node 1: Setting mode of operation to 1
+[Robot : 2023-11-28 14:42:17] Node 1: Disabling 
+[Robot : 2023-11-28 14:42:17] Node 1: Mode of operation = 1
+[Robot : 2023-11-28 14:42:17] Node 2: Checkpoint 8
+[Robot : 2023-11-28 14:42:17] Node 1: Checkpoint 8
+[Robot : 2023-11-28 14:42:17] Node 3: Setting mode of operation to 6
+[Robot : 2023-11-28 14:42:17] Node 3: Disabling 
+[Robot : 2023-11-28 14:42:17] Node 3: Mode of operation = 6
+[Robot : 2023-11-28 14:42:17] Node 3: encoder set value: -0.746128
+[Robot : 2023-11-28 14:42:17] ---------------------- Nodes Enabled ----------------------
+[Robot : 2023-11-28 14:42:17] Node 4: Setting mode of operation to 1
+[Robot : 2023-11-28 14:42:17] Node 4: Disabling 
+[Robot : 2023-11-28 14:42:17] ---------------------- At Least One Node Disabled ----------------------
+[Robot : 2023-11-28 14:42:17] Node 4: Mode of operation = 1
+[Robot : 2023-11-28 14:42:18] Node 4: Setting profile position parameters to: ACC: 1000 [0.01mm/s^2] or [0.1deg/s^2]  |  DCC: 1000 [0.01mm/s^2] or [0.1deg/s^2]  |  Vel: 1000 [0.01mm/s] or [0.1deg/s]  
+[Robot : 2023-11-28 14:42:18] Node 3: Checkpoint 5
+[Robot : 2023-11-28 14:42:18] Node 4: Setting TPDO1 transmission type to 1
+[Robot : 2023-11-28 14:42:18] Node 4: Setting TPDO2 transmission type to 1
+[Robot : 2023-11-28 14:42:18] Node 4: Encoder memory = 0.016326
+[Robot : 2023-11-28 14:42:18] Node 3: enable: 1: bit10: 1: bit12: 1: bit13: 0
+[Robot : 2023-11-28 14:42:18] Node 4: Setting encoder value 
+[Robot : 2023-11-28 14:42:18] Node 3: Current position set to -0.746128
+[Robot : 2023-11-28 14:42:18] Node 3: Checkpoint 6
+[Robot : 2023-11-28 14:42:18] Node 3: Setting mode of operation to 0
+[Robot : 2023-11-28 14:42:18] Node 3: Disabling 
+[Robot : 2023-11-28 14:42:18] Node 3: Mode of operation = 0
+[Robot : 2023-11-28 14:42:18] Node 3: Checkpoint 7
+[Robot : 2023-11-28 14:42:18] Node 3: Setting mode of operation to 1
+[Robot : 2023-11-28 14:42:18] Node 3: Disabling 
+[Robot : 2023-11-28 14:42:18] Node 3: Mode of operation = 1
+[Robot : 2023-11-28 14:42:18] Node 3: Checkpoint 8
+[Robot : 2023-11-28 14:42:19] Node 4: Setting mode of operation to 6
+[Robot : 2023-11-28 14:42:19] Node 4: Disabling 
+[Robot : 2023-11-28 14:42:19] Node 4: Mode of operation = 6
+[Robot : 2023-11-28 14:42:19] ---------------------- Nodes Enabled ----------------------
+[Robot : 2023-11-28 14:42:19] Node 4: encoder set value: 0.016326
+[Robot : 2023-11-28 14:42:19] Node 4: Checkpoint 5
+[Robot : 2023-11-28 14:42:19] Node 4: enable: 1: bit10: 1: bit12: 1: bit13: 0
+[Robot : 2023-11-28 14:42:19] Node 4: Current position set to 0.016326
+[Robot : 2023-11-28 14:42:19] ---------------------- At Least One Node Disabled ----------------------
+[Robot : 2023-11-28 14:42:19] Node 4: Checkpoint 6
+[Robot : 2023-11-28 14:42:19] Node 4: Setting mode of operation to 0
+[Robot : 2023-11-28 14:42:19] Node 4: Disabling 
+[Robot : 2023-11-28 14:42:19] Node 4: Mode of operation = 0
+[Robot : 2023-11-28 14:42:19] Node 4: Checkpoint 7
+[Robot : 2023-11-28 14:42:19] Node 4: Setting mode of operation to 1
+[Robot : 2023-11-28 14:42:19] Node 4: Disabling 
+[Robot : 2023-11-28 14:42:19] Node 4: Mode of operation = 1
+[Robot : 2023-11-28 14:42:19] Node 4: Checkpoint 8
+[Robot : 2023-11-28 14:42:19] ---------------------- Encoders Set ----------------------
+[Robot : 2023-11-28 14:42:19] ---------------------- Nodes Enabled ----------------------
+[Robot : 2023-11-28 14:42:19] Node 1: Operation enabled 
+[Robot : 2023-11-28 14:42:19] Node 3: Operation enabled 
+[Robot : 2023-11-28 14:42:19] Node 2: Operation enabled 
+[Robot : 2023-11-28 14:42:19] Node 4: Operation enabled 
+[Robot : 2023-11-28 14:42:19] Node 1: Task posted
+[Robot : 2023-11-28 14:42:19] Node 3: Task posted
+[Robot : 2023-11-28 14:42:19] Node 2: Task posted
+[Robot : 2023-11-28 14:42:19] Node 4: Task posted
+[Robot : 2023-11-28 14:42:19] ---------------------- Tasks Posted ----------------------

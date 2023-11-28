@@ -1,55 +1,35 @@
 #include "KalmanFilter.hpp"
 
-// default constructor
-KalmanFilter::KalmanFilter()
-{
-    // Parameters for Kalman Filterring
-    dt = 0.05;
-    A = {{1.0, dt, 0.0, 0.0, 0.0, 0.0},
-         {0.0, 1.0, 0.0, 0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0, dt, 0.0, 0.0},
-         {0.0, 0.0, 0.0, 1.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0, 0.0, 1.0, dt},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 1.0}};
-    C = {{1.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0, 0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0, 0.0, 1.0, 0.0}};
-    X_ep = 1.0; // state
-    X = A * X_ep;
-    Pxx_ep = A * X * blaze::trans(X) * blaze::trans(A);
-    blaze::diagonal(Q) = 1.0; // covariance of the process noise (gets updates with the innovation process)
-    blaze::diagonal(R) = 1.0; // covariance of the observation noise
-}
-
 // overloaded constructor
-KalmanFilter::KalmanFilter(const double q, const double r)
+KalmanFilter::KalmanFilter(const double delta_t, const blaze::StaticMatrix<double, 6UL, 6UL> Q_, const blaze::StaticMatrix<double, 3UL, 3UL> R_) : I(6UL), Q(Q_), R(R_)
 {
-    // Parameters for Kalman Filterring
-    dt = 0.05;
-    A = {{1.0, dt, 0.0, 0.0, 0.0, 0.0},
-         {0.0, 1.0, 0.0, 0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0, dt, 0.0, 0.0},
-         {0.0, 0.0, 0.0, 1.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0, 0.0, 1.0, dt},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 1.0}};
-    C = {{1.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0, 0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0, 0.0, 1.0, 0.0}};
-    X_ep = 1.0; // state
-    X = A * X_ep;
-    Pxx_ep = A * X * blaze::trans(X) * blaze::trans(A);
-    blaze::diagonal(Q) = q; // covariance of the process noise
-    blaze::diagonal(R) = r; // covariance of the observation noise
-}
+    // Sampling period of the NDI tracking system
+    dt = delta_t;
 
-// KalmanFilter desctructor
-KalmanFilter::~KalmanFilter()
-{
-    // nothing to be done
+    // dynamics of the filter -- Nearly constant speed model
+    A = {{1.00, dt, 0.00, 0.00, 0.00, 0.00},
+         {0.00, 1.00, 0.00, 0.00, 0.00, 0.00},
+         {0.00, 0.00, 1.00, dt, 0.00, 0.00},
+         {0.00, 0.00, 0.00, 1.00, 0.00, 0.00},
+         {0.00, 0.00, 0.00, 0.00, 1.00, dt},
+         {0.00, 0.00, 0.00, 0.00, 0.00, 1.00}};
+
+    // output matrix
+    C = {{1.00, 0.00, 0.00, 0.00, 0.00, 0.00},
+         {0.00, 0.00, 1.00, 0.00, 0.00, 0.00},
+         {0.00, 0.00, 0.00, 0.00, 1.00, 0.00}};
+
+    // initial state -- positions at (100.00, 100.00, 100.00) millimeters
+    x[0UL] = x[2UL] = x[4UL] = 100.00;
+    // initial velocities at (0.00, 0.00, 0.00) so as to not to bias the filter -- in case the actual velocities are different in absolute value (direction) from the initial filter velocities
+    x[1UL] = x[3UL] = x[5UL] = 0.00;
+
+    // initial corariance
+    Pxx = A * x * blaze::trans(x) * blaze::trans(A) + Q;
 }
 
 // copy constructor
-KalmanFilter::KalmanFilter(const KalmanFilter &rhs) : dt(rhs.dt), A(rhs.A), C(rhs.C), X_ep(rhs.X_ep), X(rhs.X), Pxx_ep(rhs.Pxx_ep), K(rhs.K), Q(rhs.Q), R(rhs.R){};
+KalmanFilter::KalmanFilter(const KalmanFilter &rhs) : dt(rhs.dt), A(rhs.A), C(rhs.C), x(rhs.x), y(rhs.y), y_hat(rhs.y_hat), Pxx(rhs.Pxx), I(rhs.I), W(rhs.W), S_inv(rhs.S_inv), Q(rhs.Q), R(rhs.R){};
 
 // move constructor
 KalmanFilter::KalmanFilter(KalmanFilter &&rhs) noexcept
@@ -60,10 +40,13 @@ KalmanFilter::KalmanFilter(KalmanFilter &&rhs) noexcept
         this->dt = rhs.dt;
         this->A = std::move(rhs.A);
         this->C = std::move(rhs.C);
-        this->X_ep = std::move(rhs.X_ep);
-        this->X = std::move(rhs.X);
-        this->Pxx_ep = std::move(rhs.Pxx_ep);
-        this->K = std::move(rhs.K);
+        this->x = std::move(rhs.x);
+        this->y = std::move(rhs.y);
+        this->y_hat = std::move(rhs.y_hat);
+        this->Pxx = std::move(rhs.Pxx);
+        this->I = std::move(rhs.I);
+        this->W = std::move(rhs.W);
+        this->S_inv = std::move(rhs.S_inv);
         this->Q = std::move(rhs.Q);
         this->R = std::move(rhs.R);
     }
@@ -78,10 +61,13 @@ KalmanFilter &KalmanFilter::operator=(const KalmanFilter &rhs)
         this->dt = rhs.dt;
         this->A = rhs.A;
         this->C = rhs.C;
-        this->X_ep = rhs.X_ep;
-        this->X = rhs.X;
-        this->Pxx_ep = rhs.Pxx_ep;
-        this->K = rhs.K;
+        this->x = rhs.x;
+        this->y = rhs.y;
+        this->y_hat = rhs.y_hat;
+        this->Pxx = rhs.Pxx;
+        this->I = rhs.I;
+        this->W = rhs.W;
+        this->S_inv = rhs.S_inv;
         this->Q = rhs.Q;
         this->R = rhs.R;
     }
@@ -98,10 +84,13 @@ KalmanFilter &KalmanFilter::operator=(KalmanFilter &&rhs) noexcept
         this->dt = rhs.dt;
         this->A = std::move(rhs.A);
         this->C = std::move(rhs.C);
-        this->X_ep = std::move(rhs.X_ep);
-        this->X = std::move(rhs.X);
-        this->Pxx_ep = std::move(rhs.Pxx_ep);
-        this->K = std::move(rhs.K);
+        this->x = std::move(rhs.x);
+        this->y = std::move(rhs.y);
+        this->y_hat = std::move(rhs.y_hat);
+        this->Pxx = std::move(rhs.Pxx);
+        this->I = std::move(rhs.I);
+        this->W = std::move(rhs.W);
+        this->S_inv = std::move(rhs.S_inv);
         this->Q = std::move(rhs.Q);
         this->R = std::move(rhs.R);
     }
@@ -110,17 +99,36 @@ KalmanFilter &KalmanFilter::operator=(KalmanFilter &&rhs) noexcept
 }
 
 // update core of the Kalman filter
-void KalmanFilter::Loop(std::vector<double> &measurement, std::vector<double> *estimate)
+void KalmanFilter::Loop(std::vector<double> &measurement, std::vector<double> &estimate)
 {
-    blaze::StaticVector<double, 3UL> Z = {measurement[0UL], measurement[1UL], measurement[2UL]};
-    X = A * X_ep;
-    Pxx = A * Pxx_ep * blaze::trans(A) + Q;
+    // predicted measurement y[k+1|k]
+    y_hat = C * x;
 
-    blaze::StaticMatrix<double, 3UL, 3UL> Aux = blaze::inv(C * Pxx * blaze::trans(C) + R);
-    K = Pxx * blaze::trans(C) * Aux;
-    X_ep = X + K * (Z - C * X);
+    // measurement covariance
+    S_inv = blaze::inv(C * Pxx * blaze::trans(C) + R);
 
-    Pxx_ep = Pxx - K * C * Pxx;
-    blaze::StaticVector<double, 3UL> y_h = C * X_ep;
-    *estimate = {y_h[0UL], y_h[1UL], y_h[2UL]};
+    // Kalman Gain
+    W = Pxx * blaze::trans(C) * S_inv;
+
+    // acquiring the measurements
+    y[0UL] = measurement[0UL];
+    y[1UL] = measurement[1UL];
+    y[2UL] = measurement[2UL];
+
+    // updating the state estimates ==> filtered state through innovation process
+    x = x + W * (y - y_hat);
+
+    // returning the current filtered state
+    estimate[0UL] = x[0UL]; // position in the x direction
+    estimate[1UL] = x[2UL]; // position in the y direction
+    estimate[2UL] = x[4UL]; // position in the z direction
+
+    // updating the state estimate covariance Pxx[k|k]
+    Pxx = (I - W * C) * Pxx;
+
+    // next state prediction x[k+1|x]
+    x = A * x;
+
+    // predicted state covariance Pxx[k+1|k]
+    Pxx = A * Pxx * blaze::trans(A) + Q;
 }

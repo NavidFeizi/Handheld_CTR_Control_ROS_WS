@@ -156,7 +156,7 @@ blaze::StaticVector<double, 5UL> CTR::ODESolver(const blaze::StaticVector<double
 	// ##################################################### NUMERICAL METHODS FOR ODE INTEGRATION #####################################################
 
 	// ********************************  8-th ORDER ADAPTIVE ADAMS-BASHFORTH-MOULTON STEPPER ********************************
-	boost::numeric::odeint::adaptive_adams_bashforth_moulton<8UL, state_type, double, state_type, double,
+	boost::numeric::odeint::adaptive_adams_bashforth_moulton<4UL, state_type, double, state_type, double,
 															 boost::numeric::odeint::vector_space_algebra, boost::numeric::odeint::default_operations, boost::numeric::odeint::initially_resizer>
 		abm8_stepper;
 
@@ -1092,7 +1092,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 		{
 			initGuess = initGuessMin;
 			status = this->actuate_CTR(initGuess, q_min);
-			std::cout << "Exited out of position control loop due small incremental threshold!" << std::endl;
+			// std::cout << "Exited out of position control loop due small incremental threshold!" << std::endl;
 			return status;
 		}
 	}

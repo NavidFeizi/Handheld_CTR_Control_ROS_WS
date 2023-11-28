@@ -113,8 +113,20 @@ EMTracker::EMTracker()
   std::cout << "EM Tracker initialized" << std::endl;
 
   // Parameters for Kalman Filterring
-  this->KLF_tip = std::make_shared<KalmanFilter>(1.00, 1.00);
-  this->KLF_probe = std::make_shared<KalmanFilter>(1.00, 1.00);
+  double dt = 0.025;
+  // process variance
+  blaze::StaticMatrix<double, 6UL, 6UL> Q_tip;
+  blaze::StaticMatrix<double, 6UL, 6UL> Q_reference;
+  // measurement variance
+  blaze::StaticMatrix<double, 3UL, 3UL> R_tip;
+  blaze::StaticMatrix<double, 3UL, 3UL> R_reference;
+
+  blaze::diagonal(Q_tip) = 15.00;
+  blaze::diagonal(Q_reference) = 1.00E-4;
+  R_tip = {{318.737, 90.12, -25.1622}, {90.12, 110.502, 5.67257}, {90.12, 110.502, 5.67257}};
+  R_reference = {{ 7.47430646e-03, -2.22400850e-03, -7.33961383e-05}, {-2.22400850e-03, 8.55379852e-04, -1.30639186e-04}, {-7.33961383e-05, -1.30639186e-04, 2.53474590e-03}};
+  this->KLF_tip = std::make_shared<KalmanFilter>(dt, Q_tip, R_tip);
+  this->KLF_reference = std::make_shared<KalmanFilter>(dt, Q_reference, R_reference);
 }
 
 /* Destructor */
@@ -405,11 +417,13 @@ void EMTracker::Read_Loop()
   std::vector<ToolData> sensors_data;
   // initialize transformation structs
   // 0->EM frame, 1->Reference EM frame, 2-> CTR frame, 3->Probe or CTR tip
-  quatTransformation tran_01; // transformation from EM frame to Refernece EM frame
-  quatTransformation tran_03; // transformation from EM frame to Probe or CTR tip
-  quatTransformation tran_13; // transformation from Reference EM frame to Probe or CTR tip
-  quatTransformation tran_12; // transformation from Reference EM frame to CTR frame
-  quatTransformation tran_23; // transformation from CTR frame to ctr tip or probe
+  quatTransformation tran_01;    // transformation from EM frame to Refernece EM frame
+  quatTransformation tran_01_KF; // transformation from EM frame to Refernece EM frame after Kalman filter
+  quatTransformation tran_03;    // transformation from EM frame to Probe or CTR tip
+  quatTransformation tran_03_KF; // transformation from EM frame to Probe or CTR tip  after Kalman filter
+  quatTransformation tran_13;    // transformation from Reference EM frame to Probe or CTR tip
+  quatTransformation tran_12;    // transformation from Reference EM frame to CTR frame
+  quatTransformation tran_23;    // transformation from CTR frame to ctr tip or probe
   quatTransformation tran_01_inv;
   quatTransformation tran_12_inv;
   quatTransformation tran_0probe; // transformation from EM frame to Probe
@@ -436,11 +450,25 @@ void EMTracker::Read_Loop()
     EMTracker::ToolData2QuatTransform(sensors_data[sensorConfigMap["reference"].probleHandle_num], &tran_01);
     EMTracker::ToolData2QuatTransform(sensors_data[sensorConfigMap["tip"].probleHandle_num], &tran_03);
 
+    // filter translation of the referece sensor 
+    std::vector<double> tran_01_tran = qvmVec2StdVec(tran_01.translation);
+    std::vector<double> tran_01_tran_KF(3, 0.0);
+    this->KLF_reference->Loop(tran_01_tran, tran_01_tran_KF);
+    tran_01_KF.rotation = tran_01.rotation;
+    tran_01_KF.translation = boost::qvm::vec<double, 3>({tran_01_tran_KF[0], tran_01_tran_KF[1], tran_01_tran_KF[2]});
+
+    // filter translation of the tip sensor 
+    std::vector<double> tran_03_tran = qvmVec2StdVec(tran_03.translation);
+    std::vector<double> tran_03_tran_KF(3, 0.0);
+    this->KLF_tip->Loop(tran_03_tran, tran_03_tran_KF);
+    tran_03_KF.rotation = tran_03.rotation;
+    tran_03_KF.translation = boost::qvm::vec<double, 3>({tran_03_tran_KF[0], tran_03_tran_KF[1], tran_03_tran_KF[2]});
+
     // EMTracker::ToolData2QuatTransform(sensors_data[0], &tran_01);
     // EMTracker::ToolData2QuatTransform(sensors_data[1], &tran_03);
 
-    Inverse_Quat_Transformation(tran_01, &tran_01_inv);
-    Combine_Quat_Transformation(tran_01_inv, tran_03, &tran_13);
+    Inverse_Quat_Transformation(tran_01_KF, &tran_01_inv);
+    Combine_Quat_Transformation(tran_01_inv, tran_03_KF, &tran_13);
 
     if ((sensorConfigMap["probe"].active))
     {
@@ -448,15 +476,15 @@ void EMTracker::Read_Loop()
       Combine_Quat_Transformation(tran_01_inv, tran_0probe, &tran_1probe);
       vec_probe = qvmVec2StdVec(tran_1probe.translation);
 
-      this->KLF_tip->Loop(vec_probe, &vec_probe_flt);
+      // this->KLF_tip->Loop(vec_probe, vec_probe_flt);
 
       this->Tran_Probe[0] = vec_probe[0];
       this->Tran_Probe[1] = vec_probe[1];
       this->Tran_Probe[2] = vec_probe[2];
 
-      this->Tran_Probe_flt[0] = vec_probe_flt[0];
-      this->Tran_Probe_flt[1] = vec_probe_flt[1];
-      this->Tran_Probe_flt[2] = vec_probe_flt[2];
+      this->Tran_Probe_flt[0] = vec_probe[0];
+      this->Tran_Probe_flt[1] = vec_probe[1];
+      this->Tran_Probe_flt[2] = vec_probe[2];
     }
 
     // If an SROM for the transformation from the reference sensor to the CTR frame is loaded,
@@ -482,12 +510,12 @@ void EMTracker::Read_Loop()
     this->Tran_Tip_Rel[4] = elevation;
     this->Tran_Tip_Rel[5] = roll;
 
-    std::vector<double> vec_ftl(3, 0.0);
-    this->KLF_tip->Loop(vec, &vec_ftl);
+    // std::vector<double> vec_ftl(3, 0.0);
+    // this->KLF_tip->Loop(vec, vec_ftl);
 
-    this->Tran_Tip_Rel_flt[0] = vec_ftl[0];
-    this->Tran_Tip_Rel_flt[1] = vec_ftl[1];
-    this->Tran_Tip_Rel_flt[2] = vec_ftl[2];
+    this->Tran_Tip_Rel_flt[0] = vec[0];
+    this->Tran_Tip_Rel_flt[1] = vec[1];
+    this->Tran_Tip_Rel_flt[2] = vec[2];
 
     // // update the calculated transformation values
     // QuaternionToEuler(tran_03.rotation, &azimuth, &elevation, &roll);
@@ -898,9 +926,5 @@ int Read_SensorConfig_from_YAML(const std::string &yamlFilePath, std::map<std::s
 /* Sleep! */
 void SleepSeconds(unsigned numSeconds)
 {
-#ifdef _WIN32
-  Sleep((DWORD)1000 * numSeconds); // Sleep(ms)
-#else
   sleep(numSeconds); // sleep(sec)
-#endif
 }

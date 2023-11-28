@@ -18,7 +18,6 @@
 #include "ToolData.h"
 #include "RigidTransformation.hpp"
 #include "KalmanFilter.hpp"
-// #include "KalmanFilter.h"
 #include <thread>
 #include <filesystem>
 #include <chrono>
@@ -113,7 +112,7 @@ public:
 private:
   std::shared_ptr<Recorder> recorder;
   std::shared_ptr<KalmanFilter> KLF_tip;
-  std::shared_ptr<KalmanFilter> KLF_probe;
+  std::shared_ptr<KalmanFilter> KLF_reference;
   std::shared_ptr<CombinedApi> combinedAPI;
   std::vector<ToolData> enabledTools;
   std::map<std::string, SensorConfig> sensorConfigMap;
