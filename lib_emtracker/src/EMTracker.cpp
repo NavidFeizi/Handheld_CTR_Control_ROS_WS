@@ -124,7 +124,7 @@ EMTracker::EMTracker()
   blaze::diagonal(Q_tip) = 15.00;
   blaze::diagonal(Q_reference) = 1.00E-4;
   R_tip = {{318.737, 90.12, -25.1622}, {90.12, 110.502, 5.67257}, {90.12, 110.502, 5.67257}};
-  R_reference = {{ 7.47430646e-03, -2.22400850e-03, -7.33961383e-05}, {-2.22400850e-03, 8.55379852e-04, -1.30639186e-04}, {-7.33961383e-05, -1.30639186e-04, 2.53474590e-03}};
+  R_reference = {{7.47430646e-03, -2.22400850e-03, -7.33961383e-05}, {-2.22400850e-03, 8.55379852e-04, -1.30639186e-04}, {-7.33961383e-05, -1.30639186e-04, 2.53474590e-03}};
   this->KLF_tip = std::make_shared<KalmanFilter>(dt, Q_tip, R_tip);
   this->KLF_reference = std::make_shared<KalmanFilter>(dt, Q_reference, R_reference);
 }
@@ -419,12 +419,14 @@ void EMTracker::Read_Loop()
   // 0->EM frame, 1->Reference EM frame, 2-> CTR frame, 3->Probe or CTR tip
   quatTransformation tran_01;    // transformation from EM frame to Refernece EM frame
   quatTransformation tran_01_KF; // transformation from EM frame to Refernece EM frame after Kalman filter
+  quatTransformation tran_02;    // transformation from EM frame to CTR frame
   quatTransformation tran_03;    // transformation from EM frame to Probe or CTR tip
   quatTransformation tran_03_KF; // transformation from EM frame to Probe or CTR tip  after Kalman filter
   quatTransformation tran_13;    // transformation from Reference EM frame to Probe or CTR tip
   quatTransformation tran_12;    // transformation from Reference EM frame to CTR frame
   quatTransformation tran_23;    // transformation from CTR frame to ctr tip or probe
   quatTransformation tran_01_inv;
+  quatTransformation tran_02_inv;
   quatTransformation tran_12_inv;
   quatTransformation tran_0probe; // transformation from EM frame to Probe
   quatTransformation tran_1probe; // transformation from Reference EM frame to Probe
@@ -450,25 +452,31 @@ void EMTracker::Read_Loop()
     EMTracker::ToolData2QuatTransform(sensors_data[sensorConfigMap["reference"].probleHandle_num], &tran_01);
     EMTracker::ToolData2QuatTransform(sensors_data[sensorConfigMap["tip"].probleHandle_num], &tran_03);
 
-    // filter translation of the referece sensor 
+    // filter translation of the referece sensor
     std::vector<double> tran_01_tran = qvmVec2StdVec(tran_01.translation);
     std::vector<double> tran_01_tran_KF(3, 0.0);
     this->KLF_reference->Loop(tran_01_tran, tran_01_tran_KF);
     tran_01_KF.rotation = tran_01.rotation;
     tran_01_KF.translation = boost::qvm::vec<double, 3>({tran_01_tran_KF[0], tran_01_tran_KF[1], tran_01_tran_KF[2]});
 
-    // filter translation of the tip sensor 
+    // filter translation of the tip sensor
     std::vector<double> tran_03_tran = qvmVec2StdVec(tran_03.translation);
     std::vector<double> tran_03_tran_KF(3, 0.0);
     this->KLF_tip->Loop(tran_03_tran, tran_03_tran_KF);
     tran_03_KF.rotation = tran_03.rotation;
     tran_03_KF.translation = boost::qvm::vec<double, 3>({tran_03_tran_KF[0], tran_03_tran_KF[1], tran_03_tran_KF[2]});
 
+    this->m_tran_03 = tran_03;
+    this->m_tran_03_KF = tran_03_KF;
+
     // EMTracker::ToolData2QuatTransform(sensors_data[0], &tran_01);
     // EMTracker::ToolData2QuatTransform(sensors_data[1], &tran_03);
 
     Inverse_Quat_Transformation(tran_01_KF, &tran_01_inv);
     Combine_Quat_Transformation(tran_01_inv, tran_03_KF, &tran_13);
+
+    // Combine_Quat_Transformation(tran_01_KF, tran_12, &tran_02);
+    this->m_tran_02 = tran_01_KF;
 
     if ((sensorConfigMap["probe"].active))
     {
@@ -553,6 +561,35 @@ void EMTracker::Get_TipPosition(blaze::StaticVector<double, 3UL> *Translation, b
   (*Translation_flt)[0] = this->Tran_Tip_Rel_flt[0];
   (*Translation_flt)[1] = this->Tran_Tip_Rel_flt[1];
   (*Translation_flt)[2] = this->Tran_Tip_Rel_flt[2];
+}
+
+/** @brief reg tip positon in the CTR frame*/
+void EMTracker::Get_TipPositionInEM(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 3UL> *Translation_flt)
+{
+  (*Translation)[0] = boost::qvm::X(this->m_tran_03.translation)*1.00E-3;
+  (*Translation)[1] = boost::qvm::Y(this->m_tran_03.translation)*1.00E-3;
+  (*Translation)[2] = boost::qvm::Z(this->m_tran_03.translation)*1.00E-3;
+
+  (*Translation_flt)[0] = boost::qvm::X(this->m_tran_03_KF.translation)*1.00E-3;
+  (*Translation_flt)[1] = boost::qvm::Y(this->m_tran_03_KF.translation)*1.00E-3;
+  (*Translation_flt)[2] = boost::qvm::Z(this->m_tran_03_KF.translation)*1.00E-3;
+}
+
+/** @brief gives translation and rotation (in quaternion) for CTR frame to EM frame transformation*/
+void EMTracker::Get_EM2CTR_Transformation(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 4UL> *Rotation)
+{
+  (*Translation)[0] = boost::qvm::X(this->m_tran_02.translation)*1.00E-3;
+  (*Translation)[1] = boost::qvm::Y(this->m_tran_02.translation)*1.00E-3;
+  (*Translation)[2] = boost::qvm::Z(this->m_tran_02.translation)*1.00E-3;
+
+  (*Rotation)[0] = boost::qvm::S(this->m_tran_02.rotation);
+  (*Rotation)[1] = boost::qvm::X(this->m_tran_02.rotation);
+  (*Rotation)[2] = boost::qvm::Y(this->m_tran_02.rotation);
+  (*Rotation)[3] = boost::qvm::Z(this->m_tran_02.rotation);
+
+  // std::cout << "X: " << boost::qvm::X(m_tran_02.rotation) << " "
+  //           << "Y: " << boost::qvm::Y(m_tran_02.rotation) << " "
+  //           << "Z: " << boost::qvm::Z(m_tran_02.rotation) << std::endl;
 }
 
 /** @brief probe positon in the CTR frame*/

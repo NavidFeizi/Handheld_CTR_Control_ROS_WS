@@ -826,9 +826,6 @@ bool CTR::Modified_Newton_Raphson(blaze::StaticVector<double, 5UL> &initGuess)
 		// resets the exponent variable j
 		j = 0UL;
 
-		// compute the residue associated to the newly refined initGuess
-		f = this->ODESolver(initGuess);
-
 		// checking the terminating condition
 		if (blaze::linfNorm(f) <= this->m_accuracy)
 		{
@@ -900,6 +897,40 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	blaze::StaticMatrix<double, 6UL, 3UL, blaze::columnMajor> J_inv; // Jacobian pseudoinverse
 	blaze::IdentityMatrix<double, blaze::rowMajor> I(6UL);			 // 6 x 6 Identity matrix
 
+	blaze::StaticVector<double, 3UL> tgt;
+
+	/*
+        LAMBDA FUNCTION THAT CONVERTS A TARGET IN THE EM-COORD FRAME TO CTR-COORD FRAME
+    */
+    auto EM2CTR_Conversion = [&](const blaze::StaticVector<double, 3UL>& vec) -> blaze::StaticVector<double, 3UL>
+    {
+        blaze::StaticVector<double, 3UL> origin;
+        blaze::StaticVector<double, 4UL> orientation;
+
+        this->m_EMTrack->Get_EM2CTR_Transformation(&origin, &orientation);
+                
+        // auxiliar vector to perform the conversion between coordinate frames 
+        blaze::StaticVector<double, 4UL> aux = {0.00, 0.00, 0.00, 1.00}, v;
+        // initial orientation of the CTR in SO(3)
+        blaze::StaticMatrix<double, 3UL, 3UL, blaze::columnMajor> R;
+        mathOp::getSO3(orientation, R);
+        // homogeneous transformation matrix
+        blaze::StaticMatrix<double, 4UL, 4UL> H;
+        // assigning the orientation
+        blaze::submatrix<0UL, 0UL, 3UL, 3UL>(H) = R;
+        // assigning the origin
+        blaze::column<3UL>(H) = { origin[0UL], origin[1UL], origin[2UL], 1.00 };
+
+        // performing the conversion
+        blaze::subvector<0UL, 3UL>(aux) = vec;
+        v = H * aux;
+
+        return blaze::subvector<0UL, 3UL>(v);
+    };
+
+	// convert target from EM coord frame to CTR coord frame
+	tgt = EM2CTR_Conversion(target);
+
 	// zeroes |mb_x(0)|, |mb_y(0)| and |u3_z(0)| and limits the values of |u1_z(0)| and |u2_z(0)| to avoid numerical instability and lack of convergence
 	auto readjustInitialGuesses = [](blaze::StaticVector<double, 5UL> &initial_guesses)
 	{
@@ -950,7 +981,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	// Current position error
 	// DC_error = 0.00;
 	// tipError = target - this->getTipPos();
-	tipError = target - position_CTR_KF;
+	tipError = tgt - position_CTR_KF;
 
 	// std::cout << "|DC_error| = " << blaze::norm(DC_error) << " make \t DC_error = " << blaze::trans(DC_error)
 	// 		  << "|tipError| = " << blaze::norm(tipError) << " make \t Current error = " << blaze::trans(tipError) << std::endl;
@@ -1069,8 +1100,11 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 		// tip position as predicted by the model
 		x_CTR = this->getTipPos();
 
+		// computing what the target is in the CTR coord frame
+		tgt = EM2CTR_Conversion(target);
+
 		// current position error
-		tipError = target - (x_CTR + DC_error);
+		tipError = tgt - (x_CTR + DC_error);
 		// integrating the position error
 		int_tipError += tipError;
 		// derivative of the positio

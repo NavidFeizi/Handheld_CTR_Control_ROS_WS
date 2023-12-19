@@ -19,6 +19,12 @@ std::vector<double> q2qRobot(const blaze::StaticVector<double, 6UL> &input);
 
 blaze::StaticVector<double, 6UL> qRobot2q(const std::vector<double> &input);
 
+// function that converts a task-space trajectory from CTR to EM coordinate frame
+void convertTrajectoryToEMFrame(const blaze::HybridMatrix<double, 1000UL, 4UL> &Traj_CTR,
+                                blaze::HybridMatrix<double, 1000UL, 4UL> &Traj_EM,
+                                const blaze::StaticVector<double, 3UL> &origin,
+                                const blaze::StaticVector<double, 4UL> &orientation); // h: quaternion describing EM ==> CTR coord frames
+
 int main()
 {
     // dump files for CTR calibration
@@ -37,9 +43,9 @@ int main()
     constexpr double inf = std::numeric_limits<double>::infinity();
 
     /** initialize the robot **/
-	std::vector<double> max_acc = {200.0 * M_PI / 180, 10.0 / 1000, 200.0 * M_PI / 180, 10.0 / 1000}; // [deg/s^2] and [mm/s^2]
-	std::vector<double> max_vel = {200.0 * M_PI / 180, 10.0 / 1000, 200.0 * M_PI / 180, 10.0 / 1000}; // [deg/s] and [mm/s]
-    int sample_time = 50;                                                                         //[ms]
+    std::vector<double> max_acc = {200.0 * M_PI / 180, 10.0 / 1000, 200.0 * M_PI / 180, 10.0 / 1000}; // [deg/s^2] and [mm/s^2]
+    std::vector<double> max_vel = {200.0 * M_PI / 180, 10.0 / 1000, 200.0 * M_PI / 180, 10.0 / 1000}; // [deg/s] and [mm/s]
+    int sample_time = 50;                                                                             //[ms]
     int operation_mode = 1;
     bool position_limit = true;
     std::unique_ptr<CTRobot> rbt;
@@ -56,12 +62,12 @@ int main()
     std::cout << "Homed!" << std::endl;
 
     //  # # # # # # # # ---- Properties of Nitinol Tubes ---- # # # # # # # #
-    double E1 = 50.000E9; // Young's modulus GPa - Tube 1
-	double E2 = 179.808E9; // Young's modulus GPa - Tube 2
-	double E3 = 289.295E9; // Young's modulus GPa - Tube 3
-	double G1 = 58.9514E9;   // Shear modulus GPa - Tube 1
-	double G2 = 399.993E9;   // Shear modulus GPa - Tube 2
-	double G3 = 400.000E9;   // Shear modulus GPa - Tube 3
+    double E1 = 50.000E9;  // Young's modulus GPa - Tube 1
+    double E2 = 179.808E9; // Young's modulus GPa - Tube 2
+    double E3 = 289.295E9; // Young's modulus GPa - Tube 3
+    double G1 = 58.9514E9; // Shear modulus GPa - Tube 1
+    double G2 = 399.993E9; // Shear modulus GPa - Tube 2
+    double G3 = 400.000E9; // Shear modulus GPa - Tube 3
 
     // Precurvature radii for the tubes
     double R1 = 41.00E-3; // (4.1cm curvature radius)
@@ -113,6 +119,8 @@ int main()
     // # # # # # ---- Instantiating the CTR object ---- # # # # #
     CTR CTR_robot(Tb, q_0, Tol, mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON);
 
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+
     // initial guess for the BVP
     blaze::StaticVector<double, 5UL> initGuess;
 
@@ -120,14 +128,28 @@ int main()
     CTR_robot.actuate_CTR(initGuess, q_0);
 
     // Trajectory to be tracked by the control loop ==> Either a Helix or a Hypocycloid
-    blaze::HybridMatrix<double, 1000UL, 4UL> Trajectory;
+    blaze::HybridMatrix<double, 1000UL, 4UL> Trajectory, Trajectory_EM;
 
     // speficy which trajectory to consider
-    std::string trajectory("Square");
+    std::string trajectory("Helix");
     readFromCSV(Trajectory, trajectory);
+
+    // resizing the Trajectory_EM to have the same size as Trajectory
+    Trajectory_EM.resize(Trajectory.rows(), Trajectory.columns(), false);
 
     // position target for the CTR
     blaze::StaticVector<double, 3UL> target, position_CTR, position_CTR_KF, tipPos;
+
+    blaze::StaticVector<double, 3UL> trans;
+    blaze::StaticVector<double, 4UL> quat;
+    // getting the quaternion describing the transformation: EM ==> CTR coord frames
+    CTR_robot.m_EMTrack->Get_EM2CTR_Transformation(&trans, &quat);
+
+    std::cout << "Get_EM2CTR_Transformation() trans: " << blaze::trans(trans)
+              << "Get_EM2CTR_Transformation() quat: " << blaze::trans(quat) << std::endl;
+
+    // converting the task-space trajectory to EM-coordinate frame
+    convertTrajectoryToEMFrame(Trajectory, Trajectory_EM, trans, quat);
 
     const size_t numRows = Trajectory.rows();
     blaze::StaticVector<double, 6UL> q;
@@ -170,7 +192,36 @@ int main()
     };
 
     // actuates the robot to the first target in the trajectpry
-    target = blaze::subvector<1UL, 3UL>(blaze::trans(blaze::row<0UL>(Trajectory)));
+    target = blaze::subvector<1UL, 3UL>(blaze::trans(blaze::row<0UL>(Trajectory_EM)));
+
+    /*
+        LAMBDA FUNCTION THAT CONVERTS A TARGET IN THE EM-COORD FRAME TO CTR-COORD FRAME
+    */
+    auto EM2CTR_Conversion = [&](const blaze::StaticVector<double, 3UL> &vec) -> blaze::StaticVector<double, 3UL>
+    {
+        blaze::StaticVector<double, 3UL> origin;
+        blaze::StaticVector<double, 4UL> orientation;
+
+        CTR_robot.m_EMTrack->Get_EM2CTR_Transformation(&origin, &orientation);
+
+        // auxiliar vector to perform the conversion between coordinate frames
+        blaze::StaticVector<double, 4UL> aux = {0.00, 0.00, 0.00, 1.00}, v;
+        // initial orientation of the CTR in SO(3)
+        blaze::StaticMatrix<double, 3UL, 3UL, blaze::columnMajor> R;
+        mathOp::getSO3(orientation, R);
+        // homogeneous transformation matrix
+        blaze::StaticMatrix<double, 4UL, 4UL> H;
+        // assigning the orientation
+        blaze::submatrix<0UL, 0UL, 3UL, 3UL>(H) = R;
+        // assigning the origin
+        blaze::column<3UL>(H) = {origin[0UL], origin[1UL], origin[2UL], 1.00};
+
+        // performing the conversion
+        blaze::subvector<0UL, 3UL>(aux) = vec;
+        v = H * aux;
+
+        return blaze::subvector<0UL, 3UL>(v);
+    };
 
     for (size_t iter = 0UL; iter < 25UL; ++iter)
     {
@@ -189,7 +240,7 @@ int main()
         CTR_robot.setConfiguration(q);
     }
 
-    std::chrono::milliseconds minimumSampleTime(50);
+    std::chrono::milliseconds minimumSampleTime(20);
 
     double error = 100.00;
 
@@ -201,8 +252,6 @@ int main()
 
     std::tie(position_CTR, position_CTR_KF) = CTR_robot.acquireEMData();
 
-    std::cout << "position_CTR_KF = " << blaze::trans(position_CTR_KF) << std::endl;
-
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
     loop_time = 0.00;
@@ -210,15 +259,18 @@ int main()
     end_time = Trajectory(numRows - 1UL, 0UL);
     start_time = std::chrono::high_resolution_clock::now();
 
+    blaze::StaticVector<double, 3UL> p_hand, target_CTR;
+    blaze::StaticVector<double, 4UL> quat_hand;
+
     while ((elapsed_time < end_time) && (row < numRows))
     {
         // updates the target based on trajectory time stamp
         loop_start_time = std::chrono::high_resolution_clock::now();
         if (elapsed_time >= Trajectory(row, 0UL))
         {
-            target[0UL] = Trajectory(row, 1UL);
-            target[1UL] = Trajectory(row, 2UL);
-            target[2UL] = Trajectory(row, 3UL);
+            target[0UL] = Trajectory_EM(row, 1UL);
+            target[1UL] = Trajectory_EM(row, 2UL);
+            target[2UL] = Trajectory_EM(row, 3UL);
             row++;
         }
 
@@ -231,6 +283,29 @@ int main()
         // actuates the motors
         actuateMaxonMotors(q, q_0, rbt);
 
+        // reading EM tip position -- after motor actuation
+        std::tie(position_CTR, position_CTR_KF) = CTR_robot.acquireEMData();
+
+        CTR_robot.m_EMTrack->Get_EM2CTR_Transformation(&p_hand, &quat_hand);
+
+        target_CTR = EM2CTR_Conversion(target);
+
+        // writes (EM) tip position data to dump file
+        EM_Trajectory << position_CTR_KF[0UL] << ","
+                      << position_CTR_KF[1UL] << ","
+                      << position_CTR_KF[2UL] << ","
+                      << target_CTR[0UL] << ","
+                      << target_CTR[1UL] << ","
+                      << target_CTR[2UL] << ","
+                      << p_hand[0UL] << ","
+                      << p_hand[1UL] << ","
+                      << p_hand[2UL] << ","
+                      << quat_hand[0UL] << ","
+                      << quat_hand[1UL] << ","
+                      << quat_hand[2UL] << ","
+                      << quat_hand[3UL] << ","
+                      << std::endl;
+
         // Saving commanded joint values to file
         Joint_Positions << q[0UL] << ","
                         << q[1UL] << ","
@@ -239,6 +314,10 @@ int main()
                         << q[4UL] << ","
                         << q[5UL] << std::endl;
 
+        error = blaze::norm(position_CTR_KF - target_CTR) * 1.00E3;
+
+        std::cout << "Row: " << row << " of " << numRows << "\t|\t error: " << std::setprecision(4) << error << " [mm]" << std::endl;
+
         // actuates the CTR object to the same configuration as read from the Faulhaber motor controllers
         q[3UL] = mathOp::congruentAngle(q[3UL]);
         q[4UL] = mathOp::congruentAngle(q[4UL]);
@@ -246,29 +325,13 @@ int main()
 
         CTR_robot.setConfiguration(q);
 
-        // reading EM tip position -- after motor actuation
-        std::tie(position_CTR, position_CTR_KF) = CTR_robot.acquireEMData();
-
-        // writes (EM) tip position data to dump file
-        EM_Trajectory << position_CTR_KF[0UL] << ","
-                      << position_CTR_KF[1UL] << ","
-                      << position_CTR_KF[2UL] << ","
-                      << target[0UL] << ","
-                      << target[1UL] << ","
-                      << target[2UL]
-                      << std::endl;
-
-        error = blaze::norm(position_CTR_KF - target) * 1.00E3;
-
-        std::cout << "Row: " << row << " of " << numRows << "\t|\t error: " << std::setprecision(4) << error << " [mm]" << std::endl;
-
         Log << loop_time << std::endl;
 
         current_time = std::chrono::high_resolution_clock::now();
         loop_time = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - loop_start_time).count();
         elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time).count();
 
-        if (loop_time < 50.0)
+        if (loop_time < 20.00)
         {
             std::this_thread::sleep_for(minimumSampleTime - (current_time - loop_start_time));
         }
@@ -285,27 +348,27 @@ int main()
 
 std::vector<double> q2qRobot(const blaze::StaticVector<double, 6UL> &input)
 {
-	std::vector<double> offset = {147.00E-3, 77.00E-3, 0.00, 0.00, 0.00, 0.00}; // tran inner, tran middle, tran outer, rot inner, rot middle, rot outer
-	std::vector<double> out = {
-		input[3UL] + offset[3UL],
-		input[0UL] + offset[0UL],
-		input[4UL] + offset[4UL],
-		input[1UL] + offset[1UL]};
-	return out;
+    std::vector<double> offset = {147.00E-3, 77.00E-3, 0.00, 0.00, 0.00, 0.00}; // tran inner, tran middle, tran outer, rot inner, rot middle, rot outer
+    std::vector<double> out = {
+        input[3UL] + offset[3UL],
+        input[0UL] + offset[0UL],
+        input[4UL] + offset[4UL],
+        input[1UL] + offset[1UL]};
+    return out;
 }
 blaze::StaticVector<double, 6UL> qRobot2q(const std::vector<double> &input)
 {
-	std::vector<double> offset = {147.00E-3, 77.00E-3, 0.00, 0.00, 0.00, 0.00}; // tran inner, tran middle, tran outer, rot inner, rot middle, rot outer
+    std::vector<double> offset = {147.00E-3, 77.00E-3, 0.00, 0.00, 0.00, 0.00}; // tran inner, tran middle, tran outer, rot inner, rot middle, rot outer
 
-	const blaze::StaticVector<double, 6UL> out = {
-		(input[1] - offset[0]),
-		(input[3] - offset[1]),
-		0.00,
-		(input[0] - offset[3]),
-		(input[2] - offset[4]),
-		0.00};
+    const blaze::StaticVector<double, 6UL> out = {
+        (input[1] - offset[0]),
+        (input[3] - offset[1]),
+        0.00,
+        (input[0] - offset[3]),
+        (input[2] - offset[4]),
+        0.00};
 
-	return out;
+    return out;
 }
 
 // function that reads relevant clinical data from CSV files for each case
@@ -353,4 +416,38 @@ MatrixType readFromCSV(MatrixType &Mat, const std::string &trajectoryName)
     Mat.resize(row, col, true);
 
     return Mat;
+}
+
+// function that converts a task-space trajectory from CTR to EM coordinate frame
+void convertTrajectoryToEMFrame(const blaze::HybridMatrix<double, 1000UL, 4UL> &Traj_CTR,
+                                blaze::HybridMatrix<double, 1000UL, 4UL> &Traj_EM,
+                                const blaze::StaticVector<double, 3UL> &origin,
+                                const blaze::StaticVector<double, 4UL> &orientation) // h: quaternion describing EM ==> CTR coord frames
+{
+    // auxiliar vectory to perform the conversion between coordinate frames
+    blaze::StaticVector<double, 4UL> aux = {0.00, 0.00, 0.00, 1.00}, v;
+    // initial orientation of the CTR in SO(3)
+    blaze::StaticMatrix<double, 3UL, 3UL, blaze::columnMajor> R;
+    mathOp::getSO3(orientation, R);
+    // homogeneous transformation matrix
+    blaze::StaticMatrix<double, 4UL, 4UL> H;
+    // assigning the orientation
+    blaze::submatrix<0UL, 0UL, 3UL, 3UL>(H) = blaze::inv(R);
+    // assigning the origin
+    blaze::StaticVector<double, 3UL> res = -blaze::inv(R) * origin;
+    blaze::column<3UL>(H) = {res[0UL], res[1UL], res[2UL], 1.00};
+
+    // number of points in the trajectory
+    const size_t num_rows = Traj_CTR.rows();
+
+    for (size_t row = 0UL; row < num_rows; ++row)
+    {
+        // reading the i-th row of the trajectory in CTR coord frame
+        blaze::subvector<0UL, 3UL>(aux) = blaze::trans(blaze::subvector<1UL, 3UL>(blaze::row(Traj_CTR, row)));
+        // performing the transformation to EM coord frame
+        v = H * aux;
+
+        // storing the transformed coordinates in the matrix
+        blaze::row(Traj_EM, row) = {Traj_CTR(row, 0UL), v[0UL], v[1UL], v[2UL]};
+    }
 }

@@ -35,7 +35,7 @@ namespace mathOp
 	// Function that computes the congruent angle of theta in [0Pi, 6Pi]
 	inline double congruentAngle(double angle)
 	{
-		static constexpr double SIX_PI = 6.00 * M_PI;
+		static constexpr double SIX_PI = 2.00 * M_PI;
 
 		return (std::fabs(angle) <= SIX_PI) ? angle : std::remainder(angle, SIX_PI);
 	}

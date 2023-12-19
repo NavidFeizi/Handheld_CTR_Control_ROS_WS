@@ -55,16 +55,15 @@ public:
   Recorder(const std::string &filename);
 
   void Record(const quatTransformation &Reference,
-                      const quatTransformation &Tip);
+              const quatTransformation &Tip);
 
   void Close();
 
 private:
-    std::string filename_;
-    std::ofstream file;
-    std::chrono::high_resolution_clock::time_point start_time_;
+  std::string filename_;
+  std::ofstream file;
+  std::chrono::high_resolution_clock::time_point start_time_;
 };
-
 
 class EMTracker
 {
@@ -107,7 +106,11 @@ public:
   /**/
   void Get_TipPosition(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 3UL> *Translation_flt);
 
+  void Get_TipPositionInEM(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 3UL> *Translation_flt);
+
   void Get_Probe_Position(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 3UL> *Translation_flt);
+
+  void Get_EM2CTR_Transformation(blaze::StaticVector<double, 3UL> *Translation, blaze::StaticVector<double, 4UL> *Rotation);
 
 private:
   std::shared_ptr<Recorder> recorder;
@@ -120,6 +123,9 @@ private:
   bool flag_load_sroms;
   bool flag_print = false;
   std::thread emThread;
+  quatTransformation m_tran_02;
+  quatTransformation m_tran_03;    // transformation from EM frame to Probe or CTR tip
+  quatTransformation m_tran_03_KF; // transformation from EM frame to Probe or CTR tip  after Kalman filter
   std::vector<double> Tran_Tip_Rel;
   std::vector<double> Tran_Tip_Rel_flt;
   std::vector<double> Tran_Tip_Abs;
@@ -137,8 +143,6 @@ private:
   void ToolData2Vector(const ToolData &toolData, std::vector<double> *toolCoord);
   void ToolData2QuatTransform(const ToolData &input, quatTransformation *output);
 };
-
-
 
 /** @brief Checks if all distances are less than a threshold.
   The latest position is assumed to be the center of the sphere.
