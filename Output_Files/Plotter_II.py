@@ -45,7 +45,7 @@ def inverse_homogeneous_transform(H):
     return H_inv
 
 # Read data from the .dat file
-data = np.genfromtxt("Phantom/EM_Trajectory_square_2.dat", delimiter=",", dtype=float)
+data = np.genfromtxt("Phantom/EM_Trajectory_hypo_2.dat", delimiter=",", dtype=float)
 
 # Extract data columns
 x_tip, y_tip, z_tip = data[:, 0] * 1.00E3, data[:, 1] * 1.00E3, data[:, 2] * 1.00E3

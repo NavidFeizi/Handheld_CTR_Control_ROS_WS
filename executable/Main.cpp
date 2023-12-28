@@ -131,7 +131,7 @@ int main()
     blaze::HybridMatrix<double, 1000UL, 4UL> Trajectory, Trajectory_EM;
 
     // speficy which trajectory to consider
-    std::string trajectory("Helix");
+    std::string trajectory("PCNL");
     readFromCSV(Trajectory, trajectory);
 
     // resizing the Trajectory_EM to have the same size as Trajectory

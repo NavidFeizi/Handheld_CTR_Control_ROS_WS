@@ -35,7 +35,7 @@ def transform_vector(vector, translation, rotation):
 
 # try:
 # Read data from the .dat file
-data = np.genfromtxt("Output_Files/Phantom/EM_Trajectory_square_2.dat", delimiter=",", dtype=float)
+data = np.genfromtxt("Output_Files/EM_Trajectory_PCNL_4.dat", delimiter=",", dtype=float)
 
 # truth = np.genfromtxt("Output_Files/Joint_Values.dat", delimiter=",", dtype=float)
 
