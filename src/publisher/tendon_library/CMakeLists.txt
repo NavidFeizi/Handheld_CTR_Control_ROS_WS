@@ -1,0 +1,6 @@
+add_library(TENDONDRIVENlib INTERFACE)
+target_include_directories(TENDONDRIVENlib INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/>
+    $<INSTALL_INTERFACE:>)
+
+target_include_directories(TENDONDRIVENlib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)

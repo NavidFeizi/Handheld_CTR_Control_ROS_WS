@@ -1,0 +1,7 @@
+# Homing.srv
+string command
+float64[4] target [0.0, 0.0, 0.0, 0.0]
+---
+bool success
+string message
+float64[4] position [0.0, 0.0, 0.0, 0.0]

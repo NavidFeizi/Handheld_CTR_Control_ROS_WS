@@ -1,0 +1,51 @@
+# serial number of the sensors can be read from the terminal once the EM tracker is initialized
+sensor_config:
+  - sensor:
+      name: probe_1
+      serial_number: 39B33002       # CSTAR probe - yellow cable
+      srom_filename: None
+      load_srom: false
+      tran_filename: None
+      load_tran: false              # if false, identity tranformation is used
+
+  - sensor:
+      name: probe_2
+      serial_number: 39B33003       # SPL probe - black cable
+      srom_filename: None
+      load_srom: false
+      tran_filename: None
+      load_tran: false              # if false, identity tranformation is useds
+
+  - sensor:
+      name: probe_3
+      serial_number: 3E331C04       # CSTAR small probe - black body
+      srom_filename: None
+      load_srom: false
+      tran_filename: None
+      load_tran: false              # if false, identity tranformation is useds
+
+  - sensor:
+      name: tool
+      serial_number: 3CD50C00        # Handheld ctr tip sensor
+      srom_filename: 610158_ctrtip.rom
+      load_srom: true
+      tran_filename: None
+      load_tran: false              # if false, identity tranformation is used
+
+  - sensor:
+      name: robot
+      serial_number: 3B2A8800       # Handheld CTR robot reference
+      srom_filename: None
+      load_srom: false
+      tran_filename: 610094_robot2base.csv
+      load_tran: true              # if false, identity tranformation is used
+
+  - sensor:
+      name: phantom
+      serial_number: 3E331C00       # Abdominal phantom reference
+      srom_filename: None
+      load_srom: false
+      tran_filename: 610029_phantom2ct.csv
+      load_tran: true
+
+
