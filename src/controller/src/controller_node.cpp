@@ -10,7 +10,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/msg/jointspace.hpp"
-#include "interfaces/srv/target.hpp"
+// #include "interfaces/srv/target.hpp"
+#include "interfaces/action/target.hpp"
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
@@ -37,6 +38,21 @@ public:
   }
 
 private:
+  // Member variables
+  size_t count_;
+  double m_t_init = 0.0;
+  double m_control_sample_time;
+  bool m_flag_new_feedback = true;
+  std::chrono::time_point<std::chrono::high_resolution_clock> t0, t1;
+  blaze::StaticVector<double, 3UL> m_base_tool, m_phantom_tool, m_target_position = blaze::StaticVector<double, 3UL>(0.0);
+  rclcpp::CallbackGroup::SharedPtr m_callback_group_sub1;                                  // Callback group for running subscriber callback function on separate thread
+  rclcpp::CallbackGroup::SharedPtr m_callback_group_sub2;                                  // Callback group for running subscriber callback function on separate thread
+  rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_control;           // Publisher object
+  rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_base_tool;    // Subscriber object
+  rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_phantom_tool; // Subscriber object
+  rclcpp::Service<interfaces::srv::Target>::SharedPtr m_service_target;                    // Service object for setting target
+  rclcpp_action::Server<my_robot_interfaces::action::NavigateToTarget>::SharedPtr action_server_;
+
   // Function to declare and initialize parameters - parameters values should be set from the launch file
   void declare_parameters()
   {
@@ -80,9 +96,16 @@ private:
     m_subscription_phantom_tool = this->create_subscription<interfaces::msg::Taskspace>(
         "emt_phantom_tool", rclcpp::QoS(10), std::bind(&Controller::update_current_tip_in_phantom, this, _1), subs_options_2);
 
-    // Service to receive target
-    m_service_target = this->create_service<interfaces::srv::Target>(
-        "set_target", std::bind(&Controller::set_target_callback, this, _1, _2));
+    // // Service to receive target
+    // m_service_target = this->create_service<interfaces::srv::Target>(
+    //     "set_target", std::bind(&Controller::set_target_callback, this, _1, _2));
+
+    // Action Server Setup
+    m_action_server = rclcpp_action::create_server<interfaces::action::Target>(
+        this, "set_target",
+        std::bind(&Controller::handle_goal, this, _1, _2),
+        std::bind(&Controller::handle_cancel, this, _1),
+        std::bind(&Controller::handle_accepted, this, _1));
   }
 
   /**
@@ -109,20 +132,58 @@ private:
     m_flag_new_feedback = true;
   }
 
+  rclcpp_action::GoalResponse handle_goal(
+      const rclcpp_action::GoalUUID &uuid,
+      std::shared_ptr<const interfaces::action::Target::Goal> goal)
+  {
+    RCLCPP_INFO(this->get_logger(), "Received goal request");
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+  }
+
+  rclcpp_action::CancelResponse handle_cancel(
+      const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Target>> goal_handle)
+  {
+    RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
+    return rclcpp_action::CancelResponse::ACCEPT;
+  }
+
+  void handle_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Target>> goal_handle)
+  {
+    std::thread{std::bind(&Controller::execute, this, std::placeholders::_1), goal_handle}.detach();
+  }
+
   /**
    * @brief Service callback to set the target.
    */
-  void set_target_callback(const std::shared_ptr<interfaces::srv::Target::Request> request,
-                           std::shared_ptr<interfaces::srv::Target::Response> response)
+  void set_target_callback(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Target>> goal_handle)
   {
-    // Store the received target values
-    m_target_position = {request->target[0], request->target[1], request->target[2]};
+    const auto goal = goal_handle->get_goal();
+    m_target_position = blaze::StaticVector<double, 3UL>{goal->target.x, goal->target.y, goal->target.z};
+
+    auto result = std::make_shared<interfaces::action::Target::Result>();
 
     // Call the control loop
-    control_loop();
+    Controller::control_loop();
 
-    response->success = true;
+    result->success = true; // Indicate success in the result
+    goal_handle->succeed(result);
+    RCLCPP_INFO(this->get_logger(), "Goal processed successfully.");
   }
+
+  // /**
+  //  * @brief Service callback to set the target.
+  //  */
+  // void set_target_callback(const std::shared_ptr<interfaces::srv::Target::Request> request,
+  //                          std::shared_ptr<interfaces::srv::Target::Response> response)
+  // {
+  //   // Store the received target values
+  //   m_target_position = {request->target[0], request->target[1], request->target[2]};
+
+  //   // Call the control loop
+  //   control_loop();
+
+  //   response->success = true;
+  // }
 
   /**
    * @brief Main control loop to calculate the control and publish the joint space values.
@@ -151,23 +212,6 @@ private:
 
     return;
   }
-
-  // Member variables
-  size_t count_;
-  double m_t_init = 0.0;
-  double m_control_sample_time;
-  bool m_flag_new_feedback = true;
-
-  std::chrono::time_point<std::chrono::high_resolution_clock> t0, t1;
-
-  blaze::StaticVector<double, 3UL> m_base_tool, m_phantom_tool, m_target_position = blaze::StaticVector<double, 3UL>(0.0);
-
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_sub1;                                  // Callback group for running subscriber callback function on separate thread
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_sub2;                                  // Callback group for running subscriber callback function on separate thread
-  rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_control;           // Publisher object
-  rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_base_tool;    // Subscriber object
-  rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_phantom_tool; // Subscriber object
-  rclcpp::Service<interfaces::srv::Target>::SharedPtr m_service_target;                    // Service object for setting target
 };
 
 int main(int argc, char *argv[])

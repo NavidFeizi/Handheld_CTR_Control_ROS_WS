@@ -20,7 +20,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Tippos.msg"
   "srv/Startrecording.srv"
   "srv/Homing.srv"
-  "srv/Target.srv"
+  # "srv/Target.srv"
+  "action/Target.action"
 )
 
 if(BUILD_TESTING)

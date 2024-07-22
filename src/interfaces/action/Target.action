@@ -1,0 +1,15 @@
+# Target.action
+
+# Request
+# float64[4] target [0.0, 0.0, 0.0, 0.0]
+# Taskspace.msg
+
+interfaces/msg Taskspace
+---
+# Result definition
+bool success
+string message
+---
+# Feedback definition
+float32 distance_to_target
+string current_status
