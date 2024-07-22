@@ -109,9 +109,8 @@ private:
   void update_current_tip_in_phantom(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
     m_base_tool = {msg->p[0UL] * 1.00E3,
-                   msg->q[0UL] * 1.00E3,
-                   msg->p[2UL] * 1.00E3,
-                   msg->q[2UL] * 1.00E3};
+                   msg->p[1UL] * 1.00E3,
+                   msg->p[2UL] * 1.00E3};
     m_flag_new_feedback = true;
   }
 
@@ -121,9 +120,8 @@ private:
   void update_current_tip_in_base(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
     m_base_tool = {msg->p[0UL] * 1.00E3,
-                   msg->q[0UL] * 1.00E3,
-                   msg->p[2UL] * 1.00E3,
-                   msg->q[2UL] * 1.00E3};
+                   msg->p[1UL] * 1.00E3,
+                   msg->p[2UL] * 1.00E3};
     m_flag_new_feedback = true;
   }
 
