@@ -25,8 +25,8 @@ CTRobot::CTRobot(int sample_time,
   // motion controller factors. these are just a factor
   // to convert 0.01 mm to mm and 0.1 deg to deg
   this->gear_ratio = {1, 1, 1, 1}; // deg->rev or mm->rev
-  m_max_acc = max_acc;       // deg->rev or mm->rev
-  m_max_vel = max_vel;       // deg->rev or mm->rev
+  m_max_acc = max_acc;             // deg->rev or mm->rev
+  m_max_vel = max_vel;             // deg->rev or mm->rev
   this->sample_time = sample_time; // commandPeriod [ms], minimum
   this->operation_mode = operation_mode;
 
@@ -329,9 +329,9 @@ void CTRobot::set_target_position(blaze::StaticVector<double, 4> posTarget)
     }
   }
 
-  m_inner_rot->Set_target_pos(posTarget[0]);   // in [mm]
-  m_inner_tran->Set_target_pos(posTarget[1]);  // in [deg]
-  m_middle_rot->Set_target_pos(posTarget[2]);  // in [mm]
+  m_inner_rot->Set_target_pos(posTarget[0]);   // in [deg]
+  m_inner_tran->Set_target_pos(posTarget[1]);  // in [mm]
+  m_middle_rot->Set_target_pos(posTarget[2]);  // in [deg]
   m_middle_tran->Set_target_pos(posTarget[3]); // in [mm]
 }
 
@@ -339,9 +339,9 @@ void CTRobot::set_target_position(blaze::StaticVector<double, 4> posTarget)
         (with respect to zero position (distal limit) - positive value is towards proximal end)     */
 void CTRobot::Set_Target_Velocity(blaze::StaticVector<double, 4> velTarget)
 {
-  m_inner_rot->Set_target_vel(velTarget[0]);   // in [mm]
-  m_inner_tran->Set_target_vel(velTarget[1]);  // in [deg]
-  m_middle_rot->Set_target_vel(velTarget[2]);  // in [mm]
+  m_inner_rot->Set_target_vel(velTarget[0]);   // in [deg]
+  m_inner_tran->Set_target_vel(velTarget[1]);  // in [mm]
+  m_middle_rot->Set_target_vel(velTarget[2]);  // in [deg]
   m_middle_tran->Set_target_vel(velTarget[3]); // in [mm]
 }
 
