@@ -14,7 +14,10 @@
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
-void print_robot_status(double t, blaze::StaticVector<double, 6> position, blaze::StaticVector<double, 6> velocity, blaze::StaticVector<double, 6> current);
+void print_robot_status(double t,
+                        const blaze::StaticVector<double, 6UL> &position,
+                        const blaze::StaticVector<double, 6UL> &velocity,
+                        const blaze::StaticVector<double, 6UL> &current);
 
 class RobotNode : public rclcpp::Node
 {
@@ -31,8 +34,8 @@ private:
   // Declare ROS parameters
   void declare_parameters()
   {
-    declare_parameter<double>("Kp", 4.6);
-    declare_parameter<double>("Ki", 2.6);
+    declare_parameter<double>("Kp", 4.60);
+    declare_parameter<double>("Ki", 2.60);
     m_kp = get_parameter("Kp").as_double();
     m_ki = get_parameter("Ki").as_double();
   }
@@ -47,19 +50,17 @@ private:
     constexpr blaze::StaticVector<double, 4UL> max_vel = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
     int sample_time = 50;                                                                                                                    //[ms]
 
-    m_robot = std::make_unique<CTRobot>(
-        sample_time,
-        // static_cast<int>(m_control_sample_time * 1e6),
-        operation_mode,
-        max_acc, max_vel,
-        position_limit);
+    m_robot = std::make_unique<CTRobot>(sample_time, operation_mode, max_acc, max_vel, position_limit);
+
     m_robot->Start_Thread();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
     if (m_robot->Get_Controller_Switch_Status())
     {
       m_robot->Enable_Operation(true);
     }
+    
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     m_robot->set_target_position({0.0, 0.0, 0.0, 0.0});
     std::this_thread::sleep_for(std::chrono::milliseconds(500));

@@ -108,7 +108,7 @@ private:
   void send_target(const blaze::StaticVector<double, 4UL> targ)
   {
     auto request = std::make_shared<interfaces::srv::Homing::Request>();
-    request->command = "move";    // Set the desired duration
+    request->command = "move";        // Set the desired duration
     request->target[0UL] = targ[0UL]; // Set the desired duration
     request->target[1UL] = targ[1UL]; // Set the desired duration
     request->target[2UL] = targ[2UL]; // Set the desired duration
