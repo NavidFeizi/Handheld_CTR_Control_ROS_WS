@@ -55,6 +55,10 @@ To build the nodes, follow these instructions:
    ```bash
    ros2 param set emtracker_node cutoff_freq 1.0
    ```
+3. **freezing phantom:**
+   ros2 service call /freeze_phantom std_srvs/srv/SetBool "{data: true}"  
+   ros2 service call /freeze_phantom std_srvs/srv/SetBool "{data: false}" 
+   ```
 
 ## Landmark Registration Process
 

@@ -8,6 +8,7 @@
 #include <sstream>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_srvs/srv/set_bool.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "EMTracker.hpp"
 // #include "butterworth.hpp"
@@ -66,6 +67,11 @@ private:
     auto sample_time = std::chrono::microseconds(static_cast<int>(m_sample_time * 1e6));
     m_timer = this->create_wall_timer(
         sample_time, std::bind(&EMTrackerNode::read_callback, this), m_callback_group_read);
+
+    // Service server for freeze_phantom using std_srvs/SetBool
+    m_freeze_phantom_service = this->create_service<std_srvs::srv::SetBool>(
+        "freeze_phantom",
+        std::bind(&EMTrackerNode::handle_freeze_phantom, this, std::placeholders::_1, std::placeholders::_2));
   }
 
   void setup_parameters_callback()
@@ -325,6 +331,24 @@ private:
     // RCLCPP_INFO(this->get_logger(), "IGTL Sent");
   }
 
+  void handle_freeze_phantom(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response)
+  {
+    if (request->data)
+    {
+      m_emt->freeze_phantom(true);
+      response->success = true;
+      response->message = "Phantom frozen";
+      RCLCPP_INFO(this->get_logger(), "Phantom is frozen");
+    }
+    else
+    {
+      m_emt->freeze_phantom(false);
+      response->success = true;
+      response->message = "Phantom defrozen";
+      RCLCPP_INFO(this->get_logger(), "Phantom is active");
+    }
+  }
+
   void log_position(blaze::StaticVector<double, 3> position, double sample_time)
   {
     std::ostringstream oss;
@@ -368,6 +392,7 @@ private:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_read;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_heartbeat;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr m_freeze_phantom_service;
 
   igtl::ClientSocket::Pointer m_socket;
   igtl::PointMessage::Pointer m_pm_emtracker;
