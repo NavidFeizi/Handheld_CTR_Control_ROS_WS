@@ -28,26 +28,26 @@ using namespace std::chrono_literals;
 template <typename MatrixType>
 MatrixType readFromCSV(MatrixType &Mat, const std::string &filePath);
 
-class PublisherNode : public rclcpp::Node
+class ManagerNode : public rclcpp::Node
 {
 public:
-  PublisherNode() : Node("publisher"), count_(0)
+  ManagerNode() : Node("publisher"), count_(0)
   {
-    PublisherNode::declare_parameters();
-    PublisherNode::setup_ros_interfaces();
+    ManagerNode::declare_parameters();
+    ManagerNode::setup_ros_interfaces();
 
     // std::string fileName("Trajectory.csv");
-    // PublisherNode::load_input_files(m_trajectory, fileName);
+    // ManagerNode::load_input_files(m_trajectory, fileName);
 
     double fc = 10.0;
     m_filter = std::make_unique<ButterworthFilter<1>>(m_sample_time);
     m_filter->update_coeffs(fc);
 
-    // PublisherNode::send_recod_request();
+    // ManagerNode::send_recod_request();
 
     m_expt_time = 30.0;
     int num_expt = 50;
-    std::thread(&PublisherNode::dataset_expt, this, num_expt).detach();
+    std::thread(&ManagerNode::dataset_expt, this, num_expt).detach();
 
     rclcpp::Time now = this->get_clock()->now();
     t0_ = static_cast<double>(now.nanoseconds()) / 1E9;
@@ -56,7 +56,7 @@ public:
     RCLCPP_INFO(this->get_logger(), "Publisher node initialized");
   }
 
-  ~PublisherNode()
+  ~ManagerNode()
   {
     if (m_is_experiment_running)
     {
@@ -96,7 +96,7 @@ private:
     }
 
     auto dt = std::chrono::microseconds(static_cast<int>(m_sample_time * 1e6));
-    m_timer = this->create_wall_timer(dt, std::bind(&PublisherNode::target_joints_callback, this), m_callback_group_pub);
+    m_timer = this->create_wall_timer(dt, std::bind(&ManagerNode::target_joints_callback, this), m_callback_group_pub);
   }
 
   // Function to load input CSV files
@@ -121,7 +121,7 @@ private:
 
     using ServiceResponseFuture =
         rclcpp::Client<interfaces::srv::Startrecording>::SharedFuture;
-    auto response_received_callback = std::bind(&PublisherNode::handle_recod_response, this, std::placeholders::_1);
+    auto response_received_callback = std::bind(&ManagerNode::handle_recod_response, this, std::placeholders::_1);
 
     auto future_result = m_record_client->async_send_request(request, response_received_callback);
   }
@@ -161,7 +161,7 @@ private:
       m_signal_generator->gen_trajectory();
       m_signal_generator->flip_trajectory_sign();
       m_traj = m_signal_generator->get_trajectory();
-      PublisherNode::send_recod_request();
+      ManagerNode::send_recod_request();
       m_traj_row = 0;
       while (m_traj_row < m_traj.size())
       {
@@ -179,12 +179,12 @@ private:
     rclcpp::Time now = this->get_clock()->now();
     m_t = m_t + m_sample_time;
 
-    // PublisherNode::multi_sine(m_t, m_x);
+    // ManagerNode::multi_sine(m_t, m_x);
 
     // constexpr double period = 5.0;     // Period of the pulse signal
     // constexpr double amplitude = 5.0; // [mm] Amplitude of the pulse signal
     // constexpr double velocity = 60.0;  // [mm/s] Velocity of the ramp rise and fall
-    // PublisherNode::pulse_signal(period, amplitude, velocity, m_t, x);
+    // ManagerNode::pulse_signal(period, amplitude, velocity, m_t, x);
 
     if (m_traj_row < m_traj.size())
     {
@@ -317,7 +317,7 @@ private:
 int main(int argc, char *argv[])
 {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<PublisherNode>();
+  auto node = std::make_shared<ManagerNode>();
   rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 3);
   executor.add_node(node);
   executor.spin();
