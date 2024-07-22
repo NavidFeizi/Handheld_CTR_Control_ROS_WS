@@ -166,7 +166,7 @@ public:
 
     // Action Server Setup
     m_action_server = rclcpp_action::create_server<interfaces::action::Target>(
-        this, "set_target",
+        this, "navigate_to_target",
         std::bind(&Controller::handle_goal, this, _1, _2),
         std::bind(&Controller::handle_cancel, this, _1),
         std::bind(&Controller::handle_accepted, this, _1));
@@ -198,7 +198,7 @@ public:
 
   rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const interfaces::action::Target::Goal> &goal)
   {
-    RCLCPP_INFO(this->get_logger(), "Received goal request");
+    RCLCPP_INFO(this->get_logger(), "Received target request");
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
@@ -228,7 +228,7 @@ public:
 
     result->success = true; // Indicate success in the result
     goal_handle->succeed(result);
-    RCLCPP_INFO(this->get_logger(), "Goal processed successfully.");
+    RCLCPP_INFO(this->get_logger(), "Target reached successfully");
   }
 
   /**
@@ -255,8 +255,7 @@ public:
     const auto t1 = std::chrono::high_resolution_clock::now();
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0);
 
-    std::cout << std::fixed << std::setprecision(5); // Set the precision for the entire stream
-    std::cout << "elapsed: " << elapsed.count() * 1.00E-3 << " [ms]" << std::endl;
+    RCLCPP_INFO(this->get_logger(), "elapsed: %0.3f [ms]", elapsed.count() * 1.00E-3);
 
     return;
   }
