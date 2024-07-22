@@ -45,10 +45,10 @@ private:
      =============================================================================================
   */
   std::shared_ptr<CTR> m_robot;
-  blaze::StaticVector<double, 5UL> m_initGuess;         // initial guess for the solution of the BVP
-  blaze::StaticVector<double, 6UL> m_q;                 // joint values of the CTR
-  constexpr double m_linearActuatorThickness = 5.00E-3; // thickness of the linear actuator stages --> collision avoidance
-  constexpr double m_m_pos_tol = 1.00E-3;
+  blaze::StaticVector<double, 5UL> m_initGuess;          // initial guess for the solution of the BVP
+  blaze::StaticVector<double, 6UL> m_q;                  // joint values of the CTR
+  constexpr double m_linearActuatorThickness = 30.00E-3; // thickness of the linear actuator stages --> collision avoidance
+  constexpr double m_pos_tol = 1.00E-3;
 
 public:
   // default class constructor

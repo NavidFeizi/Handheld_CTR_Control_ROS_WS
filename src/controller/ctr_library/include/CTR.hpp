@@ -15,12 +15,12 @@
 #include "ODESystem.hpp"
 #include "Observer.hpp"
 #include "mathOperations.hpp"
-#include "collisionCheck.hpp"
+// #include "collisionCheck.hpp"
 #include <boost/numeric/odeint.hpp>
 #include <memory>
 #include <tuple>
 #include <nlopt.hpp>
-#include <mutex>
+// #include <mutex>
 
 class CTR
 {
@@ -139,26 +139,26 @@ public:
 	// function that sets which method to use for solving the BVP
 	void setBVPMethod(mathOp::rootFindingMethod mthd);
 
-	// function that sets the anatomy BVHModel meshes
-	void setAnatomyBHVModelMeshes(const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &skeletonMesh,
-								  const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &lungMesh,
-								  const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &liverMesh,
-								  const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &spleenMesh);
+	// // function that sets the anatomy BVHModel meshes
+	// void setAnatomyBHVModelMeshes(const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &skeletonMesh,
+	// 							  const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &lungMesh,
+	// 							  const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &liverMesh,
+	// 							  const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &spleenMesh);
 
-	// function that sets CTR backbone points for the collision library
-	void sendCTRBackbonePoints();
+	// // function that sets CTR backbone points for the collision library
+	// void sendCTRBackbonePoints();
 
-	// function that computes the number of collisions between the CTR and the anatomy
-	size_t computeAnatomicalCollisions();
+	// // function that computes the number of collisions between the CTR and the anatomy
+	// size_t computeAnatomicalCollisions();
 
-	// function that computes the minimum distance between the CTR backbone and the anatomy
-	double computeAnatomicalDistances();
+	// // function that computes the minimum distance between the CTR backbone and the anatomy
+	// double computeAnatomicalDistances();
 
-	// returns the shared pointer to the ctr mesh
-	std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> getCTR_Mesh();
+	// // returns the shared pointer to the ctr mesh
+	// std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> getCTR_Mesh();
 
-	// function that returns the mutex for locking concurrent access to VTK
-	std::mutex& getMutex();
+	// // function that returns the mutex for locking concurrent access to VTK
+	// std::mutex& getMutex();
 
 private:
 	double m_accuracy;								// defines the accuracy of the numerical solution
@@ -178,8 +178,8 @@ private:
 	std::vector<double> m_s;						// stores the arc-length points along the backbone
 	std::unique_ptr<ODESystem> m_stateEquations;	// implements the state differential equations for a three-tube CTR
 	std::unique_ptr<Observer> m_stateObserver;		// implements the state observer for Boost::odeInt
-	collisionCheck m_collision;						// implements collision & minimum distance checking via FCL library
-	std::mutex m_mutexVTK;							// mutex to block concurrent access to the VTK library
+	// collisionCheck m_collision;						// implements collision & minimum distance checking via FCL library
+	// std::mutex m_mutexVTK;							// mutex to block concurrent access to the VTK library
 
 	struct objFuncData
 	{

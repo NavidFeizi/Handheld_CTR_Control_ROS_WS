@@ -22,13 +22,13 @@ CTR::CTR(const std::array<std::shared_ptr<Tube>, 3UL> &Tb, blaze::StaticVector<d
 	this->m_stateObserver = std::make_unique<Observer>(this->m_y, this->m_s);
 	this->objFuncStr = std::make_shared<objFuncData>();
 	this->constrFuncStr = std::make_shared<constrFuncData>();
-	m_collision = collisionCheck(Tb[2UL]->getTubeOuterRadius() * 1.00E3);
+	// m_collision = collisionCheck(Tb[2UL]->getTubeOuterRadius() * 1.00E3);
 }
 
 // copy constructor
 CTR::CTR(const CTR &rhs) : m_accuracy(rhs.m_accuracy), m_method(rhs.m_method), m_Tubes(rhs.m_Tubes), m_beta(rhs.m_beta),
 						   m_q(rhs.m_q), m_theta_0(rhs.m_theta_0), m_e3(rhs.m_e3), m_H_inv(rhs.m_H_inv),
-						   m_h_0(rhs.m_h_0), m_y(rhs.m_y), m_s(rhs.m_s), m_wf(rhs.m_wf), m_wm(rhs.m_wm), m_collision(rhs.m_collision), m_stageThickness(rhs.m_stageThickness)
+						   m_h_0(rhs.m_h_0), m_y(rhs.m_y), m_s(rhs.m_s), m_wf(rhs.m_wf), m_wm(rhs.m_wm), m_stageThickness(rhs.m_stageThickness) //, m_collision(rhs.m_collision)
 {
 	this->m_segment = std::make_unique<Segment>(this->m_Tubes, this->m_beta);
 	this->m_stateEquations = std::make_unique<ODESystem>();
@@ -61,7 +61,7 @@ CTR::CTR(CTR &&rhs) noexcept
 		this->m_stateObserver = std::move(rhs.m_stateObserver);
 		this->objFuncStr = std::move(rhs.objFuncStr);
 		this->constrFuncStr = std::move(rhs.constrFuncStr);
-		this->m_collision = std::move(rhs.m_collision);
+		// this->m_collision = std::move(rhs.m_collision);
 		this->m_stageThickness = std::move(rhs.m_stageThickness);
 	}
 }
@@ -90,7 +90,7 @@ CTR &CTR::operator=(const CTR &rhs)
 		this->m_stateObserver = std::make_unique<Observer>(this->m_y, this->m_s);
 		this->objFuncStr = std::make_shared<objFuncData>();
 		this->constrFuncStr = std::make_shared<constrFuncData>();
-		this->m_collision = rhs.m_collision;
+		// this->m_collision = rhs.m_collision;
 		this->m_stageThickness = rhs.m_stageThickness;
 	}
 
@@ -121,7 +121,7 @@ CTR &CTR::operator=(CTR &&rhs) noexcept
 		this->m_stateObserver = std::move(rhs.m_stateObserver);
 		this->objFuncStr = std::move(rhs.objFuncStr);
 		this->constrFuncStr = std::move(rhs.constrFuncStr);
-		this->m_collision = std::move(m_collision);
+		// this->m_collision = std::move(m_collision);
 		this->m_stageThickness = rhs.m_stageThickness;
 	}
 
@@ -265,7 +265,7 @@ blaze::StaticVector<double, 5UL> CTR::ODESolver(const blaze::StaticVector<double
 												0.00};
 
 	// lambda function that finds the u_z curvatures at the distal ends of tubes 2 and 3
-	auto computeResidue = [&](double distalEnd, size_t index) -> void
+	auto computeResidue = [&](const double distalEnd, const size_t index) -> void
 	{
 		// must use some tolerance when comparing floating points
 		auto itt = std::lower_bound(this->m_s.begin(), this->m_s.end(), distalEnd - 1.00E-7); // finds where tube ends (with a 0.0001mm tolerance)
@@ -323,8 +323,8 @@ blaze::StaticMatrix<double, 3UL, 6UL> CTR::jacobian(const blaze::StaticVector<do
 
 	for (size_t iter = 0UL; iter <= 5UL; ++iter)
 	{
-		// if ( (iter == 2UL) || (iter == 5UL) ) // outermost tube isn't actuated
-		// 	continue;
+		if ( (iter == 2UL) || (iter == 5UL) ) // outermost tube isn't actuated
+			continue;
 
 		q_Perturbed[iter] += q_Scaled[iter];
 		this->setConfiguration(q_Perturbed);
@@ -454,7 +454,7 @@ bool CTR::PowellDogLeg(blaze::StaticVector<double, 5UL> &initGuess)
 bool CTR::Levenberg_Marquardt(blaze::StaticVector<double, 5UL> &initGuess)
 {
 	size_t k = 0UL;
-	const size_t k_max = 300UL;
+	constexpr size_t k_max = 300UL;
 	blaze::StaticVector<double, 5UL> h, g, f, f_new;
 	blaze::StaticMatrix<double, 5UL, 5UL, blaze::columnMajor> J, A;
 	blaze::IdentityMatrix<double> I(5UL);
@@ -549,7 +549,7 @@ bool CTR::Broyden(blaze::StaticVector<double, 5UL> &initGuess)
 	found = (blaze::linfNorm(F) <= this->m_accuracy) ? true : false;
 
 	size_t k = 0UL;
-	const size_t k_max = 300UL;
+	constexpr size_t k_max = 300UL;
 	while (!found && (k < k_max))
 	{
 		k++;
@@ -628,7 +628,7 @@ bool CTR::Broyden_II(blaze::StaticVector<double, 5UL> &initGuess)
 	found = (blaze::linfNorm(F) <= this->m_accuracy) ? true : false;
 
 	size_t k = 0UL;
-	const size_t k_max = 300UL;
+	constexpr size_t k_max = 300UL;
 	while (!found && (k < k_max))
 	{
 		k++;
@@ -707,7 +707,7 @@ bool CTR::Newton_Raphson(blaze::StaticVector<double, 5UL> &initGuess)
 	blaze::diagonal(Kd) = 0.002; // 3e-3 | 5e-3 | 2e-3
 
 	size_t k = 0UL;
-	const size_t k_max = 300UL;
+	constexpr size_t k_max = 300UL;
 
 	// starting iterations for adjusting the initial guess "u_guess ~ initGuess"
 	while (!found && (k < k_max))
@@ -1080,8 +1080,8 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 
 		// updating the CTR joints->q: [beta, theta]
 		q += dqdt;
-		// // outermost tube remains unactuated
-		// q[2UL] = q[5UL] = 0.00;
+		// outermost tube remains unactuated
+		q[2UL] = q[5UL] = 0.00;
 
 		// wrapping the actuation angles to the [0.00,2Pi) interval
 		blaze::subvector<3UL, 3UL>(q) = blaze::map(blaze::subvector<3UL, 3UL>(q), [](double theta)
@@ -1339,7 +1339,7 @@ std::tuple<double, double, bool> CTR::constrainedPosCTRL(blaze::StaticVector<dou
 
 	qMin[3UL] = qMin[4UL] = qMin[5UL] = -M_PI;
 	qMax[3UL] = qMax[4UL] = qMax[5UL] = M_PI;
-	// qMin[2UL] = qMax[2UL] = 0.00;
+	qMin[2UL] = qMax[2UL] = 0.00;
 
 	// position control loop
 	while ((posError > posTol) && (N_iter < maxIter))
@@ -1350,11 +1350,11 @@ std::tuple<double, double, bool> CTR::constrainedPosCTRL(blaze::StaticVector<dou
 		// joint limits -- (Legal Configurations & Collision Avoidance of Linear Actuators)
 		qMin[0UL] = std::max({-ls[0UL] + deltaBar, L[1UL] + this->m_beta[1UL] - L[0UL], L[2UL] + this->m_beta[2UL] - L[0UL]});
 		qMin[1UL] = std::max({-ls[1UL] + deltaBar, this->m_beta[0UL] + m_stageThickness, L[2UL] + this->m_beta[2UL] - L[1UL]});
-		qMin[2UL] = std::max(-ls[2UL] + deltaBar, this->m_beta[1UL] + m_stageThickness);
+		// qMin[2UL] = std::max(-ls[2UL] + deltaBar, this->m_beta[1UL] + m_stageThickness);
 
 		qMax[0UL] = m_beta[1UL] - m_stageThickness;
 		qMax[1UL] = std::min(this->m_beta[2UL] - m_stageThickness, L[0UL] + this->m_beta[0UL] - L[1UL]);
-		qMax[2UL] = std::min({-deltaBar, L[1UL] + this->m_beta[1UL] - L[2UL], L[0UL] + this->m_beta[0UL] - L[2UL]});
+		// qMax[2UL] = std::min({-deltaBar, L[1UL] + this->m_beta[1UL] - L[2UL], L[0UL] + this->m_beta[0UL] - L[2UL]});
 
 		// UPDATING --> lower bounds lb := [q_dot^- delta^-]
 		lbView = (qMin - q) / a;
@@ -1402,8 +1402,8 @@ std::tuple<double, double, bool> CTR::constrainedPosCTRL(blaze::StaticVector<dou
 
 		// updating the CTR joints: q = [beta, theta]
 		q += a * q_dot;
-		// // outermost tube remains unactuated
-		// q[2UL] = q[5UL] = 0.00;
+		// outermost tube remains unactuated
+		q[2UL] = q[5UL] = 0.00;
 
 		// actuates the CTR to new configuration and retries the execution timeout status
 		status = this->actuate_CTR(initGuess, q);
@@ -1508,7 +1508,7 @@ std::tuple<blaze::StaticMatrix<double, 3UL, 6UL>, blaze::StaticMatrix<double, 3U
 							   { return (std::fabs(q_Scaled[idx]) > incr_floor) ? q_Scaled[idx] : incr_floor; });
 
 	// finding the index in the tube length array -- point on backbone closest to the renal calix
-	auto it = std::lower_bound(this->m_s.begin(), this->m_s.end(), s - 1.00E-7);
+	const auto it = std::lower_bound(this->m_s.begin(), this->m_s.end(), s - 1.00E-7);
 	size_t idx = std::distance(this->m_s.begin(), it);
 
 	// checking if the CTR is retracted past (before) the point of interest (calyx)
@@ -1518,12 +1518,12 @@ std::tuple<blaze::StaticMatrix<double, 3UL, 6UL>, blaze::StaticMatrix<double, 3U
 	}
 
 	// gets the undisturbed position of the backbone at the arc-length "s" (at the parenchyma)
-	blaze::StaticVector<double, 3UL> p_par = {this->m_y[idx][8UL], this->m_y[idx][9UL], this->m_y[idx][10UL]};
+	const blaze::StaticVector<double, 3UL> p_par = {this->m_y[idx][8UL], this->m_y[idx][9UL], this->m_y[idx][10UL]};
 
 	for (size_t iter = 0UL; iter <= 5UL; ++iter)
 	{
-		// if ( (iter == 2UL) || (iter == 5UL) ) // outermost tube isn't actuated
-		// 	continue;
+		if ( (iter == 2UL) || (iter == 5UL) ) // outermost tube isn't actuated
+			continue;
 
 		q_Perturbed[iter] += q_Scaled[iter];
 		this->setConfiguration(q_Perturbed);
@@ -1714,80 +1714,80 @@ void CTR::setBVPMethod(mathOp::rootFindingMethod mthd)
 	this->m_method = mthd;
 }
 
-// function that sets the anatomy BVHModel meshes
-void CTR::setAnatomyBHVModelMeshes(const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &skeletonMesh,
-								   const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &lungMesh,
-								   const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &liverMesh,
-								   const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &spleenMesh)
-{
-	if (skeletonMesh)
-	{
-		this->m_collision.setSkeletonBVHModel(skeletonMesh);
-	}
+// // function that sets the anatomy BVHModel meshes
+// void CTR::setAnatomyBHVModelMeshes(const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &skeletonMesh,
+// 								   const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &lungMesh,
+// 								   const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &liverMesh,
+// 								   const std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> &spleenMesh)
+// {
+// 	if (skeletonMesh)
+// 	{
+// 		this->m_collision.setSkeletonBVHModel(skeletonMesh);
+// 	}
 
-	if (lungMesh)
-	{
-		this->m_collision.setLungBVHModel(lungMesh);
-	}
+// 	if (lungMesh)
+// 	{
+// 		this->m_collision.setLungBVHModel(lungMesh);
+// 	}
 
-	if (liverMesh)
-	{
-		this->m_collision.setLiverBVHModel(liverMesh);
-	}
+// 	if (liverMesh)
+// 	{
+// 		this->m_collision.setLiverBVHModel(liverMesh);
+// 	}
 
-	if (spleenMesh)
-	{
-		this->m_collision.setSpleenBVHModel(spleenMesh);
-	}
+// 	if (spleenMesh)
+// 	{
+// 		this->m_collision.setSpleenBVHModel(spleenMesh);
+// 	}
 
-	// Lastly, updates the anatomy mesh references
-	this->m_collision.updateAnatomyMeshReferences();
-}
+// 	// Lastly, updates the anatomy mesh references
+// 	this->m_collision.updateAnatomyMeshReferences();
+// }
 
-// function that sets CTR backbone points for the collision library
-void CTR::sendCTRBackbonePoints()
-{
-	blaze::HybridMatrix<double, 3UL, 1000UL, blaze::columnMajor> backboneShape(3UL, this->m_y.size());
-	blaze::StaticVector<double, 4UL> res, v = {0.00, 0.00, 0.00, 1.00};
+// // function that sets CTR backbone points for the collision library
+// void CTR::sendCTRBackbonePoints()
+// {
+// 	blaze::HybridMatrix<double, 3UL, 1000UL, blaze::columnMajor> backboneShape(3UL, this->m_y.size());
+// 	blaze::StaticVector<double, 4UL> res, v = {0.00, 0.00, 0.00, 1.00};
 
-	// column index variable for the matrix backboneShape
-	size_t col = 0UL;
+// 	// column index variable for the matrix backboneShape
+// 	size_t col = 0UL;
 
-	// transforms the backbone shape from CTR to patient's coordinate frame
-	for (auto &y : this->m_y)
-	{
-		v[0UL] = y[8UL];
-		v[1UL] = y[9UL];
-		v[2UL] = y[10UL];
+// 	// transforms the backbone shape from CTR to patient's coordinate frame
+// 	for (auto &y : this->m_y)
+// 	{
+// 		v[0UL] = y[8UL];
+// 		v[1UL] = y[9UL];
+// 		v[2UL] = y[10UL];
 
-		res = this->m_H_inv * v;
-		blaze::column(backboneShape, col) = blaze::subvector<0UL, 3UL>(res) * 1.00E3;
-		++col;
-	}
+// 		res = this->m_H_inv * v;
+// 		blaze::column(backboneShape, col) = blaze::subvector<0UL, 3UL>(res) * 1.00E3;
+// 		++col;
+// 	}
 
-	this->m_collision.setBackbonePoints(backboneShape);
-}
+// 	this->m_collision.setBackbonePoints(backboneShape);
+// }
 
-// function that computes the number of collisions between the CTR and the anatomy
-size_t CTR::computeAnatomicalCollisions()
-{
-	return this->m_collision.computeCollisions();
-}
+// // function that computes the number of collisions between the CTR and the anatomy
+// size_t CTR::computeAnatomicalCollisions()
+// {
+// 	return this->m_collision.computeCollisions();
+// }
 
-// function that computes the minimum distance between the CTR backbone and the anatomy
-double CTR::computeAnatomicalDistances()
-{
-	return this->m_collision.computeMinimumDistance();
-}
+// // function that computes the minimum distance between the CTR backbone and the anatomy
+// double CTR::computeAnatomicalDistances()
+// {
+// 	return this->m_collision.computeMinimumDistance();
+// }
 
-// returns the shared pointer to the ctr mesh
-std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> CTR::getCTR_Mesh()
-{
-	return this->m_collision.getCTR_Mesh();
-}
+// // returns the shared pointer to the ctr mesh
+// std::shared_ptr<fcl::BVHModel<fcl::OBBRSSd>> CTR::getCTR_Mesh()
+// {
+// 	return this->m_collision.getCTR_Mesh();
+// }
 
-// function that returns the mutex for locking concurrent access to VTK
-std::mutex &CTR::getMutex()
-{
-	return this->m_mutexVTK;
-}
+// // function that returns the mutex for locking concurrent access to VTK
+// std::mutex &CTR::getMutex()
+// {
+// 	return this->m_mutexVTK;
+// }
