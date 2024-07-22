@@ -30,7 +30,8 @@ private:
   double m_control_sample_time;
   bool m_flag_new_feedback = true;
   std::chrono::time_point<std::chrono::high_resolution_clock> t0, t1;
-  blaze::StaticVector<double, 3UL> m_base_tool, m_phantom_tool, m_target_position, m_calyxPosition;
+  blaze::StaticVector<double, 3UL> m_tran_base_tool, m_tran_phantom_tool, m_tran_phantom_base, m_target_position, m_calyxPosition;
+  blaze::StaticVector<double, 4UL> m_rot_phantom_base;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub1;                                  // Callback group for running subscriber callback function on separate thread
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub2;                                  // Callback group for running subscriber callback function on separate thread
   rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_control;           // Publisher object
@@ -151,18 +152,25 @@ public:
     // Create callback groups
     m_callback_group_sub1 = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     m_callback_group_sub2 = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    m_callback_group_sub3 = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     // Subscriber to receive target
     auto subs_options_1 = rclcpp::SubscriptionOptions();
     subs_options_1.callback_group = m_callback_group_sub1;
     m_subscription_base_tool = this->create_subscription<interfaces::msg::Taskspace>(
-        "emt_base_tool", rclcpp::QoS(10), std::bind(&Controller::update_current_tip_in_phantom, this, _1), subs_options_1);
+        "emt_base_tool", rclcpp::QoS(10), std::bind(&Controller::update_current_tip_in_base, this, _1), subs_options_1);
 
     // Subscriber to receive ModelOutput feedback
     auto subs_options_2 = rclcpp::SubscriptionOptions();
     subs_options_2.callback_group = m_callback_group_sub2;
     m_subscription_phantom_tool = this->create_subscription<interfaces::msg::Taskspace>(
         "emt_phantom_tool", rclcpp::QoS(10), std::bind(&Controller::update_current_tip_in_phantom, this, _1), subs_options_2);
+
+    // Subscriber to receive ModelOutput feedback
+    auto subs_options_3 = rclcpp::SubscriptionOptions();
+    subs_options_2.callback_group = m_callback_group_sub3;
+    m_subscription_phantom_tool = this->create_subscription<interfaces::msg::Taskspace>(
+        "emt_phantom_base", rclcpp::QoS(10), std::bind(&Controller::update_current_base_in_phantom, this, _1), subs_options_3);
 
     // Action Server Setup
     m_action_server = rclcpp_action::create_server<interfaces::action::Target>(
@@ -177,11 +185,9 @@ public:
    */
   void update_current_tip_in_phantom(const interfaces::msg::Taskspace::ConstSharedPtr &msg)
   {
-    m_base_tool = {msg->p[0UL] * 1.00E3,
-                   msg->p[1UL] * 1.00E3,
-                   msg->p[2UL] * 1.00E3};
-
-    m_flag_new_feedback = true;
+    m_tran_phantom_tool = {msg->p[0UL],
+                           msg->p[1UL],
+                           msg->p[2UL]};
   }
 
   /**
@@ -189,14 +195,27 @@ public:
    */
   void update_current_tip_in_base(const interfaces::msg::Taskspace::ConstSharedPtr &msg)
   {
-    m_base_tool = {msg->p[0UL] * 1.00E3,
-                   msg->p[1UL] * 1.00E3,
-                   msg->p[2UL] * 1.00E3};
-
-    m_flag_new_feedback = true;
+    m_tran_base_tool = {msg->p[0UL],
+                        msg->p[1UL],
+                        msg->p[2UL]};
   }
 
-  rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const interfaces::action::Target::Goal> &goal)
+  /**
+   * @brief Update current tool (tip) position in the phantom frame.
+   */
+  void update_current_base_in_phantom(const interfaces::msg::Taskspace::ConstSharedPtr &msg)
+  {
+    m_tran_phantom_base = {msg->p[0UL],
+                           msg->p[1UL],
+                           msg->p[2UL]};
+    m_rot_phantom_base = {msg->h[0UL],
+                          msg->h[1UL],
+                          msg->h[2UL],
+                          msg->h[3UL]};
+  }
+
+  rclcpp_action::GoalResponse
+  handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const interfaces::action::Target::Goal> &goal)
   {
     RCLCPP_INFO(this->get_logger(), "Received target request");
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;

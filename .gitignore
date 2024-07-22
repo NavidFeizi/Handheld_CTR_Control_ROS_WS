@@ -13857,3 +13857,6 @@ log/build_2024-07-22_14-53-20/manager/stdout_stderr.log
 log/build_2024-07-22_14-53-20/manager/stdout.log
 log/build_2024-07-22_14-53-20/manager/streams.log
 install/manager/share/manager/launch/__pycache__/launch.cpython-310.pyc
+build/emtracker/bin/track
+build/emtracker/lib/libEMTlib.a
+build/emtracker/lib/libNDI.a

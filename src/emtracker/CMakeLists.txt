@@ -26,13 +26,15 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(interfaces REQUIRED) 
-find_package(OpenIGTLink REQUIRED)
 
 # EM tracker libraries
 add_subdirectory(lib_emtracker)
-
-# Open IGTLink libraries
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_emtracker/include)
+
+# open IGTLink libraries
+set(OpenIGTLink_DIR "/usr/local/lib/igtl/cmake/igtl-3.1")
+find_package(OpenIGTLink REQUIRED PATHS /usr/local)
+include(${OpenIGTLink_USE_FILE})
 
 add_executable(track src/EMtracker_node.cpp)
 target_link_libraries(track EMTlib)

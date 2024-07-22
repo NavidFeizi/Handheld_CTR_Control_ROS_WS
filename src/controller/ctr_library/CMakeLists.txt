@@ -3,7 +3,7 @@ project(CTRlib VERSION 1.0 LANGUAGES CXX)
 
 # List the CTR library source files
 set(CTR_LIB_SOURCES
-    src/collisionCheck.cpp
+    # src/collisionCheck.cpp
     src/CTR.cpp
     src/Observer.cpp
     src/ODESystem.cpp
@@ -51,12 +51,12 @@ else()
 endif()
 
 # Find FCL
-find_package(fcl REQUIRED)
+# find_package(fcl REQUIRED)
 
-if(fcl_FOUND)
-    message(STATUS "FCL has been found!")
-    include_directories(${FCL_INCLUDE_DIRS})
-    target_link_libraries(CTRlib PUBLIC ${FCL_LIBRARIES})
-else()
-    message(FATAL_ERROR "FCL has not been found!")
-endif()
+# if(fcl_FOUND)
+#     message(STATUS "FCL has been found!")
+#     include_directories(${FCL_INCLUDE_DIRS})
+#     target_link_libraries(CTRlib PUBLIC ${FCL_LIBRARIES})
+# else()
+#     message(FATAL_ERROR "FCL has not been found!")
+# endif()

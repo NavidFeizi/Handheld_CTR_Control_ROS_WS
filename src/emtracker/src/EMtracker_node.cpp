@@ -58,10 +58,10 @@ private:
   void setup_ros_interfaces()
   {
     m_callback_group_read = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    m_callback_group_heartbeat = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     m_publisher_base = this->create_publisher<interfaces::msg::Taskspace>("emt_base_tool", 10);
     m_publisher_phantom = this->create_publisher<interfaces::msg::Taskspace>("emt_phantom_tool", 10);
+    m_publisher_phantom_base = this->create_publisher<interfaces::msg::Taskspace>("emt_phantom_base", 10);
 
     auto sample_time = std::chrono::microseconds(static_cast<int>(m_sample_time * 1e6));
     m_timer = this->create_wall_timer(
@@ -154,6 +154,8 @@ private:
   {
     auto msg_base = interfaces::msg::Taskspace();
     auto msg_phantom = interfaces::msg::Taskspace();
+    auto msg_phantom_base = interfaces::msg::Taskspace();
+
     // get current time
     rclcpp::Time now = this->get_clock()->now();
 
@@ -182,9 +184,13 @@ private:
     msg_base.p[1] = tool_transform_in_robot.translation[1];
     msg_base.p[2] = tool_transform_in_robot.translation[2];
 
-    // msg.p_phantom_robot[0] = m_robot_transform.translation[0]; // to align with cathter robot system
-    // msg.p_phantom_robot[1] = m_robot_transform.translation[1];
-    // msg.p_phantom_robot[2] = m_robot_transform.translation[2];
+    msg_phantom_base.p[0] = m_robot_transform.translation[0];
+    msg_phantom_base.p[1] = m_robot_transform.translation[1];
+    msg_phantom_base.p[2] = m_robot_transform.translation[2];
+    msg_phantom_base.h[0] = m_robot_transform.rotation[0];
+    msg_phantom_base.h[1] = m_robot_transform.rotation[1];
+    msg_phantom_base.h[2] = m_robot_transform.rotation[2];
+    msg_phantom_base.h[3] = m_robot_transform.rotation[3];
 
     // msg.p_phantom_probe[0] = m_probe_transform.translation[0]; // to align with cathter robot system
     // msg.p_phantom_probe[1] = m_probe_transform.translation[1];
@@ -192,6 +198,7 @@ private:
 
     m_publisher_phantom->publish(msg_phantom);
     m_publisher_base->publish(msg_base);
+    m_publisher_phantom_base->publish(msg_phantom_base);
 
     // send on IGTLink
     if (m_flag_igtl)
@@ -355,7 +362,7 @@ private:
 
   rclcpp::TimerBase::SharedPtr m_timer;
   rclcpp::Publisher<interfaces::msg::Taskspace>::SharedPtr m_publisher;
-  rclcpp::Publisher<interfaces::msg::Taskspace>::SharedPtr m_publisher_base, m_publisher_phantom;
+  rclcpp::Publisher<interfaces::msg::Taskspace>::SharedPtr m_publisher_base, m_publisher_phantom, m_publisher_phantom_base;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr m_heartbeat_publisher;
   rclcpp::TimerBase::SharedPtr m_timer_heartbeat;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle;
