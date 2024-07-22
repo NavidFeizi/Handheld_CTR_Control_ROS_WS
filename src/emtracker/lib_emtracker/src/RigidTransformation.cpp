@@ -91,8 +91,8 @@ void Calculate_Transformation(const std::vector<StaticVector<double, 3UL>> &land
   std::vector<double> x(7UL, 0.00);
 
   // Set bounds for the optimization parameters (if needed)
-  constexpr std::vector<double> lb = {-500.00, -500.00, -500.00, -0.9999, -1.00, -1.00, -1.00};
-  constexpr std::vector<double> ub = {500.00, 500.00, 500.00, 0.9999, 1.00, 1.00, 1.00};
+  const std::vector<double> lb = {-500.00, -500.00, -500.00, -0.9999, -1.00, -1.00, -1.00};
+  const std::vector<double> ub = {500.00, 500.00, 500.00, 0.9999, 1.00, 1.00, 1.00};
   optimizer.set_lower_bounds(lb);
   optimizer.set_upper_bounds(ub);
 
@@ -256,7 +256,7 @@ void Rotmat2Quaternion(const StaticMatrix<double, 3UL, 3UL> &R, StaticVector<dou
     quat[1UL] = R(1UL, 2UL) - R(2UL, 1UL);
     quat[2UL] = R(2UL, 0UL) - R(0UL, 2UL);
     quat[3UL] = R(0UL, 1UL) - R(1UL, 0UL);
-    n4 = h[0UL];
+    n4 = quat[0UL];
   }
   else
   {
@@ -273,21 +273,21 @@ void Rotmat2Quaternion(const StaticMatrix<double, 3UL, 3UL> &R, StaticVector<dou
       quat[1UL] = 1.00 + R(0UL, 0UL) - R(1UL, 1UL) - R(2UL, 2UL);
       quat[2UL] = R(1UL, 0UL) + R(0UL, 1UL);
       quat[3UL] = R(2UL, 0UL) + R(0UL, 2UL);
-      n4 = h[1UL];
+      n4 = quat[1UL];
       break;
     case 1UL:
       quat[0UL] = R(2UL, 0UL) - R(0UL, 2UL);
       quat[1UL] = R(1UL, 0UL) + R(0UL, 1UL);
       quat[2UL] = 1.00 + R(1UL, 1UL) - R(0UL, 0UL) - R(2UL, 2UL);
       quat[3UL] = R(2UL, 1UL) + R(1UL, 2UL);
-      n4 = h[2UL];
+      n4 = quat[2UL];
       break;
     case 2UL:
       quat[0UL] = R(0UL, 1UL) - R(1UL, 0UL);
       quat[1UL] = R(2UL, 0UL) + R(0UL, 2UL);
       quat[2UL] = R(2UL, 1UL) + R(1UL, 2UL);
       quat[3UL] = 1.00 + R(2UL, 2UL) - R(0UL, 0UL) - R(1UL, 1UL);
-      n4 = h[3UL];
+      n4 = quat[3UL];
       break;
     }
   }

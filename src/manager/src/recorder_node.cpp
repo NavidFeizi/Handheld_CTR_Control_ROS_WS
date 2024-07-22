@@ -16,7 +16,6 @@
 #include "std_msgs/msg/string.hpp"
 #include "interfaces/msg/jointspace.hpp"
 #include "interfaces/msg/taskspace.hpp"
-#include "interfaces/msg/forcetorque.hpp"
 #include "interfaces/srv/startrecording.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -74,8 +73,6 @@ private:
         "EMTracker", rclcpp::QoS(10), std::bind(&RecorderNode::catheter_tip_callback, this, _1), options_3);
     m_subscription_4 = this->create_subscription<interfaces::msg::Taskspace>(
         "EMTracker_org", rclcpp::QoS(10), std::bind(&RecorderNode::catheter_tip_org_callback, this, _1), options_3);
-    m_subscription_5 = this->create_subscription<interfaces::msg::Forcetorque>(
-        "FTsensor", rclcpp::QoS(10), std::bind(&RecorderNode::tendon_force_callback, this, _1), options_4);
 
     m_service = this->create_service<interfaces::srv::Startrecording>(
         "start_recording", std::bind(&RecorderNode::handle_start_recording, this, _1, std::placeholders::_2));
@@ -149,18 +146,6 @@ private:
     m_task_space_vel_nf[1] = msg->q[1];
     m_task_space_vel_nf[2] = msg->q[2];
     // RCLCPP_INFO(this->get_logger(), "New tip");
-  }
-
-  // Subscriber callback function to update tendon force and torque from the ATI FT sensor
-  void tendon_force_callback(const interfaces::msg::Forcetorque::ConstSharedPtr msg)
-  {
-    m_force_torque[0] = msg->force[0];
-    m_force_torque[1] = msg->force[1];
-    m_force_torque[2] = msg->force[2];
-    m_force_torque[3] = msg->torque[0];
-    m_force_torque[4] = msg->torque[1];
-    m_force_torque[5] = msg->torque[2];
-    // RCLCPP_INFO(this->get_logger(), "New force");
   }
 
   // Function to create and open dump files for recording
@@ -291,7 +276,6 @@ private:
   rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subscription_2;
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_3;
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_4;
-  rclcpp::Subscription<interfaces::msg::Forcetorque>::SharedPtr m_subscription_5;
   rclcpp::Service<interfaces::srv::Startrecording>::SharedPtr m_service;
 
   rclcpp::CallbackGroup::SharedPtr m_callback_group_1;

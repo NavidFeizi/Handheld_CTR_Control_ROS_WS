@@ -138,7 +138,7 @@ private:
   void Read_Loop();
   void ToolData2Vector(const ToolData &toolData, std::vector<double> &toolCoord);
   void ToolData2QuatTransform(const ToolData &input, quatTransformation &output);
-  void log_tansformation(const int number, const blaze::StaticVector<double, 3UL> &translation, const blaze::StaticVector<double, 4UL>& rotation, const double sample_time);
+  void log_tansformation(const int number, const blaze::StaticVector<double, 3UL> &translation, const blaze::StaticVector<double, 4UL>& rotation, const double sample_time) const;
 
   /** @brief Checks if all distances are less than a threshold.
     The latest position is assumed to be the center of the sphere.

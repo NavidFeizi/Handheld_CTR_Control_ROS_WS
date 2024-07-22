@@ -14,7 +14,7 @@
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
-.void print_robot_status(double t, blaze::StaticVector<double, 6> position, blaze::StaticVector<double, 6> velocity, blaze::StaticVector<double, 6> current);
+void print_robot_status(double t, blaze::StaticVector<double, 6> position, blaze::StaticVector<double, 6> velocity, blaze::StaticVector<double, 6> current);
 
 class RobotNode : public rclcpp::Node
 {
@@ -317,7 +317,7 @@ private:
 
   size_t m_count;
   // const double m_control_sample_time = 0.0025; //[s]
-  constexpr double m_control_sample_time = 0.050; //[s]
+  const double m_control_sample_time = 0.050; //[s]
   double m_kp, m_ki = 0.00;
   bool m_flag_manual = false;
   bool m_emtracker_alive, m_emtracker_alive_tmep, m_targpublisher_alive, m_targpublisher_alive_tmep = false;

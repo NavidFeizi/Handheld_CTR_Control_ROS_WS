@@ -339,7 +339,7 @@ void EMTracker::landmark_registration(const std::string &landmarks_file_name, st
   std::cout << "Waiting ..." << std::endl;
   std::this_thread::sleep_for(std::chrono::milliseconds(5000));
 
-  constexpr double threshold = 1..0; // threshold value for the radius of the error sphere [mm]
+  constexpr double threshold = 1.0; // threshold value for the radius of the error sphere [mm]
   unsigned int i = 0;                // counter for the number of landmarks
 
   // Monitor the probe tip for stationary instances to record landmark positions
@@ -1162,46 +1162,46 @@ void SleepSeconds(const unsigned numSeconds)
   sleep(numSeconds); // sleep(sec)
 }
 
-Recorder::Recorder(const std::string &filename) : filename_(filename)
-{
-  // Open the CSV file and write headers
-  file.open(filename, std::ios::out | std::ios::trunc);
-  if (file.is_open())
-  {
-    file << "Time,X_[ref],Y_[ref],Z_[ref],Q0_[ref],Qx_[ref],Qy_[ref],QZ_[ref]"
-         << ","
-         << "X_[tip],Y_[tip],Z_[tip],Q0_[tip],Qx_[tip],Qy_[tip],Qz_[tip]" << std::endl;
-    start_time_ = std::chrono::high_resolution_clock::now(); // Record start time
-  }
-  else
-  {
-    std::cerr << "Error opening file to record: " << filename << std::endl;
-  }
-}
+// Recorder::Recorder(const std::string &filename) : filename_(filename)
+// {
+//   // Open the CSV file and write headers
+//   file.open(filename, std::ios::out | std::ios::trunc);
+//   if (file.is_open())
+//   {
+//     file << "Time,X_[ref],Y_[ref],Z_[ref],Q0_[ref],Qx_[ref],Qy_[ref],QZ_[ref]"
+//          << ","
+//          << "X_[tip],Y_[tip],Z_[tip],Q0_[tip],Qx_[tip],Qy_[tip],Qz_[tip]" << std::endl;
+//     start_time_ = std::chrono::high_resolution_clock::now(); // Record start time
+//   }
+//   else
+//   {
+//     std::cerr << "Error opening file to record: " << filename << std::endl;
+//   }
+// }
 
-void Recorder::Record(const quatTransformation &Reference, const quatTransformation &Tip)
-{
-  // Open the CSV file and write headers
-  file.open(filename, std::ios::out | std::ios::app);
+// void Recorder::Record(const quatTransformation &Reference, const quatTransformation &Tip)
+// {
+//   // Open the CSV file and write headers
+//   file.open(filename, std::ios::out | std::ios::app);
 
-  if (file.is_open())
-  {
-    auto current_time = std::chrono::high_resolution_clock::now();
-    double elapsed_seconds = std::chrono::duration<double>(current_time - start_time_).count();
+//   if (file.is_open())
+//   {
+//     auto current_time = std::chrono::high_resolution_clock::now();
+//     double elapsed_seconds = std::chrono::duration<double>(current_time - start_time_).count();
 
-    file << elapsed_seconds << ","
-         << Reference.translation[0UL] << "," << Reference.translation[1UL] << "," << Reference.translation[2UL] << ","
-         << Reference.rotation[0UL] << "," << Reference.rotation[1UL] << "," << Reference.rotation[2UL] << "," << Reference.rotation[3UL] << ","
-         << Tip.translation[0UL] << "," << Tip.translation[1UL] << "," << Tip.translation[2UL] << ","
-         << Tip.rotation[0UL] << "," << Tip.rotation[1UL] << "," << Tip.rotation[2UL] << "," << Tip.rotation[3UL] << std::endl;
-  }
-  else
-  {
-    std::cerr << "Failed to open file for appending: " << filename << std::endl;
-  }
-}
+//     file << elapsed_seconds << ","
+//          << Reference.translation[0UL] << "," << Reference.translation[1UL] << "," << Reference.translation[2UL] << ","
+//          << Reference.rotation[0UL] << "," << Reference.rotation[1UL] << "," << Reference.rotation[2UL] << "," << Reference.rotation[3UL] << ","
+//          << Tip.translation[0UL] << "," << Tip.translation[1UL] << "," << Tip.translation[2UL] << ","
+//          << Tip.rotation[0UL] << "," << Tip.rotation[1UL] << "," << Tip.rotation[2UL] << "," << Tip.rotation[3UL] << std::endl;
+//   }
+//   else
+//   {
+//     std::cerr << "Failed to open file for appending: " << filename << std::endl;
+//   }
+// }
 
-void Recorder::Close()
-{
-  file.close();
-}
+// void Recorder::Close()
+// {
+//   file.close();
+// }

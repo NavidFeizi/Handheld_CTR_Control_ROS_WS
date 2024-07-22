@@ -18,6 +18,13 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(interfaces REQUIRED) 
 
+add_subdirectory(lib_robot)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_robot/include)
+
+add_executable(run src/robot_node.cpp)
+target_link_libraries(run ROBOTlib)
+ament_target_dependencies(run rclcpp std_msgs std_srvs interfaces)
+
 # Add SDL2
 find_package(SDL2 REQUIRED)
 if (SDL2_FOUND)
@@ -27,13 +34,6 @@ if (SDL2_FOUND)
 else (NOT SDL2_FOUND)
     error(STATUS ">>> SDL2 has not been found")
 endif()
-
-add_subdirectory(lib_robot)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_robot/include)
-
-add_executable(run src/robot_node.cpp)
-target_link_libraries(run ROBOTlib)
-ament_target_dependencies(run rclcpp std_msgs std_srvs interfaces)
 
 install(TARGETS
   run
