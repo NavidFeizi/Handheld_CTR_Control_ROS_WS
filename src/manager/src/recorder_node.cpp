@@ -84,42 +84,42 @@ private:
   // Subscriber callback function to update desired joint positions and velocities
   void desired_joints_config_callback(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
-    m_q[0] = msg->position[0];
-    m_q[1] = msg->position[1];
-    m_q[2] = msg->position[2];
-    m_q[3] = msg->position[3];
+    m_q[0UL] = msg->position[0UL];
+    m_q[1UL] = msg->position[1UL];
+    m_q[2UL] = msg->position[2UL];
+    m_q[3UL] = msg->position[3UL];
 
-    m_q_dot[0] = msg->velocity[0];
-    m_q_dot[1] = msg->velocity[1];
-    m_q_dot[2] = msg->velocity[2];
-    m_q_dot[3] = msg->velocity[3];
+    m_q_dot[0UL] = msg->velocity[0UL];
+    m_q_dot[1UL] = msg->velocity[1UL];
+    m_q_dot[2UL] = msg->velocity[2UL];
+    m_q_dot[3UL] = msg->velocity[3UL];
     // RCLCPP_INFO(this->get_logger(), "New target");
   }
 
   // Subscriber callback function to update current robot joints status
   void joints_status_callback(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
-    m_joint_space_pos_abs[0] = msg->position_abs[0];
-    m_joint_space_pos_abs[1] = msg->position_abs[1];
-    m_joint_space_pos_abs[2] = msg->position_abs[2];
-    m_joint_space_pos_abs[3] = msg->position_abs[3];
+    m_joint_space_pos_abs[0UL] = msg->position_abs[0UL];
+    m_joint_space_pos_abs[1UL] = msg->position_abs[1UL];
+    m_joint_space_pos_abs[2UL] = msg->position_abs[2UL];
+    m_joint_space_pos_abs[3UL] = msg->position_abs[3UL];
 
-    m_joint_space_pos[0] = msg->position[0];
-    m_joint_space_pos[1] = msg->position[1];
-    m_joint_space_pos[2] = msg->position[2];
-    m_joint_space_pos[3] = msg->position[3];
+    m_joint_space_pos[0UL] = msg->position[0UL];
+    m_joint_space_pos[1UL] = msg->position[1UL];
+    m_joint_space_pos[2UL] = msg->position[2UL];
+    m_joint_space_pos[3UL] = msg->position[3UL];
 
-    m_joint_space_vel[0] = msg->velocity[0];
-    m_joint_space_vel[1] = msg->velocity[1];
-    m_joint_space_vel[2] = msg->velocity[2];
-    m_joint_space_vel[3] = msg->velocity[3];
+    m_joint_space_vel[0UL] = msg->velocity[0UL];
+    m_joint_space_vel[1UL] = msg->velocity[1UL];
+    m_joint_space_vel[2UL] = msg->velocity[2UL];
+    m_joint_space_vel[3UL] = msg->velocity[3UL];
 
-    // current[0] = msg->current[0];
-    // current[1] = msg->current[1];
-    // current[2] = msg->current[2];
-    // current[3] = msg->current[3];
-    // current[4] = msg->current[4];
-    // current[5] = msg->current[5];
+    // current[0UL] = msg->current[0UL];
+    // current[1UL] = msg->current[1UL];
+    // current[2UL] = msg->current[2UL];
+    // current[3UL] = msg->current[3UL];
+    // current[4UL] = msg->current[4UL];
+    // current[5UL] = msg->current[5UL];
 
     // RCLCPP_INFO(this->get_logger(), "New joint space status");
   }
@@ -127,24 +127,24 @@ private:
   // Subscriber callback function to update catheter tip position from the em tracker
   void catheter_tip_callback(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
-    m_task_space_pos[0] = msg->p[0];
-    m_task_space_pos[1] = msg->p[1];
-    m_task_space_pos[2] = msg->p[2];
-    m_task_space_vel[0] = msg->q[0];
-    m_task_space_vel[1] = msg->q[1];
-    m_task_space_vel[2] = msg->q[2];
+    m_task_space_pos[0UL] = msg->p[0UL];
+    m_task_space_pos[1UL] = msg->p[1UL];
+    m_task_space_pos[2UL] = msg->p[2UL];
+    m_task_space_vel[0UL] = msg->q[0UL];
+    m_task_space_vel[1UL] = msg->q[1UL];
+    m_task_space_vel[2UL] = msg->q[2UL];
     // RCLCPP_INFO(this->get_logger(), "New tip");
   }
 
   // Subscriber callback function to update catheter tip origianl (non filtered) position and velocity from the em tracker
   void catheter_tip_org_callback(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
-    m_task_space_pos_nf[0] = msg->p[0];
-    m_task_space_pos_nf[1] = msg->p[1];
-    m_task_space_pos_nf[2] = msg->p[2];
-    m_task_space_vel_nf[0] = msg->q[0];
-    m_task_space_vel_nf[1] = msg->q[1];
-    m_task_space_vel_nf[2] = msg->q[2];
+    m_task_space_pos_nf[0UL] = msg->p[0UL];
+    m_task_space_pos_nf[1UL] = msg->p[1UL];
+    m_task_space_pos_nf[2UL] = msg->p[2UL];
+    m_task_space_vel_nf[0UL] = msg->q[0UL];
+    m_task_space_vel_nf[1UL] = msg->q[1UL];
+    m_task_space_vel_nf[2UL] = msg->q[2UL];
     // RCLCPP_INFO(this->get_logger(), "New tip");
   }
 
@@ -196,41 +196,41 @@ private:
   {
     m_t = m_clock->now();
     rclcpp::Duration duration = m_t - m_t0;
-    double time = static_cast<double>(duration.nanoseconds()) / 1E9;
+    double time = static_cast<double>(duration.nanoseconds()) / 1.00E9;
 
     if (time < m_rec_duration)
     {
       if (!m_flag_recording)
       {
         m_flag_recording = true;
-        RCLCPP_INFO(this->get_logger(), "Recording started - Sampling time: %0.1f [ms]", m_sample_time * 1e3);
+        RCLCPP_INFO(this->get_logger(), "Recording started - Sampling time: %0.1f [ms]", m_sample_time * 1.00E3);
       };
       m_robot_dump_file << std::fixed << std::setprecision(3)
                         << time << ","
                         << std::fixed << std::setprecision(6)
-                        << m_q[0] << ',' << m_q[1] << ',' << m_q[2] << ',' << m_q[3] << ',' << m_q[4] << ',' << m_q[5] << ','
-                        << m_q_dot[0] << ',' << m_q_dot[1] << ',' << m_q_dot[2] << ',' << m_q_dot[3] << ',' << m_q_dot[4] << ',' << m_q_dot[5] << ','
-                        << m_joint_space_pos[0] << ',' << m_joint_space_pos[1] << ',' << m_joint_space_pos[2] << ',' << m_joint_space_pos[3] << ',' << m_joint_space_pos[4] << ',' << m_joint_space_pos[5] << ','
-                        << m_joint_space_pos_abs[0] << ',' << m_joint_space_pos_abs[1] << ',' << m_joint_space_pos_abs[2] << ',' << m_joint_space_pos_abs[3] << ',' << m_joint_space_pos_abs[4] << ',' << m_joint_space_pos_abs[5] << ','
+                        << m_q[0UL] << ',' << m_q[1UL] << ',' << m_q[2UL] << ',' << m_q[3UL] << ',' << m_q[4UL] << ',' << m_q[5UL] << ','
+                        << m_q_dot[0UL] << ',' << m_q_dot[1UL] << ',' << m_q_dot[2UL] << ',' << m_q_dot[3UL] << ',' << m_q_dot[4UL] << ',' << m_q_dot[5UL] << ','
+                        << m_joint_space_pos[0UL] << ',' << m_joint_space_pos[1UL] << ',' << m_joint_space_pos[2UL] << ',' << m_joint_space_pos[3UL] << ',' << m_joint_space_pos[4UL] << ',' << m_joint_space_pos[5UL] << ','
+                        << m_joint_space_pos_abs[0UL] << ',' << m_joint_space_pos_abs[1UL] << ',' << m_joint_space_pos_abs[2UL] << ',' << m_joint_space_pos_abs[3UL] << ',' << m_joint_space_pos_abs[4UL] << ',' << m_joint_space_pos_abs[5UL] << ','
                         << std::fixed << std::setprecision(11)
-                        << m_joint_space_vel[0] << ',' << m_joint_space_vel[1] << ',' << m_joint_space_vel[2] << ',' << m_joint_space_vel[3] << ',' << m_joint_space_vel[4] << ',' << m_joint_space_vel[5] << ','
+                        << m_joint_space_vel[0UL] << ',' << m_joint_space_vel[1UL] << ',' << m_joint_space_vel[2UL] << ',' << m_joint_space_vel[3UL] << ',' << m_joint_space_vel[4UL] << ',' << m_joint_space_vel[5UL] << ','
                         << std::fixed << std::setprecision(4)
-                        << m_current[0] << ',' << m_current[1] << ',' << m_current[2] << ',' << m_current[3] << ',' << m_current[4] << ',' << m_current[5] << '\n';
+                        << m_current[0UL] << ',' << m_current[1UL] << ',' << m_current[2UL] << ',' << m_current[3UL] << ',' << m_current[4UL] << ',' << m_current[5UL] << '\n';
 
       m_ft_sensor_dump_file << std::fixed << std::setprecision(3)
                             << time << ","
                             << std::setprecision(2)
-                            << m_force_torque[0] << ',' << m_force_torque[1] << ',' << m_force_torque[2] << ','
+                            << m_force_torque[0UL] << ',' << m_force_torque[1UL] << ',' << m_force_torque[2UL] << ','
                             << std::setprecision(4)
-                            << m_force_torque[3] << ',' << m_force_torque[4] << ',' << m_force_torque[5] << '\n';
+                            << m_force_torque[3UL] << ',' << m_force_torque[4UL] << ',' << m_force_torque[5UL] << '\n';
 
       m_em_tracker_dump_file << std::fixed << std::setprecision(3)
                              << time << ","
                              << std::setprecision(5)
-                             << m_task_space_pos[0] << ',' << m_task_space_pos[1] << ',' << m_task_space_pos[2] << ',' 
-                             << m_task_space_vel[0] << ',' << m_task_space_vel[1] << ',' << m_task_space_vel[2] << ',' 
-                             << m_task_space_pos_nf[0] << ',' << m_task_space_pos_nf[1] << ',' << m_task_space_pos_nf[2] << ',' 
-                             << m_task_space_vel_nf[0] << ',' << m_task_space_vel_nf[1] << ',' << m_task_space_vel_nf[2] <<'\n';
+                             << m_task_space_pos[0UL] << ',' << m_task_space_pos[1UL] << ',' << m_task_space_pos[2UL] << ',' 
+                             << m_task_space_vel[0UL] << ',' << m_task_space_vel[1UL] << ',' << m_task_space_vel[2UL] << ',' 
+                             << m_task_space_pos_nf[0UL] << ',' << m_task_space_pos_nf[1UL] << ',' << m_task_space_pos_nf[2UL] << ',' 
+                             << m_task_space_vel_nf[0UL] << ',' << m_task_space_vel_nf[1UL] << ',' << m_task_space_vel_nf[2UL] <<'\n';
     }
     else
     {
@@ -248,8 +248,8 @@ private:
   }
 
   // Service callback to handle start recording requests
-  void handle_start_recording(const std::shared_ptr<interfaces::srv::Startrecording::Request> request,
-                              std::shared_ptr<interfaces::srv::Startrecording::Response> response)
+  void handle_start_recording(const std::shared_ptr<interfaces::srv::Startrecording::Request> &request,
+                              std::shared_ptr<interfaces::srv::Startrecording::Response> &response)
   {
     RecorderNode::create_dump_files();
     response->success = true;
@@ -260,7 +260,7 @@ private:
 
   size_t m_count;
   double m_sample_time;
-  double m_rec_duration, m_time = 0.0;
+  double m_rec_duration, m_time = 0.00;
   bool m_flag_recording = false;
 
   std::ofstream m_robot_dump_file;
@@ -285,15 +285,15 @@ private:
   rclcpp::CallbackGroup::SharedPtr m_callback_group_5;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_read;
 
-  blaze::StaticVector<double, 6UL> m_joint_space_pos_abs = blaze::StaticVector<double, 6UL>(0.0);
-  blaze::StaticVector<double, 6UL> m_joint_space_pos = blaze::StaticVector<double, 6UL>(0.0);
-  blaze::StaticVector<double, 6UL> m_joint_space_vel = blaze::StaticVector<double, 6UL>(0.0);
-  blaze::StaticVector<double, 6UL> m_current = blaze::StaticVector<double, 6UL>(0.0);
-  blaze::StaticVector<double, 6UL> m_q = blaze::StaticVector<double, 6UL>(0.0);
-  blaze::StaticVector<double, 6UL> m_q_dot = blaze::StaticVector<double, 6UL>(0.0);
-  blaze::StaticVector<double, 3UL> m_task_space_pos, m_task_space_vel = blaze::StaticVector<double, 3UL>(0.0);
-  blaze::StaticVector<double, 3UL> m_task_space_pos_nf, m_task_space_vel_nf = blaze::StaticVector<double, 3UL>(0.0); // No filter
-  blaze::StaticVector<double, 6UL> m_force_torque = blaze::StaticVector<double, 6UL>(0.0);
+  blaze::StaticVector<double, 6UL> m_joint_space_pos_abs;
+  blaze::StaticVector<double, 6UL> m_joint_space_pos;
+  blaze::StaticVector<double, 6UL> m_joint_space_vel;
+  blaze::StaticVector<double, 6UL> m_current;
+  blaze::StaticVector<double, 6UL> m_q;
+  blaze::StaticVector<double, 6UL> m_q_dot;
+  blaze::StaticVector<double, 3UL> m_task_space_pos, m_task_space_vel;
+  blaze::StaticVector<double, 3UL> m_task_space_pos_nf, m_task_space_vel_nf; // No filter
+  blaze::StaticVector<double, 6UL> m_force_torque;
 };
 
 int main(int argc, char *argv[])

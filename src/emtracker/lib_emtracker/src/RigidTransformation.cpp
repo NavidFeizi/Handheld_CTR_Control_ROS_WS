@@ -36,7 +36,7 @@ void Quaternion_Rotate_Point(const StaticVector<double, 4UL> &rotationQuaternion
                              const StaticVector<double, 3UL> &originalVector,
                              StaticVector<double, 3UL> &rotatedVector)
 {
-  StaticVector<double, 4UL> V{0.00, originalVector[0UL], originalVector[1UL], originalVector[2UL]};
+  StaticVector<double, 4UL> V = {0.00, originalVector[0UL], originalVector[1UL], originalVector[2UL]};
   StaticVector<double, 4UL> q_bar = quaternionConjugate(rotationQuaternion);
   StaticVector<double, 4UL> qV = quaternionMultiply(rotationQuaternion, V);
   StaticVector<double, 4UL> qVq_bar = quaternionMultiply(qV, q_bar);
@@ -332,7 +332,7 @@ void QuaternionToEuler(const StaticVector<double, 4UL> &quaternion, double *azim
   if (std::abs(sinElevation) >= 1.00)
   {
     // Handle numerical instability near poles
-    *elevation = sinElevation < 0.00 ? - M_PI_2 : M_PI_2;
+    *elevation = sinElevation < 0.00 ? -M_PI_2 : M_PI_2;
   }
   else
   {
@@ -355,42 +355,44 @@ void Euclidean_Distance(const blaze::StaticVector<double, 3UL> &a, const blaze::
 StaticMatrix<double, 3UL, 3UL> RotX(const double &theta)
 {
   const double c(cos(theta)), s(sin(theta));
-  StaticMatrix<double, 3UL, 3UL> R = {{1, 0, 0},
-       {0, c, -s},
-       {0, s, c}};
+  StaticMatrix<double, 3UL, 3UL> R = {{1.00, 0.00, 0.00},
+                                      {0.00, c, -s},
+                                      {0.00, s, c}};
   return R;
 }
 StaticMatrix<double, 3UL, 3UL> RotY(const double &theta)
 {
   const double c(cos(theta)), s(sin(theta));
-  StaticMatrix<double, 3UL, 3UL> R = {{c, 0, s},
-       {0, 1, 0},
-       {-s, 0, c}};
+  StaticMatrix<double, 3UL, 3UL> R = {{c, 0.00, s},
+                                      {0.00, 1.00, 0.00},
+                                      {-s, 0.00, c}};
 
   return R;
 }
 StaticMatrix<double, 3UL, 3UL> RotZ(const double &theta)
 {
   const double c(cos(theta)), s(sin(theta));
-  StaticMatrix<double, 3UL, 3UL> R = {{c, -s, 0},
-       {s, c, 0},
-       {0, 0, 1}};
+  StaticMatrix<double, 3UL, 3UL> R = {{c, -s, 0.00},
+                                      {s, c, 0.00},
+                                      {0.00, 0.00, 1.00}};
 
   return R;
 }
+
 void EulerToRotMat(const std::vector<double> &Angles, StaticMatrix<double, 3UL, 3UL> &R)
 {
   R = RotZ(Angles[0UL]) * RotY(Angles[1UL]) * RotX(Angles[2UL]);
 }
 
-StaticMatrix<double, 3UL, 3UL> quaternion2rotmat(std::vector<double>& q)
+StaticMatrix<double, 3UL, 3UL> quaternion2rotmat(std::vector<double> &q)
 {
   StaticMatrix<double, 3UL, 3UL> R = {{2.00 * (q[0UL] * q[0UL] + q[1UL] * q[1UL]) - 1.00, 2.00 * (q[1UL] * q[2UL] - q[0UL] * q[3UL]), 2.00 * (q[1UL] * q[3UL] + q[0UL] * q[2.00])},
-       {2.00 * (q[1UL] * q[2UL] + q[0UL] * q[3UL]), 2.00 * (q[0UL] * q[0UL] + q[2UL] * q[2UL]) - 1.00, 2.00 * (q[2UL] * q[3UL] - q[0UL] * q[1.00])},
-       {2.00 * (q[1UL] * q[3UL] - q[0UL] * q[2UL]), 2.00 * (q[2UL] * q[3UL] + q[0UL] * q[1UL]), 2.00 * (q[0UL] * q[0UL] + q[3UL] * q[3UL]) - 1.00}};
+                                      {2.00 * (q[1UL] * q[2UL] + q[0UL] * q[3UL]), 2.00 * (q[0UL] * q[0UL] + q[2UL] * q[2UL]) - 1.00, 2.00 * (q[2UL] * q[3UL] - q[0UL] * q[1.00])},
+                                      {2.00 * (q[1UL] * q[3UL] - q[0UL] * q[2UL]), 2.00 * (q[2UL] * q[3UL] + q[0UL] * q[1UL]), 2.00 * (q[0UL] * q[0UL] + q[3UL] * q[3UL]) - 1.00}};
 
   return R;
 }
+
 std::vector<double> QuaternionToEulerAngles(const std::vector<double> &q)
 {
   std::vector<double> angles(3);

@@ -50,11 +50,10 @@ public:
   }
 
 private:
-  
   // Function to declare and initialize parameters - parameters values should be set from the launch file
   void declare_parameters()
   {
-    declare_parameter<double>("sample_time", 4E-3);
+    declare_parameter<double>("sample_time", 4.00E-3);
     m_sample_time = get_parameter("sample_time").as_double();
   }
 
@@ -100,7 +99,7 @@ private:
   }
 
   // Function to load input CSV files
-  void load_input_files(blaze::HybridMatrix<double, 200, 3UL> &targets, const std::string &fileName)
+  void load_input_files(blaze::HybridMatrix<double, 200UL, 3UL> &targets, const std::string &fileName)
   {
     // /** read actuation targets */
     std::string package_name = "manager"; // Replace with any package in your workspace
@@ -117,7 +116,7 @@ private:
   void send_recod_request()
   {
     auto request = std::make_shared<interfaces::srv::Startrecording::Request>();
-    request->duration = 30.0; // Set the desired duration
+    request->duration = 30.00; // Set the desired duration
 
     using ServiceResponseFuture =
         rclcpp::Client<interfaces::srv::Startrecording>::SharedFuture;
@@ -149,9 +148,9 @@ private:
       return;
     }
     auto goal_msg = interfaces::action::Target::Goal();
-    goal_msg.target_pose[0] = m_targets(m_current_target_index, 0);
-    goal_msg.target_pose[1] = m_targets(m_current_target_index, 1);
-    goal_msg.target_pose[2] = m_targets(m_current_target_index, 2);
+    goal_msg.target_pose[0UL] = m_targets(m_current_target_index, 0);
+    goal_msg.target_pose[1UL] = m_targets(m_current_target_index, 1);
+    goal_msg.target_pose[2UL] = m_targets(m_current_target_index, 2);
 
     auto send_goal_options = rclcpp_action::Client<interfaces::action::Target>::SendGoalOptions();
     send_goal_options.feedback_callback = std::bind(&ManagerNode::action_feedback_callback, this, _1, _2);
@@ -161,7 +160,7 @@ private:
   }
 
   //
-  void action_feedback_callback(std::shared_ptr<rclcpp_action::ClientGoalHandle<interfaces::action::Target>> goal_handle,  const std::shared_ptr<const interfaces::action::Target::Feedback> feedback)
+  void action_feedback_callback(std::shared_ptr<rclcpp_action::ClientGoalHandle<interfaces::action::Target>> goal_handle, const std::shared_ptr<const interfaces::action::Target::Feedback> feedback)
   {
     RCLCPP_INFO(this->get_logger(), "Distance to target: %.2f, Status: %s", feedback->distance_to_target, feedback->current_status.c_str());
   }
@@ -172,7 +171,6 @@ private:
     if (result.code == rclcpp_action::ResultCode::SUCCEEDED)
     {
       RCLCPP_INFO(this->get_logger(), "Target reached successfully");
-      
     }
     else
     {
@@ -185,25 +183,25 @@ private:
   // Subscriber callback function to update catheter tip position from the em tracker
   void base_tool_callback(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
-    m_base_tool_pos[0] = msg->p[0];
-    m_base_tool_pos[1] = msg->p[1];
-    m_base_tool_pos[2] = msg->p[2];
+    m_base_tool_pos[0UL] = msg->p[0UL];
+    m_base_tool_pos[1UL] = msg->p[1UL];
+    m_base_tool_pos[2UL] = msg->p[2UL];
     // RCLCPP_INFO(this->get_logger(), "New tip");
   }
 
   // Subscriber callback function to update catheter tip position from the em tracker
   void phantom_tool_callback(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
-    m_phantom_tool_pos[0] = msg->p[0];
-    m_phantom_tool_pos[1] = msg->p[1];
-    m_phantom_tool_pos[2] = msg->p[2];
+    m_phantom_tool_pos[0UL] = msg->p[0UL];
+    m_phantom_tool_pos[1UL] = msg->p[1UL];
+    m_phantom_tool_pos[2UL] = msg->p[2UL];
     // RCLCPP_INFO(this->get_logger(), "New tip");
   }
 
   // member variables
   size_t count_;
-  double m_sample_time = 1e-3; //[s]
-  double m_t, m_t0 = 0;
+  double m_sample_time = 1.00E-3; //[s]
+  double m_t, m_t0 = 0.00;
 
   std::vector<double> m_traj;
   long unsigned int m_traj_row = 0;
@@ -222,12 +220,11 @@ private:
 
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool_1;
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool_2;
-  
+
   rclcpp::CallbackGroup::SharedPtr m_callback_group_1;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_2;
 
   std::atomic<bool> m_is_experiment_running;
-
 };
 
 int main(int argc, char *argv[])
@@ -245,20 +242,17 @@ int main(int argc, char *argv[])
 template <typename MatrixType>
 MatrixType readFromCSV(MatrixType &Mat, const std::string &filePath)
 {
-  // std::string filePath, file;
+  // Construct file path and name
+  const std::filesystem::path Dir(filePath);
 
-  // // relative path to the folder containing clinical data
-  // filePath = "../../Trajectories/";
-  // file = trajectoryName + ".csv";
+  // Ensure the directory exists
+  std::filesystem::create_directories(Dir);
 
-  // file from which the information will be read from
-  std::ifstream CSV_file;
-  // std::cout << filePath << std::endl;
-  CSV_file.open((filePath).c_str(), std::ifstream::in);
-  if (!CSV_file.is_open())
+  // Open the CSV file
+  CSV_file.open(filePath, std::ifstream::in);
+  if (!csvFile.is_open())
   {
-    std::cerr << "Error opening the CSV file within: " << __PRETTY_FUNCTION__ << "\n";
-    return Mat = -1.00;
+    throw std::runtime_error("Error opening the CSV file: " + fileName.string());
   }
 
   typedef boost::tokenizer<boost::escaped_list_separator<char>> Tokenizer;

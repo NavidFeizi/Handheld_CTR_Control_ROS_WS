@@ -102,7 +102,6 @@ private:
     bool check_all_nodes_enabled();
     bool check_all_encoders_set();
 
-
     std::shared_ptr<Node> m_inner_rot;
     std::shared_ptr<Node> m_inner_tran;
     std::shared_ptr<Node> m_middle_rot;
@@ -113,15 +112,15 @@ private:
 
     unsigned int sample_time; // commandPeriod [ms], minimum
     int operation_mode;
-    blaze::StaticVector<double, 4UL>  encoder_res;
-    blaze::StaticVector<double, 4UL>  velocity_factor;
-    blaze::StaticVector<double, 4UL>  gear_ratio;
-    blaze::StaticVector<double, 4UL>  m_max_acc; // deg->rev or mm->rev
-    blaze::StaticVector<double, 4UL>  m_max_vel;
+    blaze::StaticVector<double, 4UL> encoder_res;
+    blaze::StaticVector<double, 4UL> velocity_factor;
+    blaze::StaticVector<double, 4UL> gear_ratio;
+    blaze::StaticVector<double, 4UL> m_max_acc; // deg->rev or mm->rev
+    blaze::StaticVector<double, 4UL> m_max_vel;
 
-    blaze::StaticVector<double, 4UL>  lowerBounds;
-    blaze::StaticVector<double, 4UL>  upperBounds;
-    blaze::StaticVector<double, 4UL>  posOffsets;
+    blaze::StaticVector<double, 4UL> lowerBounds;
+    blaze::StaticVector<double, 4UL> upperBounds;
+    blaze::StaticVector<double, 4UL> posOffsets;
     double clearance_min;
     double clearance_max;
     bool flag_position_limit;

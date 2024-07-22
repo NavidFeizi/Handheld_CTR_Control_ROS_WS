@@ -111,6 +111,7 @@ private:
     m_base_tool = {msg->p[0UL] * 1.00E3,
                    msg->p[1UL] * 1.00E3,
                    msg->p[2UL] * 1.00E3};
+
     m_flag_new_feedback = true;
   }
 
@@ -122,6 +123,7 @@ private:
     m_base_tool = {msg->p[0UL] * 1.00E3,
                    msg->p[1UL] * 1.00E3,
                    msg->p[2UL] * 1.00E3};
+                   
     m_flag_new_feedback = true;
   }
 
