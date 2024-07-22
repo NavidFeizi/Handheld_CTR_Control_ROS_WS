@@ -65,6 +65,8 @@ private:
   {
     std::cout << "Setting up controller..." << std::endl;
     // TODO: Add controller initialization code here.
+
+    // This is my change ==> Filipe C. Pedrosa
   }
 
   /**

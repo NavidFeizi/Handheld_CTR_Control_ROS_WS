@@ -109,7 +109,7 @@ void Calculate_Transformation(const std::vector<StaticVector<double, 3UL>> &land
   std::random_device rd;
   std::mt19937 gen(rd());
   std::uniform_real_distribution<double> dist;
-  double error, error_min = 1000.0;
+  double error, error_min = 1000.00;
 
   for (size_t i = 0; i < 50; i++)
   {
