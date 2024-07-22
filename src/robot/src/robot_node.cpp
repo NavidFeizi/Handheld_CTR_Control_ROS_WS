@@ -202,10 +202,10 @@ private:
       m_targpublisher_alive_tmep = true;
       m_x_des = blaze::StaticVector<double, 4UL>(0.00);
 
-      m_x_des[0UL] = msg->position[0UL];
-      m_x_des[1UL] = msg->position[1UL];
-      m_x_des[2UL] = msg->position[2UL];
-      m_x_des[3UL] = msg->position[3UL];
+      m_x_des[0UL] = msg->position[0UL]*360/M_PI;
+      m_x_des[1UL] = msg->position[1UL]*1e3;
+      m_x_des[2UL] = msg->position[2UL]*360/M_PI;
+      m_x_des[3UL] = msg->position[3UL]*1e3;
     }
 
     // RCLCPP_INFO(this->get_logger(), "New Target");

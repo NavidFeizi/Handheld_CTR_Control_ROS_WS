@@ -4,6 +4,7 @@ project(CTRlib VERSION 1.0 LANGUAGES CXX)
 # List the CTR library source files
 set(CTR_LIB_SOURCES
     # src/collisionCheck.cpp
+    # src/collisionCheck.cpp
     src/CTR.cpp
     src/Observer.cpp
     src/ODESystem.cpp
@@ -51,6 +52,8 @@ target_link_libraries(CTRlib
 # endif()
 
 # # Find FCL
+# find_package(fcl REQUIRED)
+# Find FCL
 # find_package(fcl REQUIRED)
 
 # if(fcl_FOUND)
