@@ -10,7 +10,7 @@
 This software establishes a connection with the NDI Aurora EM tracker to perform the following functions:
 * Reads data from tool sensors and the base sensor, and publishes the position of the tool relative to the base frame.
 * Performs landmark registration.
-* Operates at the maximum sampling frequency ~66Hz - 'turbo mode'.
+* Operates at the default sampling frequency ~40Hz .
 * For older device versions that do not support USB, adjust the baud rate in `ndi_api` (`CombinedApi.cpp`) to a feasible value.
 
 ## Building Requirements
@@ -21,6 +21,7 @@ Ensure that the following libraries are installed on your system:
 * [Blaze Library](https://bitbucket.org/blaze-lib/blaze/src/master/)
 * [LAPACK](http://www.netlib.org/lapack/)
 * [NLopt](https://nlopt.readthedocs.io/en/latest/)
+* [OpenIGTLink](https://openigtlink.org/)
 
 ### Setup EMtracker USB Connection
 
