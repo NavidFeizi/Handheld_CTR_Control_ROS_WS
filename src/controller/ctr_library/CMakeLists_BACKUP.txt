@@ -1,0 +1,52 @@
+# listing the CTR library source files into a variable
+set(CTR_LIB_SOURCES
+    src/collisionCheck.cpp
+    src/CTR.cpp
+    src/Observer.cpp
+    src/ODESystem.cpp
+    src/Segment.cpp
+    src/Tube.cpp
+)
+
+# creating a CTR static library
+add_library(CTRlib STATIC ${CTR_LIB_SOURCES})
+target_include_directories(CTRlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# linking the library dependency on the NLOPT optimization and math libraries
+target_link_libraries(CTRlib PRIVATE nlopt m)
+
+set(VTK_DIR "/usr/lib/cmake/vtk/")
+find_package(VTK REQUIRED HINTS ${VTK_DIR} COMPONENTS
+    CommonCore
+    FiltersCore
+)
+
+if(VTK_FOUND)
+    message(STATUS "VTK has been found!")
+    target_link_libraries(CTRlib PUBLIC ${VTK_LIBRARIES} vtkIOCore)
+elseif(NOT VTK_FOUND)
+    error(STATUS "VTK library has not been found")
+endif()
+
+
+# Check for the Eigen libray. If found, print message, include dirs, and link libraries.
+find_package(Eigen3 REQUIRED)
+
+if(Eigen3_FOUND)
+    message(STATUS "Eigen3 has been found!")
+    include_directories(${EIGEN_INCLUDE_DIRS})
+    message(STATUS "Eigen include: " ${EIGEN_INCLUDE_DIRS})
+    target_link_libraries(CTRlib PUBLIC Eigen3::Eigen)
+else()
+    message(FATAL_ERROR "Eigen3 has not been found!")
+endif()
+
+find_package(fcl REQUIRED)
+
+if(fcl_FOUND)
+    message(STATUS "FCL has been found!")
+    include_directories(${FCL_INCLUDE_DIRS})
+    message(STATUS "FCL include: " ${FCL_INCLUDE_DIRS})
+    target_link_libraries(CTRlib PUBLIC ${FCL_LIBRARIES})
+else()
+    message(FATAL_ERROR "FCL has not been found!")
+endif()
