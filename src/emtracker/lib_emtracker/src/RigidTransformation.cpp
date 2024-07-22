@@ -16,32 +16,32 @@
 #include "RigidTransformation.hpp"
 
 // Function to multiply two quaternions
-StaticVector<double, 4> quaternionMultiply(const StaticVector<double, 4> &q1, const StaticVector<double, 4> &q2)
+StaticVector<double, 4UL> quaternionMultiply(const StaticVector<double, 4> &q1, const StaticVector<double, 4> &q2)
 {
-  return StaticVector<double, 4>{
-      q1[0] * q2[0] - q1[1] * q2[1] - q1[2] * q2[2] - q1[3] * q2[3],
-      q1[0] * q2[1] + q1[1] * q2[0] + q1[2] * q2[3] - q1[3] * q2[2],
-      q1[0] * q2[2] - q1[1] * q2[3] + q1[2] * q2[0] + q1[3] * q2[1],
-      q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1] + q1[3] * q2[0]};
+  return {
+      q1[0UL] * q2[0UL] - q1[1UL] * q2[1UL] - q1[2UL] * q2[2UL] - q1[3UL] * q2[3UL],
+      q1[0UL] * q2[1UL] + q1[1UL] * q2[0UL] + q1[2UL] * q2[3UL] - q1[3UL] * q2[2UL],
+      q1[0UL] * q2[2UL] - q1[1UL] * q2[3UL] + q1[2UL] * q2[0UL] + q1[3UL] * q2[1UL],
+      q1[0UL] * q2[3UL] + q1[1UL] * q2[2UL] - q1[2UL] * q2[1UL] + q1[3UL] * q2[0UL]};
 }
 
 // Function to conjugate a quaternion
-StaticVector<double, 4> quaternionConjugate(const StaticVector<double, 4> &q)
+StaticVector<double, 4UL> quaternionConjugate(const StaticVector<double, 4UL> &q)
 {
-  return StaticVector<double, 4>{q[0], -q[1], -q[2], -q[3]};
+  return {q[0UL], -q[1UL], -q[2UL], -q[3UL]};
 }
 
 /* Rotates a 3D vector with RotationQuaternion */
-void Quaternion_Rotate_Point(const StaticVector<double, 4> &rotationQuaternion,
-                             const StaticVector<double, 3> &originalVector,
-                             StaticVector<double, 3> &rotatedVector)
+void Quaternion_Rotate_Point(const StaticVector<double, 4UL> &rotationQuaternion,
+                             const StaticVector<double, 3UL> &originalVector,
+                             StaticVector<double, 3UL> &rotatedVector)
 {
-  StaticVector<double, 4> V{0.0, originalVector[0], originalVector[1], originalVector[2]};
-  StaticVector<double, 4> q_bar = quaternionConjugate(rotationQuaternion);
-  StaticVector<double, 4> qV = quaternionMultiply(rotationQuaternion, V);
-  StaticVector<double, 4> qVq_bar = quaternionMultiply(qV, q_bar);
+  StaticVector<double, 4UL> V{0.00, originalVector[0UL], originalVector[1UL], originalVector[2UL]};
+  StaticVector<double, 4UL> q_bar = quaternionConjugate(rotationQuaternion);
+  StaticVector<double, 4UL> qV = quaternionMultiply(rotationQuaternion, V);
+  StaticVector<double, 4UL> qVq_bar = quaternionMultiply(qV, q_bar);
 
-  rotatedVector = StaticVector<double, 3>{qVq_bar[1], qVq_bar[2], qVq_bar[3]};
+  rotatedVector = {qVq_bar[1UL], qVq_bar[2UL], qVq_bar[3UL]};
 }
 
 /* Calculates inverse of a rigid transformation */
@@ -66,7 +66,7 @@ void Combine_Quat_Transformation(const quatTransformation &transformation01,
                                  quatTransformation &transformation02)
 {
   // combine tranlation
-  StaticVector<double, 3> translation_12_0; // translation from frame 1 to frame 2 in frame 0 view point
+  StaticVector<double, 3UL> translation_12_0; // translation from frame 1 to frame 2 in frame 0 view point
   Quaternion_Rotate_Point(transformation01.rotation, transformation12.translation, translation_12_0);
   transformation02.translation = transformation01.translation + translation_12_0; // translation from frame 0 to frame 2 in frame 0 view point
 
@@ -76,8 +76,8 @@ void Combine_Quat_Transformation(const quatTransformation &transformation01,
 
 /* Function to calculate the transformation that transfers the landmarks_measured frame
     to the landmarks_truth frame */
-void Calculate_Transformation(const std::vector<StaticVector<double, 3>> &landmarks_measured,
-                              const std::vector<StaticVector<double, 3>> &landmarks_truth,
+void Calculate_Transformation(const std::vector<StaticVector<double, 3UL>> &landmarks_measured,
+                              const std::vector<StaticVector<double, 3UL>> &landmarks_truth,
                               quatTransformation &transformation)
 {
   // Create an instance of the NLOPT optimizer
@@ -88,22 +88,22 @@ void Calculate_Transformation(const std::vector<StaticVector<double, 3>> &landma
   landmarks.truth = landmarks_truth;
 
   // Initialize initial guess
-  std::vector<double> x(7UL, 0.0);
+  std::vector<double> x(7UL, 0.00);
 
   // Set bounds for the optimization parameters (if needed)
-  std::vector<double> lb = {-500.0, -500.0, -500.0, -0.9999, -1.0, -1.0, -1.0};
-  std::vector<double> ub = {500.0, 500.0, 500.0, 0.9999, 1.0, 1.0, 1.0};
+  constexpr std::vector<double> lb = {-500.00, -500.00, -500.00, -0.9999, -1.00, -1.00, -1.00};
+  constexpr std::vector<double> ub = {500.00, 500.00, 500.00, 0.9999, 1.00, 1.00, 1.00};
   optimizer.set_lower_bounds(lb);
   optimizer.set_upper_bounds(ub);
 
   // Set the objective function and equality constraint
   optimizer.set_min_objective(Objective_Function, &landmarks);
-  optimizer.add_equality_constraint(Equality_Constraint, nullptr, 1e-8);
+  optimizer.add_equality_constraint(Equality_Constraint, nullptr, 1.00E-8);
 
   // Specify stopping criteria (optional)
-  optimizer.set_maxeval(200000); // Maximum number of function evaluations
-  optimizer.set_ftol_rel(1e-12); // Relative tolerance for convergence
-  optimizer.set_xtol_rel(1e-8);
+  optimizer.set_maxeval(200000);    // Maximum number of function evaluations
+  optimizer.set_ftol_rel(1.00E-12); // Relative tolerance for convergence
+  optimizer.set_xtol_rel(1.00E-8);
 
   // Create a random number generator
   std::random_device rd;
@@ -111,7 +111,7 @@ void Calculate_Transformation(const std::vector<StaticVector<double, 3>> &landma
   std::uniform_real_distribution<double> dist;
   double error, error_min = 1000.0;
 
-  for (int i = 0; i < 50; i++)
+  for (size_t i = 0; i < 50; i++)
   {
     // Generate random initial guesses within the bounds
     for (size_t j = 0; j < x.size(); ++j)
@@ -125,8 +125,8 @@ void Calculate_Transformation(const std::vector<StaticVector<double, 3>> &landma
     // Track the minimum error and the corresponding x
     if (error < error_min)
     {
-      transformation.translation = StaticVector<double, 3>{x[0], x[1], x[2]};
-      transformation.rotation = StaticVector<double, 4>{x[3], x[4], x[5], x[6]};
+      transformation.translation = {x[0UL], x[1UL], x[2UL]};
+      transformation.rotation = {x[3UL], x[4UL], x[5UL], x[6UL]};
       transformation.error = error;
       error_min = error;
     }
@@ -138,13 +138,13 @@ void Calculate_Transformation(const std::vector<StaticVector<double, 3>> &landma
 
   std::cout << "Optimization Finished" << std::endl;
   std::cout << "Calculated Transformation => "
-            << "X: " << transformation.translation[0] << "[mm]  "
-            << "Y: " << transformation.translation[1] << "[mm]  "
-            << "Z: " << transformation.translation[2] << "[mm]  |  "
-            << "q0: " << transformation.rotation[0] << "   "
-            << "qX: " << transformation.rotation[1] << "   "
-            << "qY: " << transformation.rotation[2] << "   "
-            << "qZ: " << transformation.rotation[3] << "  |  "
+            << "X: " << transformation.translation[0UL] << "[mm]  "
+            << "Y: " << transformation.translation[1UL] << "[mm]  "
+            << "Z: " << transformation.translation[2UL] << "[mm]  |  "
+            << "q0: " << transformation.rotation[0UL] << "   "
+            << "qX: " << transformation.rotation[1UL] << "   "
+            << "qY: " << transformation.rotation[2UL] << "   "
+            << "qZ: " << transformation.rotation[3UL] << "  |  "
             << "RMSE: " << sqrt(transformation.error) << "[mm]  " << std::endl;
 }
 
@@ -157,18 +157,14 @@ double Objective_Function(const std::vector<double> &x, std::vector<double> &gra
   objFuncData *landmarks = reinterpret_cast<objFuncData *>(f_data);
   quatTransformation rigidTran, rigidTran_inv;                  // rigid transformatino from EM reference frame to CTR frame
   quatTransformation tran_measured, tran_estimated, tran_truth; // translation of the landmarks in the CTR frame
-  rigidTran.translation = StaticVector<double, 3>{x[0], x[1], x[2]};
-  rigidTran.rotation = StaticVector<double, 4>{x[3], x[4], x[5], x[6]};
-  double dist, error = 0;
+  rigidTran.translation = {x[0UL], x[1UL], x[2UL]};
+  rigidTran.rotation = {x[3UL], x[4UL], x[5UL], x[6UL]};
+  double dist, error = 0.00;
 
-  for (unsigned int i = 0; i < landmarks->measured.size(); i++)
+  for (size_t i = 0; i < landmarks->measured.size(); i++)
   {
-    tran_measured.translation = StaticVector<double, 3>{landmarks->measured[i][0],
-                                                        landmarks->measured[i][1],
-                                                        landmarks->measured[i][2]};
-    tran_truth.translation = StaticVector<double, 3>{landmarks->truth[i][0],
-                                                     landmarks->truth[i][1],
-                                                     landmarks->truth[i][2]};
+    tran_measured.translation = {landmarks->measured[i][0UL], landmarks->measured[i][1UL], landmarks->measured[i][2UL]};
+    tran_truth.translation = {landmarks->truth[i][0UL], landmarks->truth[i][1UL], landmarks->truth[i][2UL]};
     Inverse_Quat_Transformation(rigidTran, rigidTran_inv);
     Combine_Quat_Transformation(rigidTran_inv, tran_measured, tran_estimated);
     Euclidean_Distance(tran_estimated.translation, tran_truth.translation, dist);
@@ -181,7 +177,7 @@ double Objective_Function(const std::vector<double> &x, std::vector<double> &gra
 double Equality_Constraint(const std::vector<double> &x, std::vector<double> &grad, void *f_data)
 {
   // This function enforces x[3]^2 + x[4]^2 + x[5]^2 - 1 = 0
-  return x[3] * x[3] + x[4] * x[4] + x[5] * x[5] + x[6] * x[6] - 1;
+  return x[3UL] * x[3UL] + x[4UL] * x[4UL] + x[5UL] * x[5UL] + x[6UL] * x[6UL] - 1.00;
 }
 
 /* Function to convert nlopt::result to string */
@@ -215,96 +211,103 @@ std::string nloptResult2String(nlopt::result result)
 }
 
 // Function to calculate the transformation matrix from quaternion and translation
-void calculateTransformationMatrix(const blaze::StaticVector<double, 4> &rotation,
-                                   const blaze::StaticVector<double, 3> &translation,
-                                   blaze::StaticMatrix<double, 4, 4> &transformationMatrix)
+void calculateTransformationMatrix(const blaze::StaticVector<double, 4UL> &rotation,
+                                   const blaze::StaticVector<double, 3UL> &translation,
+                                   blaze::StaticMatrix<double, 4UL, 4UL> &transformationMatrix)
 {
   // Extract quaternion components
-  double q0 = rotation[0];
-  double q1 = rotation[1];
-  double q2 = rotation[2];
-  double q3 = rotation[3];
+  const double q0 = rotation[0UL];
+  const double q1 = rotation[1UL];
+  const double q2 = rotation[2UL];
+  const double q3 = rotation[3UL];
 
   // Compute rotation matrix components
-  transformationMatrix(0, 0) = 1.0 - 2.0 * (q2 * q2 + q3 * q3);
-  transformationMatrix(0, 1) = 2.0 * (q1 * q2 - q0 * q3);
-  transformationMatrix(0, 2) = 2.0 * (q1 * q3 + q0 * q2);
-  transformationMatrix(0, 3) = translation[0];
+  transformationMatrix(0UL, 0UL) = 1.00 - 2.00 * (q2 * q2 + q3 * q3);
+  transformationMatrix(0UL, 1UL) = 2.00 * (q1 * q2 - q0 * q3);
+  transformationMatrix(0UL, 2UL) = 2.00 * (q1 * q3 + q0 * q2);
+  transformationMatrix(0UL, 3UL) = translation[0UL];
 
-  transformationMatrix(1, 0) = 2.0 * (q1 * q2 + q0 * q3);
-  transformationMatrix(1, 1) = 1.0 - 2.0 * (q1 * q1 + q3 * q3);
-  transformationMatrix(1, 2) = 2.0 * (q2 * q3 - q0 * q1);
-  transformationMatrix(1, 3) = translation[1];
+  transformationMatrix(1UL, 0UL) = 2.00 * (q1 * q2 + q0 * q3);
+  transformationMatrix(1UL, 1UL) = 1.00 - 2.00 * (q1 * q1 + q3 * q3);
+  transformationMatrix(1UL, 2UL) = 2.00 * (q2 * q3 - q0 * q1);
+  transformationMatrix(1UL, 3UL) = translation[1UL];
 
-  transformationMatrix(2, 0) = 2.0 * (q1 * q3 - q0 * q2);
-  transformationMatrix(2, 1) = 2.0 * (q2 * q3 + q0 * q1);
-  transformationMatrix(2, 2) = 1.0 - 2.0 * (q1 * q1 + q2 * q2);
-  transformationMatrix(2, 3) = translation[2];
+  transformationMatrix(2UL, 0UL) = 2.00 * (q1 * q3 - q0 * q2);
+  transformationMatrix(2UL, 1UL) = 2.00 * (q2 * q3 + q0 * q1);
+  transformationMatrix(2UL, 2UL) = 1.00 - 2.00 * (q1 * q1 + q2 * q2);
+  transformationMatrix(2UL, 3UL) = translation[2UL];
 
-  transformationMatrix(3, 0) = 0.0;
-  transformationMatrix(3, 1) = 0.0;
-  transformationMatrix(3, 2) = 0.0;
-  transformationMatrix(3, 3) = 1.0;
+  transformationMatrix(3UL, 0UL) = 0.00;
+  transformationMatrix(3UL, 1UL) = 0.00;
+  transformationMatrix(3UL, 2UL) = 0.00;
+  transformationMatrix(3UL, 3UL) = 1.00;
   return;
 }
 
 /* Function to convert rotation matrix to the quaternion */
-void Rotmat2Quaternion(const StaticMatrix<double, 3, 3> &rotmat, StaticVector<double, 4> &rotqaut)
+void Rotmat2Quaternion(const StaticMatrix<double, 3UL, 3UL> &R, StaticVector<double, 4UL> &quat)
 {
-  double w, x, y, z;
-  double trace = blaze::trace(rotmat); // Use trace for the trace of the matrix
-  if (trace > 0)
+  double n4;                         // the norm of quaternion multiplied by 4
+  const double tr = blaze::trace(R); // trace of matrix
+
+  if (tr > 0.00)
   {
-    double s = 0.5 / std::sqrt(trace + 1.0);
-    w = 0.25 / s;
-    x = (rotmat(2, 1) - rotmat(1, 2)) * s;
-    y = (rotmat(0, 2) - rotmat(2, 0)) * s;
-    z = (rotmat(1, 0) - rotmat(0, 1)) * s;
+    quat[0UL] = tr + 1.00;
+    quat[1UL] = R(1UL, 2UL) - R(2UL, 1UL);
+    quat[2UL] = R(2UL, 0UL) - R(0UL, 2UL);
+    quat[3UL] = R(0UL, 1UL) - R(1UL, 0UL);
+    n4 = h[0UL];
   }
   else
   {
-    if (rotmat(0, 0) > rotmat(1, 1) && rotmat(0, 0) > rotmat(2, 2))
+    size_t i = 0UL;
+    if (R(1UL, 1UL) > R(0UL, 0UL))
+      i = 1UL;
+    if (R(2UL, 2UL) > R(i, i))
+      i = 2UL;
+
+    switch (i)
     {
-      double s = 2.0 * std::sqrt(1.0 + rotmat(0, 0) - rotmat(1, 1) - rotmat(2, 2));
-      w = (rotmat(2, 1) - rotmat(1, 2)) / s;
-      x = 0.25 * s;
-      y = (rotmat(0, 1) + rotmat(1, 0)) / s;
-      z = (rotmat(0, 2) + rotmat(2, 0)) / s;
-    }
-    else if (rotmat(1, 1) > rotmat(2, 2))
-    {
-      double s = 2.0 * std::sqrt(1.0 + rotmat(1, 1) - rotmat(0, 0) - rotmat(2, 2));
-      w = (rotmat(0, 2) - rotmat(2, 0)) / s;
-      x = (rotmat(0, 1) + rotmat(1, 0)) / s;
-      y = 0.25 * s;
-      z = (rotmat(1, 2) + rotmat(2, 1)) / s;
-    }
-    else
-    {
-      double s = 2.0 * std::sqrt(1.0 + rotmat(2, 2) - rotmat(0, 0) - rotmat(1, 1));
-      w = (rotmat(1, 0) - rotmat(0, 1)) / s;
-      x = (rotmat(0, 2) + rotmat(2, 0)) / s;
-      y = (rotmat(1, 2) + rotmat(2, 1)) / s;
-      z = 0.25 * s;
+    case 0UL:
+      quat[0UL] = R(1UL, 2UL) - R(2UL, 1UL);
+      quat[1UL] = 1.00 + R(0UL, 0UL) - R(1UL, 1UL) - R(2UL, 2UL);
+      quat[2UL] = R(1UL, 0UL) + R(0UL, 1UL);
+      quat[3UL] = R(2UL, 0UL) + R(0UL, 2UL);
+      n4 = h[1UL];
+      break;
+    case 1UL:
+      quat[0UL] = R(2UL, 0UL) - R(0UL, 2UL);
+      quat[1UL] = R(1UL, 0UL) + R(0UL, 1UL);
+      quat[2UL] = 1.00 + R(1UL, 1UL) - R(0UL, 0UL) - R(2UL, 2UL);
+      quat[3UL] = R(2UL, 1UL) + R(1UL, 2UL);
+      n4 = h[2UL];
+      break;
+    case 2UL:
+      quat[0UL] = R(0UL, 1UL) - R(1UL, 0UL);
+      quat[1UL] = R(2UL, 0UL) + R(0UL, 2UL);
+      quat[2UL] = R(2UL, 1UL) + R(1UL, 2UL);
+      quat[3UL] = 1.00 + R(2UL, 2UL) - R(0UL, 0UL) - R(1UL, 1UL);
+      n4 = h[3UL];
+      break;
     }
   }
 
-  rotqaut = StaticVector<double, 4>{w, x, y, z};
+  quat *= 1.00 / (2.00 * std::sqrt(n4));
 }
 
 /* Function to convert Euler angles rotation to quaternion */
 void Euler2Quaternion(const double heading, const double attitude, const double bank, StaticVector<double, 4UL> &h)
 {
   // yaw, pitch, roll
-  double theta = 0.5 * heading;
-  double phi = 0.5 * attitude;
-  double psi = 0.5 * bank;
+  const double theta = 0.50 * heading;
+  const double phi = 0.50 * attitude;
+  const double psi = 0.50 * bank;
 
-  double c1 = cos(theta), s1 = sin(theta);
-  double c2 = cos(phi), s2 = sin(phi);
-  double c3 = cos(psi), s3 = sin(psi);
-  double c1c2 = c1 * c2;
-  double s1s2 = s1 * s2;
+  const double c1 = cos(theta), s1 = sin(theta);
+  const double c2 = cos(phi), s2 = sin(phi);
+  const double c3 = cos(psi), s3 = sin(psi);
+  const double c1c2 = c1 * c2;
+  const double s1s2 = s1 * s2;
 
   h[0UL] = c1c2 * c3 - s1s2 * s3;
   h[1UL] = c1c2 * s3 + s1s2 * c3;
@@ -313,23 +316,23 @@ void Euler2Quaternion(const double heading, const double attitude, const double 
 }
 
 /* Function to convert Quaternion to Euler angles rotation */
-void QuaternionToEuler(const StaticVector<double, 4> &quaternion, double *azimuth, double *elevation, double *roll)
+void QuaternionToEuler(const StaticVector<double, 4UL> &quaternion, double *azimuth, double *elevation, double *roll)
 {
   // Extract quaternion components
-  double q0 = quaternion[0];
-  double q1 = quaternion[1];
-  double q2 = quaternion[2];
-  double q3 = quaternion[3];
+  const double q0 = quaternion[0UL];
+  const double q1 = quaternion[1UL];
+  const double q2 = quaternion[2UL];
+  const double q3 = quaternion[3UL];
 
   // Calculate azimuth (yaw)
-  *azimuth = atan2(2.0 * (q2 * q3 + q0 * q1), 1.0 - 2.0 * (q1 * q1 + q2 * q2));
+  *azimuth = atan2(2.00 * (q2 * q3 + q0 * q1), 1.00 - 2.00 * (q1 * q1 + q2 * q2));
 
   // Calculate elevation (pitch)
-  double sinElevation = 2.0 * (q0 * q2 - q1 * q3);
-  if (std::abs(sinElevation) >= 1.0)
+  double sinElevation = 2.00 * (q0 * q2 - q1 * q3);
+  if (std::abs(sinElevation) >= 1.00)
   {
     // Handle numerical instability near poles
-    *elevation = sinElevation < 0.0 ? -M_PI / 2.0 : M_PI / 2.0;
+    *elevation = sinElevation < 0.00 ? - M_PI_2 : M_PI_2;
   }
   else
   {
@@ -337,16 +340,11 @@ void QuaternionToEuler(const StaticVector<double, 4> &quaternion, double *azimut
   }
 
   // Calculate roll (bank)
-  *roll = atan2(2.0 * (q0 * q3 + q1 * q2), 1.0 - 2.0 * (q2 * q2 + q3 * q3));
-
-  // // Convert angles from radians to degrees
-  // *azimuth *= 180.0 / M_PI;
-  // *elevation *= 180.0 / M_PI;
-  // *roll *= 180.0 / M_PI;
+  *roll = atan2(2.00 * (q0 * q3 + q1 * q2), 1.00 - 2.00 * (q2 * q2 + q3 * q3));
 }
 
 /* Function to calculate Euclidean distance between two translation vectors */
-void Euclidean_Distance(const blaze::StaticVector<double, 3> &a, const blaze::StaticVector<double, 3> &b, double &dist)
+void Euclidean_Distance(const blaze::StaticVector<double, 3UL> &a, const blaze::StaticVector<double, 3UL> &b, double &dist)
 {
   dist = blaze::norm(a - b);
 }
@@ -356,65 +354,65 @@ void Euclidean_Distance(const blaze::StaticVector<double, 3> &a, const blaze::St
 // function that returns the rotation matrix Rx of any angle theta
 StaticMatrix<double, 3UL, 3UL> RotX(const double &theta)
 {
-  StaticMatrix<double, 3UL, 3UL> R;
-  double c(cos(theta)), s(sin(theta));
-  R = {{1, 0, 0},
+  const double c(cos(theta)), s(sin(theta));
+  StaticMatrix<double, 3UL, 3UL> R = {{1, 0, 0},
        {0, c, -s},
        {0, s, c}};
   return R;
 }
 StaticMatrix<double, 3UL, 3UL> RotY(const double &theta)
 {
-  StaticMatrix<double, 3UL, 3UL> R;
-  double c(cos(theta)), s(sin(theta));
-  R = {{c, 0, s},
+  const double c(cos(theta)), s(sin(theta));
+  StaticMatrix<double, 3UL, 3UL> R = {{c, 0, s},
        {0, 1, 0},
        {-s, 0, c}};
+
   return R;
 }
 StaticMatrix<double, 3UL, 3UL> RotZ(const double &theta)
 {
-  StaticMatrix<double, 3UL, 3UL> R;
-  double c(cos(theta)), s(sin(theta));
-  R = {{c, -s, 0},
+  const double c(cos(theta)), s(sin(theta));
+  StaticMatrix<double, 3UL, 3UL> R = {{c, -s, 0},
        {s, c, 0},
        {0, 0, 1}};
+
   return R;
 }
-void EulerToRotMat(const std::vector<double> &Angles, StaticMatrix<double, 3UL, 3UL> *R)
+void EulerToRotMat(const std::vector<double> &Angles, StaticMatrix<double, 3UL, 3UL> &R)
 {
-  *R = RotZ(Angles[0]) * RotY(Angles[1]) * RotX(Angles[2]);
+  R = RotZ(Angles[0UL]) * RotY(Angles[1UL]) * RotX(Angles[2UL]);
 }
-StaticMatrix<double, 3UL, 3UL> quaternion2rotmat(std::vector<double> q)
+
+StaticMatrix<double, 3UL, 3UL> quaternion2rotmat(std::vector<double>& q)
 {
-  StaticMatrix<double, 3UL, 3UL> R;
-  R = {{2 * (q[0] * q[0] + q[1] * q[1]) - 1, 2 * (q[1] * q[2] - q[0] * q[3]), 2 * (q[1] * q[3] + q[0] * q[2])},
-       {2 * (q[1] * q[2] + q[0] * q[3]), 2 * (q[0] * q[0] + q[2] * q[2]) - 1, 2 * (q[2] * q[3] - q[0] * q[1])},
-       {2 * (q[1] * q[3] - q[0] * q[2]), 2 * (q[2] * q[3] + q[0] * q[1]), 2 * (q[0] * q[0] + q[3] * q[3]) - 1}};
+  StaticMatrix<double, 3UL, 3UL> R = {{2.00 * (q[0UL] * q[0UL] + q[1UL] * q[1UL]) - 1.00, 2.00 * (q[1UL] * q[2UL] - q[0UL] * q[3UL]), 2.00 * (q[1UL] * q[3UL] + q[0UL] * q[2.00])},
+       {2.00 * (q[1UL] * q[2UL] + q[0UL] * q[3UL]), 2.00 * (q[0UL] * q[0UL] + q[2UL] * q[2UL]) - 1.00, 2.00 * (q[2UL] * q[3UL] - q[0UL] * q[1.00])},
+       {2.00 * (q[1UL] * q[3UL] - q[0UL] * q[2UL]), 2.00 * (q[2UL] * q[3UL] + q[0UL] * q[1UL]), 2.00 * (q[0UL] * q[0UL] + q[3UL] * q[3UL]) - 1.00}};
+
   return R;
 }
-std::vector<double> QuaternionToEulerAngles(const std::vector<double> q)
+std::vector<double> QuaternionToEulerAngles(const std::vector<double> &q)
 {
   std::vector<double> angles(3);
 
   // roll (x-axis rotation)
   // q is : w,x,y,z,
   // angles: roll, pitch, yaw
-  double sinr_cosp = 2 * (q[0] * q[1] + q[2] * q[3]);
-  double cosr_cosp = 1 - 2 * (q[1] * q[1] + q[2] * q[2]);
+  const double sinr_cosp = 2.00 * (q[0UL] * q[1UL] + q[2UL] * q[3UL]);
+  const double cosr_cosp = 1.00 - 2.00 * (q[1UL] * q[1UL] + q[2UL] * q[2UL]);
   angles[0] = std::atan2(sinr_cosp, cosr_cosp);
 
   // pitch (y-axis rotation)
-  double sinp = 2 * (q[0] * q[2] - q[3] * q[1]);
+  const double sinp = 2.00 * (q[0UL] * q[2UL] - q[3UL] * q[1UL]);
   if (std::abs(sinp) >= 1)
-    angles[1] = std::copysign(M_PI / 2, sinp); // use 90 degrees if out of range
+    angles[1UL] = std::copysign(M_PI_2, sinp); // use 90 degrees if out of range
   else
-    angles[1] = std::asin(sinp);
+    angles[1UL] = std::asin(sinp);
 
   // yaw (z-axis rotation)
-  double siny_cosp = 2 * (q[0] * q[3] + q[1] * q[2]);
-  double cosy_cosp = 1 - 2 * (q[2] * q[2] + q[3] * q[3]);
-  angles[2] = std::atan2(siny_cosp, cosy_cosp);
+  const double siny_cosp = 2.00 * (q[0UL] * q[3UL] + q[1UL] * q[2UL]);
+  const double cosy_cosp = 1.00 - 2.00 * (q[2UL] * q[2UL] + q[3UL] * q[3UL]);
+  angles[2UL] = std::atan2(siny_cosp, cosy_cosp);
 
   return angles;
 }

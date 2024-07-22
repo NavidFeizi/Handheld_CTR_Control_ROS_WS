@@ -8,6 +8,7 @@
 #include <vector>
 #include <fstream>
 #include <string>
+#include <cmath>
 
 template <size_t N>
 struct ButterworthFilterCoefficients
@@ -24,19 +25,18 @@ public:
                                                      m_prev_U1(zeroVector()), m_prev_U2(zeroVector()),
                                                      m_prev_filtered_U1(zeroVector()), m_prev_filtered_U2(zeroVector())
     {
-        m_fs = 1 / sample_time;
+        m_fs = 1.00 / sample_time;
     }
     
     void update_coeffs(double fc)
     {
-        const double pi = 3.14159265358979323846;
-        double omega = 2 * pi * fc / m_fs; // Normalized cutoff frequency
-        double sin_omega = sin(omega);
-        double cos_omega = cos(omega);
-        double alpha = sin_omega / sqrt(2.0); // sqrt(2) gives a maximally flat response (Q factor)
+        const double omega = 2.00 * M_PI * fc / m_fs; // Normalized cutoff frequency
+        const double sin_omega = sin(omega);
+        const double cos_omega = cos(omega);
+        const double alpha = sin_omega / sqrt(2.0); // sqrt(2) gives a maximally flat response (Q factor)
 
-        double a0 = 1 + alpha;
-        m_coeffs.b0 = blaze::StaticVector<double, N>((1 - cos_omega) / 2 / a0);
+        const double a0 = 1.00 + alpha;
+        m_coeffs.b0 = blaze::StaticVector<double, N>((1 - cos_omega) / (2.00 * a0));
         m_coeffs.b1 = blaze::StaticVector<double, N>((1 - cos_omega) / a0);
         m_coeffs.b2 = m_coeffs.b0;
         m_coeffs.a1 = blaze::StaticVector<double, N>(-2 * cos_omega / a0);

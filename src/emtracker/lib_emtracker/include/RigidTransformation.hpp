@@ -31,34 +31,33 @@ using blaze::StaticVector;
 typedef struct
 {
   unsigned int counts;
-  std::vector<StaticVector<double, 3>> measured;
-  std::vector<StaticVector<double, 3>> truth;
+  std::vector<StaticVector<double, 3UL>> measured;
+  std::vector<StaticVector<double, 3UL>> truth;
 } objFuncData;
 
-StaticVector<double, 4> quaternionMultiply(const StaticVector<double, 4> &q1, const StaticVector<double, 4> &q2);
-
-StaticVector<double, 4> quaternionConjugate(const StaticVector<double, 4> &q); // or quaternion inverse
+StaticVector<double, 4UL> quaternionMultiply(const StaticVector<double,4UL> &q1, const StaticVector<double,4UL> &q2);
+StaticVector<double, 4UL> quaternionConjugate(const StaticVector<double,4UL> &q); // or quaternion inverse
 
 /* Rotates a 3D vector with RotationQuaternion */
-void Quaternion_Rotate_Point(const StaticVector<double, 4> &rotationQuaternion,
-                             const StaticVector<double, 3> &originalVector,
-                             StaticVector<double, 3> &rotatedVector);
+void Quaternion_Rotate_Point(const StaticVector<double,4UL> &rotationQuaternion,
+                             const StaticVector<double,3UL> &originalVector,
+                             StaticVector<double,3UL> &rotatedVector);
 
-void calculateTransformationMatrix(const blaze::StaticVector<double, 4> &rotation,
-                                   const blaze::StaticVector<double, 3> &translation,
-                                   blaze::StaticMatrix<double, 4, 4> &transformationMatrix);
+void calculateTransformationMatrix(const blaze::StaticVector<double,4UL> &rotation,
+                                   const blaze::StaticVector<double,3UL> &translation,
+                                   blaze::StaticMatrix<double,4UL,4UL> &transformationMatrix);
 
 typedef struct QuatTransformationStruct
 {
-  blaze::StaticVector<double, 4> rotation;
-  blaze::StaticVector<double, 3> translation;
-  double error = 0.0;
+  blaze::StaticVector<double,4UL> rotation;
+  blaze::StaticVector<double,3UL> translation;
+  double error = 0.00;
 
-  QuatTransformationStruct(const blaze::StaticVector<double, 4> &rot, const blaze::StaticVector<double, 3> &trans)
-      : rotation(rot), translation(trans), error(0.0) {}
+  QuatTransformationStruct(const blaze::StaticVector<double,4UL> &rot, const blaze::StaticVector<double,3UL> &trans)
+      : rotation(rot), translation(trans), error(0.00) {}
 
   // Default constructor with member initializers
-  QuatTransformationStruct() : rotation{1.0, 0.0, 0.0, 0.0}, translation{0.0, 0.0, 0.0}, error(0.0) {}
+  QuatTransformationStruct() : rotation{1.00, 0.00, 0.00, 0.00}, translation{0.00, 0.00, 0.00}, error(0.00) {}
 
   // Member function to get the inverse of the transformation
   QuatTransformationStruct inv() const
@@ -80,9 +79,9 @@ typedef struct QuatTransformationStruct
   }
 
   // Member function to calculate the transformation matrix
-  blaze::StaticMatrix<double, 4, 4> toMatrix() const
+  blaze::StaticMatrix<double,4UL,4UL> toMatrix() const
   {
-    blaze::StaticMatrix<double, 4, 4> transformationMatrix;
+    blaze::StaticMatrix<double,4UL,4UL> transformationMatrix;
     calculateTransformationMatrix(rotation, translation, transformationMatrix);
     return transformationMatrix;
   }
@@ -101,8 +100,8 @@ void Combine_Quat_Transformation(const quatTransformation &transformation01,
 
 /* Function to calculate the transformation that transfers the landmarks_measured frame
   to the landmarks_truth frame */
-void Calculate_Transformation(const std::vector<StaticVector<double, 3>> &landmarks_measured,
-                              const std::vector<StaticVector<double, 3>> &landmarks_truth,
+void Calculate_Transformation(const std::vector<StaticVector<double,3UL>> &landmarks_measured,
+                              const std::vector<StaticVector<double,3UL>> &landmarks_truth,
                               quatTransformation &transformation);
 
 /* Cost function of the Calculate_Transformation optimization problem
@@ -118,21 +117,21 @@ double Equality_Constraint(const std::vector<double> &x, std::vector<double> &gr
 std::string nloptResult2String(nlopt::result result);
 
 /* Function to convert rotation matrix to the quaternion */
-void Rotmat2Quaternion(const StaticMatrix<double, 3, 3> &rotmat, StaticVector<double, 4> &rotqaut);
+void Rotmat2Quaternion(const StaticMatrix<double,3UL,3UL> &R, StaticVector<double,4UL> &quat);
 
 /* Function to convert Euler angles rotation to quaternion */
 void Euler2Quaternion(const double heading, const double attitude, const double bank, StaticVector<double, 4UL> &h);
 
 /* Function to convert Quaternion to Euler angles rotation */
-void QuaternionToEuler(const StaticVector<double, 4> &quaternion, double *azimuth, double *elevation, double *roll);
+void QuaternionToEuler(const StaticVector<double,4UL> &quaternion, double *azimuth, double *elevation, double *roll);
 
 /* Function to calculate Euclidean distance between two translation vectors */
-void Euclidean_Distance(const StaticVector<double, 3> &a, const StaticVector<double, 3> &b, double &dist);
+void Euclidean_Distance(const StaticVector<double,3UL> &a, const StaticVector<double,3UL> &b, double &dist);
 
 /* Functions below are not verifiest - must be tested before use */
 StaticMatrix<double, 3UL, 3UL> RotX(const double &theta);
 StaticMatrix<double, 3UL, 3UL> RotY(const double &theta);
 StaticMatrix<double, 3UL, 3UL> RotZ(const double &theta);
-void EulerToRotMat(const std::vector<double> &Angles, StaticMatrix<double, 3UL, 3UL> *R);
-StaticMatrix<double, 3UL, 3UL> quaternion2rotmat(std::vector<double> q);
-std::vector<double> QuaternionToEulerAngles(const std::vector<double> q);
+void EulerToRotMat(const std::vector<double> &Angles, StaticMatrix<double, 3UL, 3UL> &R);
+StaticMatrix<double, 3UL, 3UL> quaternion2rotmat(std::vector<double>& q);
+std::vector<double> QuaternionToEulerAngles(const std::vector<double>& q);

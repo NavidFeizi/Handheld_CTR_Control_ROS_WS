@@ -74,16 +74,16 @@ public:
     bool Get_Controller_Switch_Status();
     void Start_Thread();
     void Enable_Operation(bool enable);
-    void Set_Zero_Position(blaze::StaticVector<double, 4> offset);
+    void Set_Zero_Position(blaze::StaticVector<double, 4UL> offset);
 
-    void set_target_position(blaze::StaticVector<double, 4> posTarget);
-    void Set_Target_Velocity(blaze::StaticVector<double, 4> velTarget);
-    void Get_Current(blaze::StaticVector<int, 4> *p_current);
-    void Get_Velocity(blaze::StaticVector<double, 4> *p_velCurrent);
-    void Get_Position(blaze::StaticVector<double, 4> *p_posCurrent);
-    void Get_PosVelCur(blaze::StaticVector<double, 4> *p_posCurrent,
-                       blaze::StaticVector<double, 4> *p_velCurrent,
-                       blaze::StaticVector<int, 4> *p_current);
+    void set_target_position(blaze::StaticVector<double, 4UL> posTarget);
+    void Set_Target_Velocity(blaze::StaticVector<double, 4UL> velTarget);
+    void Get_Current(blaze::StaticVector<int, 4UL> *p_current);
+    void Get_Velocity(blaze::StaticVector<double, 4UL> *p_velCurrent);
+    void Get_Position(blaze::StaticVector<double, 4UL> *p_posCurrent);
+    void Get_PosVelCur(blaze::StaticVector<double, 4UL> *p_posCurrent,
+                       blaze::StaticVector<double, 4UL> *p_velCurrent,
+                       blaze::StaticVector<int, 4UL> *p_current);
     bool Get_reachStatus();
     void Wait_until_reach();
     void Log_message(const std::string &message, bool print);
@@ -95,9 +95,8 @@ public:
 
 private:
     void Fiber_loop();
-    void Convert_pos_to_CTR_frame(blaze::StaticVector<double, 4> &posCurrent,
-                                  blaze::StaticVector<double, 4> *posInCTRFrame);
-    int Position_limits_check(blaze::StaticVector<double, 4> posTarget);
+    void Convert_pos_to_CTR_frame(blaze::StaticVector<double, 4UL> &posCurrent, blaze::StaticVector<double, 4UL> *posInCTRFrame);
+    int Position_limits_check(blaze::StaticVector<double, 4UL> posTarget);
 
     bool check_all_nodes_switched_on();
     bool check_all_nodes_enabled();

@@ -38,7 +38,7 @@ EMTracker::EMTracker(const std::string &hostname, double filter_sample_time, dou
   m_flag_filter = false;
 
   // Filter parameters
-  double fc_ref = 0.5;
+  double fc_ref = 0.50;
   double fc_tools = cutoff_freq;
 
   // Static connection parameters
@@ -339,8 +339,8 @@ void EMTracker::landmark_registration(const std::string &landmarks_file_name, st
   std::cout << "Waiting ..." << std::endl;
   std::this_thread::sleep_for(std::chrono::milliseconds(5000));
 
-  const double threshold = 1.0; // threshold value for the radius of the error sphere [mm]
-  unsigned int i = 0;           // counter for the number of landmarks
+  constexpr double threshold = 1..0; // threshold value for the radius of the error sphere [mm]
+  unsigned int i = 0;                // counter for the number of landmarks
 
   // Monitor the probe tip for stationary instances to record landmark positions
   quatTransformation temp;
@@ -485,7 +485,7 @@ void EMTracker::Read_Loop()
   }
 
   std::vector<ToolData> sensors_data;
-  std::vector<blaze::StaticVector<double, 3>> pointBuffer(100); // Buffer to store the past 200 samples
+  std::vector<blaze::StaticVector<double, 3UL>> pointBuffer(100); // Buffer to store the past 200 samples
 
   quatTransformation temp_1, temp_2, temp_3, temp_4;
 
@@ -530,7 +530,7 @@ void EMTracker::Read_Loop()
 
     auto t1 = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::micro> loop_duration = t1 - t0;
-    m_measured_sample_time = loop_duration.count() * 1e-6;
+    m_measured_sample_time = loop_duration.count() * 1.00E-6;
 
     // Filter position and orientations
     if (m_flag_filter)
@@ -561,20 +561,20 @@ void EMTracker::Read_Loop()
     // Calculate tool relative translational velocity
     m_transform_dot_1_2.translation = (m_transform_1_2.translation - m_transform_1_2_prev.translation) / m_measured_sample_time;
     // Calculate tool relative rotational velocity ************ this part of the code must be verified for correctness **********
-    blaze::StaticVector<double, 4UL> delta_q = quaternionMultiply(m_transform_1_2.rotation, m_transform_1_2_prev.inv().rotation);
-    double theta = 2 * acos(delta_q[0]);
-    blaze::StaticVector<double, 3UL> u = {delta_q[1], delta_q[2], delta_q[3]};
-    double u_norm = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
-    blaze::StaticVector<double, 4UL> log_delta_q = {0.0, (theta * u[0]) / u_norm, (theta * u[1]) / u_norm, (theta * u[2]) / u_norm};
-    blaze::StaticVector<double, 4UL> omega = 2 * log_delta_q / m_measured_sample_time;
-    m_transform_dot_1_2.rotation = 0.5 * omega * m_transform_1_2.rotation;
+    const blaze::StaticVector<double, 4UL> delta_q = quaternionMultiply(m_transform_1_2.rotation, m_transform_1_2_prev.inv().rotation);
+    const double theta = 2.00 * acos(delta_q[0UL]);
+    const blaze::StaticVector<double, 3UL> u = {delta_q[1UL], delta_q[2UL], delta_q[3UL]};
+    const double u_norm = std::sqrt(u[0UL] * u[0UL] + u[1UL] * u[1UL] + u[2UL] * u[2UL]);
+    const blaze::StaticVector<double, 4UL> log_delta_q = {0.00, (theta * u[0UL]) / u_norm, (theta * u[1UL]) / u_norm, (theta * u[2UL]) / u_norm};
+    const blaze::StaticVector<double, 4UL> omega = 2.00 * log_delta_q / m_measured_sample_time;
+    m_transform_dot_1_2.rotation = 0.50 * omega * m_transform_1_2.rotation;
     // update prev
     m_transform_1_2_prev = m_transform_1_2;
 
     // Print the transformation if the flag is set
     if (m_flag_debug)
     {
-      EMTracker::log_tansformation(1, m_transform_3_6.translation * 1e-3, m_transform_3_6.rotation, m_measured_sample_time);
+      EMTracker::log_tansformation(1, m_transform_3_6.translation * 1.00E-3, m_transform_3_6.rotation, m_measured_sample_time);
     }
 
     // Check the stop flag periodically
@@ -620,7 +620,7 @@ void EMTracker::set_filter_params(double fc_ref, double fc_tools)
  */
 void EMTracker::get_tool_transform_in_robot(quatTransformation &transform)
 {
-  transform.translation = m_transform_1_2.translation * 1e-3; // Convert from mm to meters
+  transform.translation = m_transform_1_2.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_1_2.rotation;
 }
 
@@ -634,7 +634,7 @@ void EMTracker::get_tool_transform_in_robot(quatTransformation &transform)
  */
 void EMTracker::get_tool_transform_in_phantom(quatTransformation &transform)
 {
-  transform.translation = m_transform_3_2.translation * 1e-3; // Convert from mm to meters
+  transform.translation = m_transform_3_2.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_3_2.rotation;
 }
 
@@ -648,7 +648,7 @@ void EMTracker::get_tool_transform_in_phantom(quatTransformation &transform)
  */
 void EMTracker::get_tool_transform_in_robot_dot(quatTransformation &transform_dot)
 {
-  transform_dot.translation = m_transform_dot_1_2.translation * 1e-3; // Convert from mm to meters
+  transform_dot.translation = m_transform_dot_1_2.translation * 1.00E-3; // Convert from mm to meters
   transform_dot.rotation = m_transform_dot_1_2.rotation;
 }
 
@@ -662,7 +662,7 @@ void EMTracker::get_tool_transform_in_robot_dot(quatTransformation &transform_do
  */
 void EMTracker::get_tool_transform_in_em(quatTransformation &transform)
 {
-  transform.translation = m_transform_0_2.translation * 1e-3; // Convert from mm to meters
+  transform.translation = m_transform_0_2.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_0_2.rotation;
 }
 
@@ -676,7 +676,7 @@ void EMTracker::get_tool_transform_in_em(quatTransformation &transform)
  */
 void EMTracker::get_robot_transform_in_em(quatTransformation &transform)
 {
-  transform.translation = m_transform_0_1.translation * 1e-3; // Convert from mm to meters
+  transform.translation = m_transform_0_1.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_0_1.rotation;
 }
 
@@ -690,7 +690,7 @@ void EMTracker::get_robot_transform_in_em(quatTransformation &transform)
  */
 void EMTracker::get_robot_transform_in_phantom(quatTransformation &transform)
 {
-  transform.translation = m_transform_3_1.translation * 1e-3; // Convert from mm to meters
+  transform.translation = m_transform_3_1.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_3_1.rotation;
 }
 
@@ -704,7 +704,7 @@ void EMTracker::get_robot_transform_in_phantom(quatTransformation &transform)
  */
 void EMTracker::get_probe_transform_in_robot(quatTransformation &transform)
 {
-  transform.translation = m_transform_1_6.translation * 1e-3; // Convert from mm to meters
+  transform.translation = m_transform_1_6.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_1_6.rotation;
 }
 
@@ -718,7 +718,7 @@ void EMTracker::get_probe_transform_in_robot(quatTransformation &transform)
  */
 void EMTracker::get_probe_transform_in_phantom(quatTransformation &transform)
 {
-  transform.translation = m_transform_3_6.translation * 1e-3; // Convert from mm to meters
+  transform.translation = m_transform_3_6.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_3_6.rotation;
 }
 
@@ -742,14 +742,14 @@ void EMTracker::get_sample_time(double &sample_time)
 void EMTracker::ToolData2Vector(const ToolData &toolData, std::vector<double> &toolCoord)
 {
   toolCoord = {
-      toolData.transform.isMissing() ? 0.0 : toolData.transform.tx,
-      toolData.transform.isMissing() ? 0.0 : toolData.transform.ty,
-      toolData.transform.isMissing() ? 0.0 : toolData.transform.tz,
-      toolData.transform.isMissing() ? 0.0 : toolData.transform.q0,
-      toolData.transform.isMissing() ? 0.0 : toolData.transform.qx,
-      toolData.transform.isMissing() ? 0.0 : toolData.transform.qy,
-      toolData.transform.isMissing() ? 0.0 : toolData.transform.qz,
-      toolData.transform.isMissing() ? 0.0 : toolData.transform.error};
+      toolData.transform.isMissing() ? 0.00 : toolData.transform.tx,
+      toolData.transform.isMissing() ? 0.00 : toolData.transform.ty,
+      toolData.transform.isMissing() ? 0.00 : toolData.transform.tz,
+      toolData.transform.isMissing() ? 0.00 : toolData.transform.q0,
+      toolData.transform.isMissing() ? 0.00 : toolData.transform.qx,
+      toolData.transform.isMissing() ? 0.00 : toolData.transform.qy,
+      toolData.transform.isMissing() ? 0.00 : toolData.transform.qz,
+      toolData.transform.isMissing() ? 0.00 : toolData.transform.error};
 }
 
 /**
@@ -786,7 +786,7 @@ void EMTracker::ToolData2QuatTransform(const ToolData &input, quatTransformation
 }
 
 //
-void EMTracker::log_tansformation(int number, blaze::StaticVector<double, 3> translation, blaze::StaticVector<double, 4> rotation, double sample_time)
+void EMTracker::log_tansformation(const int number, const blaze::StaticVector<double, 3UL> &translation, const blaze::StaticVector<double, 4UL> &rotation, const double sample_time) const
 {
   std::ostringstream oss;
   auto print_with_space_if_positive = [](double value)
@@ -804,15 +804,15 @@ void EMTracker::log_tansformation(int number, blaze::StaticVector<double, 3> tra
     return tmp.str();
   };
 
-  oss << "X:" << print_with_space_if_positive(translation[0]) << "  "
-      << "Y:" << print_with_space_if_positive(translation[1]) << "  "
-      << "Z:" << print_with_space_if_positive(translation[2]) << " [m]"
+  oss << "X:" << print_with_space_if_positive(translation[0UL]) << "  "
+      << "Y:" << print_with_space_if_positive(translation[1UL]) << "  "
+      << "Z:" << print_with_space_if_positive(translation[2UL]) << " [m]"
       << "  |  "
-      << "q0:" << print_with_space_if_positive(rotation[0]) << "  "
-      << "qX:" << print_with_space_if_positive(rotation[1]) << "  "
-      << "qY:" << print_with_space_if_positive(rotation[2]) << "  "
-      << "qZ:" << print_with_space_if_positive(rotation[3]) << "  |  "
-      << "dT:" << std::fixed << std::setprecision(1) << sample_time * 1e3 << " [ms]";
+      << "q0:" << print_with_space_if_positive(rotation[0UL]) << "  "
+      << "qX:" << print_with_space_if_positive(rotation[1UL]) << "  "
+      << "qY:" << print_with_space_if_positive(rotation[2UL]) << "  "
+      << "qZ:" << print_with_space_if_positive(rotation[3UL]) << "  |  "
+      << "dT:" << std::fixed << std::setprecision(1) << sample_time * 1.00E3 << " [ms]";
 
   std::cout << number << "  " << oss.str().c_str() << std::endl;
 }
@@ -825,9 +825,9 @@ void EMTracker::log_tansformation(int number, blaze::StaticVector<double, 3> tra
  *
  * @return true if all points are within the sphere with the given radius.
  */
-bool EMTracker::points_in_sphere(const std::vector<blaze::StaticVector<double, 3>> &points_list, const double &radius)
+bool EMTracker::points_in_sphere(const std::vector<blaze::StaticVector<double, 3UL>> &points_list, const double &radius)
 {
-  blaze::StaticVector<double, 3> referenceSample = points_list[0];
+  const blaze::StaticVector<double, 3UL> referenceSample = points_list[0UL];
 
   for (const auto &point : points_list)
   {
@@ -851,41 +851,35 @@ bool EMTracker::points_in_sphere(const std::vector<blaze::StaticVector<double, 3
  * @param data A vector of 3D points representing the collected landmarks.
  * @param filepath The path to the CSV file where the data will be saved.
  */
-void EMTracker::save_landmarks_to_csv(const std::vector<blaze::StaticVector<double, 3>> &data, const std::string &filepath)
+void EMTracker::save_landmarks_to_csv(const std::vector<blaze::StaticVector<double, 3UL>> &data, const std::string &filepath)
 {
-  std::filesystem::path filePath = std::filesystem::path(filepath);
+  std::filesystem::path filePath(filepath);
 
   // Ensure the directory exists; create it if it doesn't.
   if (!std::filesystem::exists(filePath.parent_path()))
-  {
-    try
-    {
-      std::filesystem::create_directories(filePath.parent_path());
-    }
-    catch (const std::exception &e)
-    {
-      std::cerr << "Failed to create the directory: " << e.what() << std::endl;
-      return;
-    }
-  }
+    std::filesystem::create_directories(filePath.parent_path());
 
-  std::ofstream file(filepath); // Open the file for writing
-  if (!file.is_open())
+  std::ofstream file(filepath, std::ios::out | std::ios::trunc); // Open the file for writing with truncation
+  if (!file)
   {
-    std::cerr << "Failed to open file for writing." << std::endl;
+    std::cerr << "Failed to open file for writing: " << filepath << std::endl;
     return;
   }
 
   // Write the CSV header
   file << "X,Y,Z\n";
 
+  // Reserve a buffer size for the file stream to improve performance
+  file.rdbuf()->pubsetbuf(nullptr, 0);
+
   // Write the data points
   for (const auto &sample : data)
-  {
-    file << sample[0] << "," << sample[1] << "," << sample[2] << "\n";
-  }
+    file << sample[0] << ',' << sample[1] << ',' << sample[2] << '\n';
 
-  file.close();
+  if (file.fail())
+    std::cerr << "Failed to write to file: " << filepath << std::endl;
+
+  // The file will be automatically closed when the ofstream object goes out of scope
 }
 
 /**
@@ -894,13 +888,13 @@ void EMTracker::save_landmarks_to_csv(const std::vector<blaze::StaticVector<doub
  * @param filepath The path to the CSV file to be read.
  * @param data A pointer to a vector of 3D points to store the loaded landmarks.
  */
-void EMTracker::load_landmarks_from_csv(const std::string &filepath, std::vector<blaze::StaticVector<double, 3>> *data)
+void EMTracker::load_landmarks_from_csv(const std::string &filepath, std::vector<blaze::StaticVector<double, 3UL>> *data)
 {
   // Clear the output vector to start fresh
   data->clear();
 
   // Open the CSV file
-  std::ifstream file(filepath);
+  std::ifstream file(filepath, std::ios::in);
   if (!file.is_open())
   {
     std::cerr << "Failed to open file for reading: " << filepath << std::endl;
@@ -909,6 +903,9 @@ void EMTracker::load_landmarks_from_csv(const std::string &filepath, std::vector
 
   std::string line;
   bool firstLine = true; // Flag to skip the first line (header)
+
+  // Reserve some initial capacity to improve memory efficiency
+  data->reserve(500); // Adjust the initial capacity as needed
 
   while (std::getline(file, line))
   {
@@ -919,26 +916,31 @@ void EMTracker::load_landmarks_from_csv(const std::string &filepath, std::vector
       continue;
     }
 
-    blaze::StaticVector<double, 3> row; // This vector stores the X, Y, Z values for each line
+    blaze::StaticVector<double, 3UL> row; // This vector stores the X, Y, Z values for each line
     std::istringstream ss(line);
     std::string valueStr;
     size_t index = 0;
 
     while (std::getline(ss, valueStr, ',') && index < 3)
     {
-      double value;
-      if (std::istringstream(valueStr) >> value)
+      try
       {
-        row[index++] = value;
+        row[index++] = std::stod(valueStr);
       }
-      else
+      catch (const std::invalid_argument &e)
       {
-        std::cerr << "Failed to parse a value: " << valueStr << std::endl;
+        std::cerr << "Failed to parse a value: " << valueStr << " - " << e.what() << std::endl;
+        break;
+      }
+      catch (const std::out_of_range &e)
+      {
+        std::cerr << "Value out of range: " << valueStr << " - " << e.what() << std::endl;
+        break;
       }
     }
 
-    if (index == 3) // Ensure we have read exactly 3 values
-    {
+    if (index == 3)
+    { // Ensure we have read exactly 3 values
       data->push_back(row);
     }
     else
@@ -959,7 +961,7 @@ void EMTracker::load_landmarks_from_csv(const std::string &filepath, std::vector
 void EMTracker::save_transformation_to_csv(const quatTransformation &data, const std::string &filename)
 {
   // Open the CSV file for writing
-  std::ofstream file(filename);
+  std::ofstream file(filename, std::ios::out | std::ios::trunc);
   if (!file.is_open())
   {
     std::cerr << "Failed to open file for writing: " << filename << std::endl;
@@ -968,17 +970,17 @@ void EMTracker::save_transformation_to_csv(const quatTransformation &data, const
 
   // Write the CSV headers
   file << "X,Y,Z,Q0,Qx,Qy,Qz";
-  if (data.error != 0.0)
+  if (data.error != 0.00)
   {
     file << ",Error"; // Include 'Error' header if error member is present
   }
   file << std::endl;
 
   // Write data to the CSV file
-  file << data.translation[0] << "," << data.translation[1] << "," << data.translation[2] << ","
-       << data.rotation[0] << "," << data.rotation[1] << "," << data.rotation[2] << "," << data.rotation[3];
+  file << data.translation[0UL] << "," << data.translation[1UL] << "," << data.translation[2UL] << ","
+       << data.rotation[0UL] << "," << data.rotation[1UL] << "," << data.rotation[2] << "," << data.rotation[3UL];
 
-  if (data.error != 0.0)
+  if (data.error != 0.00)
   {
     file << "," << data.error; // Include error value if it is present
   }
@@ -992,14 +994,13 @@ void EMTracker::save_transformation_to_csv(const quatTransformation &data, const
 bool EMTracker::load_transformation_from_csv(const std::string &filename, quatTransformation &data)
 {
   // Open the CSV file for reading
-  std::ifstream file(filename);
-  if (!file.is_open())
+  std::ifstream file(filename, std::ios::in);
+  if (!file)
   {
     std::cerr << "Failed to open file for reading: " << filename << std::endl;
     return false;
   }
 
-  // Define variables to store CSV data
   std::string line;
   std::vector<std::string> headers;
   std::vector<std::string> values;
@@ -1007,18 +1008,16 @@ bool EMTracker::load_transformation_from_csv(const std::string &filename, quatTr
   // Read the headers (first line) from the CSV file
   if (std::getline(file, line))
   {
-    // Tokenize the headers
     std::istringstream headerStream(line);
     std::string header;
     while (std::getline(headerStream, header, ','))
     {
-      headers.push_back(header);
+      headers.emplace_back(header);
     }
   }
   else
   {
     std::cerr << "Failed to read CSV headers." << std::endl;
-    file.close();
     return false;
   }
 
@@ -1026,14 +1025,12 @@ bool EMTracker::load_transformation_from_csv(const std::string &filename, quatTr
   if (headers.size() < 7)
   {
     std::cerr << "CSV file is missing required fields." << std::endl;
-    file.close();
     return false;
   }
 
   // Read the values (data) from the CSV file
   if (std::getline(file, line))
   {
-    // Tokenize the values
     std::istringstream valueStream(line);
     std::string value;
     while (std::getline(valueStream, value, ','))
@@ -1044,50 +1041,44 @@ bool EMTracker::load_transformation_from_csv(const std::string &filename, quatTr
   else
   {
     std::cerr << "Failed to read CSV data." << std::endl;
-    file.close();
     return false;
   }
 
-  // Check if there is an error value
-  if (values.size() == 7)
-  {
-    // If no error value, set it to 0
-    data.error = 0.0;
-  }
-  else if (values.size() == 8)
-  {
-    // If there is an error value, parse it
-    data.error = std::stod(values[7]);
-  }
-  else
+  // Validate the number of values
+  if (values.size() != 7 && values.size() != 8)
   {
     std::cerr << "Unexpected number of values in the CSV file." << std::endl;
-    file.close();
     return false;
   }
 
-  // Parse and assign the translation and rotation components
   try
   {
+    // Parse and assign the translation and rotation components
     data.translation = {
-        std::stod(values[0]),
-        std::stod(values[1]),
-        std::stod(values[2])};
+        std::stod(values[0UL]),
+        std::stod(values[1UL]),
+        std::stod(values[2UL])};
     data.rotation = {
-        std::stod(values[3]),
-        std::stod(values[4]),
-        std::stod(values[5]),
-        std::stod(values[6])};
+        std::stod(values[3UL]),
+        std::stod(values[4UL]),
+        std::stod(values[5UL]),
+        std::stod(values[6UL])};
+
+    // Parse the error value if present
+    if (values.size() == 8)
+    {
+      data.error = std::stod(values[7]);
+    }
+    else
+    {
+      data.error = 0.00; // Default error value
+    }
   }
   catch (const std::exception &e)
   {
     std::cerr << "Failed to parse QuatTransformation data from CSV: " << e.what() << std::endl;
-    file.close();
     return false;
   }
-
-  // Close the file
-  file.close();
 
   return true;
 }
@@ -1098,7 +1089,7 @@ bool EMTracker::load_transformation_from_csv(const std::string &filename, quatTr
  * @param data A vector of 3D points from which to calculate the column averages.
  * @param columnAverages Reference to a blaze::StaticVector<double, 3> to store the calculated averages.
  */
-void EMTracker::column_average(const std::vector<blaze::StaticVector<double, 3>> &data, blaze::StaticVector<double, 3> &columnAverages)
+void EMTracker::column_average(const std::vector<blaze::StaticVector<double, 3UL>> &data, blaze::StaticVector<double, 3UL> &columnAverages)
 {
   if (data.empty())
   {
@@ -1106,15 +1097,15 @@ void EMTracker::column_average(const std::vector<blaze::StaticVector<double, 3>>
     return;
   }
 
-  size_t numRows = data.size();
-  columnAverages = blaze::StaticVector<double, 3>(0.0);
+  const size_t numRows = data.size();
+  columnAverages = 0.00;
 
   // Sum each column
   for (const auto &row : data)
   {
-    columnAverages[0] += row[0];
-    columnAverages[1] += row[1];
-    columnAverages[2] += row[2];
+    columnAverages[0UL] += row[0UL];
+    columnAverages[1UL] += row[1UL];
+    columnAverages[2UL] += row[2UL];
   }
 
   // Divide by the number of rows to get the average
@@ -1166,7 +1157,7 @@ int EMTracker::read_sensor_config_from_yaml(const std::string &file_path, std::m
 /**
  * @brief Pauses the execution of the program for a specified number of seconds.
  */
-void SleepSeconds(unsigned numSeconds)
+void SleepSeconds(const unsigned numSeconds)
 {
   sleep(numSeconds); // sleep(sec)
 }
@@ -1174,7 +1165,7 @@ void SleepSeconds(unsigned numSeconds)
 Recorder::Recorder(const std::string &filename) : filename_(filename)
 {
   // Open the CSV file and write headers
-  file.open(filename);
+  file.open(filename, std::ios::out | std::ios::trunc);
   if (file.is_open())
   {
     file << "Time,X_[ref],Y_[ref],Z_[ref],Q0_[ref],Qx_[ref],Qy_[ref],QZ_[ref]"
@@ -1188,23 +1179,25 @@ Recorder::Recorder(const std::string &filename) : filename_(filename)
   }
 }
 
-void Recorder::Record(const quatTransformation &Reference,
-                      const quatTransformation &Tip)
+void Recorder::Record(const quatTransformation &Reference, const quatTransformation &Tip)
 {
+  // Open the CSV file and write headers
+  file.open(filename, std::ios::out | std::ios::app);
+
   if (file.is_open())
   {
     auto current_time = std::chrono::high_resolution_clock::now();
     double elapsed_seconds = std::chrono::duration<double>(current_time - start_time_).count();
 
     file << elapsed_seconds << ","
-         << Reference.translation[0] << "," << Reference.translation[1] << "," << Reference.translation[2] << ","
-         << Reference.rotation[0] << "," << Reference.rotation[1] << "," << Reference.rotation[2] << "," << Reference.rotation[3] << ","
-         << Tip.translation[0] << "," << Tip.translation[1] << "," << Tip.translation[2] << ","
-         << Tip.rotation[0] << "," << Tip.rotation[1] << "," << Tip.rotation[2] << "," << Tip.rotation[3] << std::endl;
+         << Reference.translation[0UL] << "," << Reference.translation[1UL] << "," << Reference.translation[2UL] << ","
+         << Reference.rotation[0UL] << "," << Reference.rotation[1UL] << "," << Reference.rotation[2UL] << "," << Reference.rotation[3UL] << ","
+         << Tip.translation[0UL] << "," << Tip.translation[1UL] << "," << Tip.translation[2UL] << ","
+         << Tip.rotation[0UL] << "," << Tip.rotation[1UL] << "," << Tip.rotation[2UL] << "," << Tip.rotation[3UL] << std::endl;
   }
   else
   {
-    // std::cerr << "Error: File not open for writing." << std::endl;
+    std::cerr << "Failed to open file for appending: " << filename << std::endl;
   }
 }
 

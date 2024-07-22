@@ -27,7 +27,7 @@ public:
 
     // node initialization time
     rclcpp::Time now = this->get_clock()->now();
-    m_t_init = static_cast<double>(now.nanoseconds()) / 1E9;
+    m_t_init = static_cast<double>(now.nanoseconds()) / 1.00E9;
   }
 
   ~Controller()
@@ -37,11 +37,11 @@ public:
 private:
   // Member variables
   size_t count_;
-  double m_t_init = 0.0;
+  double m_t_init = 0.00;
   double m_control_sample_time;
   bool m_flag_new_feedback = true;
   std::chrono::time_point<std::chrono::high_resolution_clock> t0, t1;
-  blaze::StaticVector<double, 3UL> m_base_tool, m_phantom_tool, m_target_position = blaze::StaticVector<double, 3UL>(0.0);
+  blaze::StaticVector<double, 3UL> m_base_tool, m_phantom_tool, m_target_position = blaze::StaticVector<double, 3UL>(0.00);
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub1;                                  // Callback group for running subscriber callback function on separate thread
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub2;                                  // Callback group for running subscriber callback function on separate thread
   rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_control;           // Publisher object
@@ -54,7 +54,7 @@ private:
   void declare_parameters()
   {
     // Set default parameters and allow it to be overridden by a launch file or command line parameter
-    this->declare_parameter<double>("control_sample_time", 4E-3);
+    this->declare_parameter<double>("control_sample_time", 4.00E-3);
     m_control_sample_time = this->get_parameter("control_sample_time").as_double();
   }
 
@@ -72,7 +72,7 @@ private:
    */
   void setup_ros_interfaces()
   {
-    auto control_sample_time = std::chrono::microseconds(static_cast<int>(m_control_sample_time * 1e6));
+    auto control_sample_time = std::chrono::microseconds(static_cast<int>(m_control_sample_time * 1.00E6));
 
     // Publisher to publish control signal
     m_publisher_control = this->create_publisher<interfaces::msg::Jointspace>("JointsActuation", 10);
@@ -106,10 +106,10 @@ private:
    */
   void update_current_tip_in_phantom(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
-    m_base_tool = {msg->p[0] * 1e3,
-                   msg->q[0] * 1e3,
-                   msg->p[2] * 1e3,
-                   msg->q[2] * 1e3};
+    m_base_tool = {msg->p[0UL] * 1.00E3,
+                   msg->q[0UL] * 1.00E3,
+                   msg->p[2UL] * 1.00E3,
+                   msg->q[2UL] * 1.00E3};
     m_flag_new_feedback = true;
   }
 
@@ -118,10 +118,10 @@ private:
    */
   void update_current_tip_in_base(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
-    m_base_tool = {msg->p[0] * 1e3,
-                   msg->q[0] * 1e3,
-                   msg->p[2] * 1e3,
-                   msg->q[2] * 1e3};
+    m_base_tool = {msg->p[0UL] * 1.00E3,
+                   msg->q[0UL] * 1.00E3,
+                   msg->p[2UL] * 1.00E3,
+                   msg->q[2UL] * 1.00E3};
     m_flag_new_feedback = true;
   }
 
@@ -151,7 +151,7 @@ private:
   void set_target_callback(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Target>> goal_handle)
   {
     const auto goal = goal_handle->get_goal();
-    m_target_position = blaze::StaticVector<double, 3UL>{goal->target_pose[0], goal->target_pose[1], goal->target_pose[2]};
+    m_target_position = {goal->target_pose[0UL], goal->target_pose[1UL], goal->target_pose[2UL]};
 
     auto result = std::make_shared<interfaces::action::Target::Result>();
 
@@ -168,25 +168,25 @@ private:
    */
   void control_loop()
   {
-    auto t0 = std::chrono::high_resolution_clock::now();
+    const auto t0 = std::chrono::high_resolution_clock::now();
 
     // TODO: Add control loop logic here
 
     // Placeholder joint space values
     interfaces::msg::Jointspace msg;
-    msg.position[0] = 0.0;
-    msg.position[1] = 0.0;
-    msg.position[2] = 0.0;
-    msg.position[3] = 0.0;
+    msg.position[0UL] = 0.00;
+    msg.position[1UL] = 0.00;
+    msg.position[2UL] = 0.00;
+    msg.position[3UL] = 0.00;
 
     // Publish the control signal
     m_publisher_control->publish(msg);
 
-    auto t1 = std::chrono::high_resolution_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0);
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0);
 
     std::cout << std::fixed << std::setprecision(5); // Set the precision for the entire stream
-    std::cout << "elapsed: " << elapsed.count() * 1e-3 << " [ms]" << std::endl;
+    std::cout << "elapsed: " << elapsed.count() * 1.00E-3 << " [ms]" << std::endl;
 
     return;
   }

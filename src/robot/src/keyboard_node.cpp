@@ -30,12 +30,12 @@ class KeyboardNode : public rclcpp::Node
 public:
   KeyboardNode() : Node("keyboard"), count_(0)
   {
-    steps = {1.0 * M_PI / 180, 0.5E-3, 1.0 * M_PI / 180, 0.5E-3};
-    target = {0.0, 0.0, 0.0, 0.0};
+    steps = {1.00 * M_PI / 180.00, 0.50E-3, 1.00 * M_PI / 180.00, 0.50E-3};
+    target = 0.00;
     counter = 0;
-    m_sample_time = 1e-3;
-    t0_ = 0.0;
-    m_t = 0.0;
+    m_sample_time = 1.00E-3;
+    t0_ = 0.00;
+    m_t = 0.00;
 
     running = true;
     shiftQPressed = false;
@@ -46,7 +46,7 @@ public:
 
     rclcpp::Time now = this->get_clock()->now();
     t0_ = static_cast<double>(now.nanoseconds()) / 1E9;
-    m_t = 0.0;
+    m_t = 0.00;
 
     RCLCPP_INFO(this->get_logger(), "Publisher node initialized");
   }
@@ -109,10 +109,10 @@ private:
   {
     auto request = std::make_shared<interfaces::srv::Homing::Request>();
     request->command = "move";    // Set the desired duration
-    request->target[0] = targ[0]; // Set the desired duration
-    request->target[1] = targ[1]; // Set the desired duration
-    request->target[2] = targ[2]; // Set the desired duration
-    request->target[3] = targ[3]; // Set the desired duration
+    request->target[0UL] = targ[0UL]; // Set the desired duration
+    request->target[1UL] = targ[1UL]; // Set the desired duration
+    request->target[2UL] = targ[2UL]; // Set the desired duration
+    request->target[3UL] = targ[3UL]; // Set the desired duration
 
     using ServiceResponseFuture = rclcpp::Client<interfaces::srv::Homing>::SharedFuture;
     auto response_received_callback = std::bind(&KeyboardNode::handle_homing_response, this, std::placeholders::_1);
@@ -129,12 +129,12 @@ private:
     {
       if (response->message == "Manual mode activated" or response->message == "Home is set")
       {
-        target[0] = response->position[0];
-        target[1] = response->position[1];
-        target[2] = response->position[2];
-        target[3] = response->position[3];
+        target[0UL] = response->position[0UL];
+        target[1UL] = response->position[1UL];
+        target[2UL] = response->position[2UL];
+        target[3UL] = response->position[3UL];
         RCLCPP_INFO(this->get_logger(), "Current positino is: %0.4f  %0.4f  %0.4f  %0.4f",
-                    response->position[0], response->position[1], response->position[2], response->position[3]);
+                    response->position[0UL], response->position[1UL], response->position[2UL], response->position[3UL]);
       }
 
       RCLCPP_INFO(this->get_logger(), "Response: %s", response->message.c_str());
@@ -193,13 +193,13 @@ private:
     SDL_RenderClear(renderer);
 
     // Coordinates for the triangle
-    int centerX = 320; // Half of window width
-    int centerY = 240; // Half of window height
-    int size = 100;    // Size of the triangle
+    constexpr int centerX = 320; // Half of window width
+    constexpr int centerY = 240; // Half of window height
+    constexpr int size = 100;    // Size of the triangle
 
-    int x1 = centerX, y1 = centerY - size;
-    int x2 = centerX + size, y2 = centerY + size;
-    int x3 = centerX - size, y3 = centerY + size;
+    constexpr int x1 = centerX, y1 = centerY - size;
+    constexpr int x2 = centerX + size, y2 = centerY + size;
+    constexpr int x3 = centerX - size, y3 = centerY + size;
 
     drawTriangle(renderer, x1, y1, x2, y2, x3, y3);
 
@@ -236,39 +236,39 @@ private:
           switch (key)
           {
           case SDLK_RIGHT:
-            target[0] += steps[0];
+            target[0UL] += steps[0UL];
             KeyboardNode::send_target(target);
             break;
           case SDLK_LEFT:
-            target[0] -= steps[0];
+            target[0UL] -= steps[0UL];
             KeyboardNode::send_target(target);
             break;
           case SDLK_UP:
-            target[1] += steps[1];
+            target[1UL] += steps[1UL];
             KeyboardNode::send_target(target);
             break;
           case SDLK_DOWN:
-            target[1] -= steps[1];
+            target[1UL] -= steps[1UL];
             KeyboardNode::send_target(target);
             break;
           case SDLK_d:
-            target[2] += steps[2];
+            target[2UL] += steps[2UL];
             KeyboardNode::send_target(target);
             break;
           case SDLK_a:
-            target[2] -= steps[2];
+            target[2UL] -= steps[2UL];
             KeyboardNode::send_target(target);
             break;
           case SDLK_w:
-            target[3] += steps[3];
+            target[3UL] += steps[3UL];
             KeyboardNode::send_target(target);
             break;
           case SDLK_s:
-            target[3] -= steps[3];
+            target[3UL] -= steps[3UL];
             KeyboardNode::send_target(target);
             break;
           case SDLK_0:
-            target = {0.0, 0.0, 0.0, 0.0};
+            target = 0.00;
             KeyboardNode::send_target(target);
             break;
           case SDLK_SPACE:
@@ -308,10 +308,10 @@ private:
   {
     rclcpp::Time now = this->get_clock()->now();
 
-    m_msg.position[0UL] = target[0];
-    m_msg.position[1UL] = target[1];
-    m_msg.position[2UL] = target[2];
-    m_msg.position[3UL] = target[3];
+    m_msg.position[0UL] = target[0UL];
+    m_msg.position[1UL] = target[1UL];
+    m_msg.position[2UL] = target[2UL];
+    m_msg.position[3UL] = target[3UL];
 
     // std::cout << "new target: ";
     // std::cout << std::fixed << std::setprecision(4);
@@ -332,19 +332,19 @@ private:
   // Wait in milliseconds
   void wait(int milliseconds)
   {
-    rclcpp::Rate rate(1000.0 / milliseconds);
+    rclcpp::Rate rate(1000.00 / milliseconds);
     rate.sleep();
   }
 
-  const std::vector<double> m_steps = {1.0 * M_PI / 180, 0.5E-3, 1.0 * M_PI / 180, 0.5E-3};
+  constexpr std::vector<double> m_steps = {1.00 * M_PI / 180.00, 0.50E-3, 1.00 * M_PI / 180.00, 0.50E-3};
   // std::vector<double> target(4, 0);
 
   // member variables
   size_t count_;
-  double m_sample_time = 1e-3; //[s]
-  double t0_, m_t, t0 = 0;
+  constexpr double m_sample_time = 1.00E-3; //[s]
+  double t0_, m_t, t0 = 0.00;
 
-  double m_expt_time = 30.0;
+  constexpr double m_expt_time = 30.0;
 
   interfaces::msg::Jointspace m_msg;
 

@@ -14,8 +14,7 @@
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
-.
-void print_robot_status(double t, blaze::StaticVector<double, 6> position, blaze::StaticVector<double, 6> velocity, blaze::StaticVector<double, 6> current);
+.void print_robot_status(double t, blaze::StaticVector<double, 6> position, blaze::StaticVector<double, 6> velocity, blaze::StaticVector<double, 6> current);
 
 class RobotNode : public rclcpp::Node
 {
@@ -44,9 +43,9 @@ private:
     // int8_t operation_mode = static_cast<int8_t>(0xFE); // 0x01, 0x03, 0xFE
     int operation_mode = 1;
     bool position_limit = false;
-    blaze::StaticVector<double, 4UL> max_acc = {200.0 * M_PI / 180, 10.0 / 1000, 200.0 * M_PI / 180, 10.0 / 1000}; // [deg/s^2] and [mm/s^2]
-    blaze::StaticVector<double, 4UL> max_vel = {200.0 * M_PI / 180, 10.0 / 1000, 200.0 * M_PI / 180, 10.0 / 1000}; // [deg/s] and [mm/s]
-    int sample_time = 50;                                                                                          //[ms]
+    constexpr blaze::StaticVector<double, 4UL> max_acc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
+    constexpr blaze::StaticVector<double, 4UL> max_vel = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
+    int sample_time = 50;                                                                                                                    //[ms]
 
     m_robot = std::make_unique<CTRobot>(
         sample_time,
@@ -88,7 +87,7 @@ private:
     m_publisher_robot = create_publisher<interfaces::msg::Jointspace>("JointSpaceStatus", 10);
 
     // Low-level control loop timer
-    auto control_sample_time = std::chrono::microseconds(static_cast<int>(m_control_sample_time * 1e6));
+    auto control_sample_time = std::chrono::microseconds(static_cast<int>(m_control_sample_time * 1.00E6));
     m_control_loop_timer = create_wall_timer(control_sample_time, std::bind(&RobotNode::position_command_loop, this), m_callback_group_pub1);
 
     // Timer to read joint configurations periodically
@@ -143,15 +142,15 @@ private:
 
     m_robot->Get_PosVelCur(&m_x, &m_x_dot, &m_c);
 
-    msg.position[0] = m_x[0];
-    msg.position[1] = m_x[1];
-    msg.position[2] = m_x[2];
-    msg.position[3] = m_x[3];
+    msg.position[0UL] = m_x[0UL];
+    msg.position[1UL] = m_x[1UL];
+    msg.position[2UL] = m_x[2UL];
+    msg.position[3UL] = m_x[3UL];
 
-    msg.velocity[0] = m_x_dot[0];
-    msg.velocity[1] = m_x_dot[1];
-    msg.velocity[2] = m_x_dot[2];
-    msg.velocity[3] = m_x_dot[3];
+    msg.velocity[0UL] = m_x_dot[0UL];
+    msg.velocity[1UL] = m_x_dot[1UL];
+    msg.velocity[2UL] = m_x_dot[2UL];
+    msg.velocity[3UL] = m_x_dot[3UL];
 
     // m_publisher_robot->publish(msg);
   }
@@ -191,7 +190,7 @@ private:
   void system_identification_loop()
   {
     m_robot->Set_Target_Velocity(m_x_dot_des);
-    std::cout << "\r" << std::dec << std::fixed << std::setprecision(3) << "q2_dot:" << m_x_dot_des[2] << std::endl;
+    std::cout << "\r" << std::dec << std::fixed << std::setprecision(3) << "q2_dot:" << m_x_dot_des[2UL] << std::endl;
   }
 
   // Subscription callback function to updates the target joint positions and velocities
@@ -200,12 +199,12 @@ private:
     if (!m_flag_manual)
     {
       m_targpublisher_alive_tmep = true;
-      m_x_des = blaze::StaticVector<double, 4UL>(0.0);
+      m_x_des = blaze::StaticVector<double, 4UL>(0.00);
 
-      m_x_des[0] = msg->position[0];
-      m_x_des[1] = msg->position[1];
-      m_x_des[2] = msg->position[2];
-      m_x_des[3] = msg->position[3];
+      m_x_des[0UL] = msg->position[0UL];
+      m_x_des[1UL] = msg->position[1UL];
+      m_x_des[2UL] = msg->position[2UL];
+      m_x_des[3UL] = msg->position[3UL];
     }
 
     // RCLCPP_INFO(this->get_logger(), "New Target");
@@ -214,9 +213,7 @@ private:
   // Subscription callback function updates the current catheter tip status using EMTracker topic
   void current_tool_callback(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
-    m_x_catheter = {msg->p[1] * 1e3,
-                    -1 * msg->p[0] * 1e3,
-                    msg->p[2] * 1e3};
+    m_x_catheter = {msg->p[1UL] * 1.00E3, -msg->p[0UL] * 1.00E3, msg->p[2UL] * 1.00E3};
     m_emtracker_alive_tmep = true;
   }
 
@@ -227,10 +224,10 @@ private:
     if (request->command == "ON")
     {
       m_flag_manual = true;
-      response->position[0] = m_x[0];
-      response->position[1] = m_x[1];
-      response->position[2] = m_x[2];
-      response->position[3] = m_x[3];
+      response->position[0UL] = m_x[0UL];
+      response->position[1UL] = m_x[1UL];
+      response->position[2UL] = m_x[2UL];
+      response->position[3UL] = m_x[3UL];
       response->success = true;
       response->message = "Manual mode activated";
       RCLCPP_INFO(this->get_logger(), "Manual mode activated");
@@ -246,10 +243,10 @@ private:
     {
       if (m_flag_manual)
       {
-        m_x_des[0] = request->target[0];
-        m_x_des[1] = request->target[1];
-        m_x_des[2] = request->target[2];
-        m_x_des[3] = request->target[3];
+        m_x_des[0UL] = request->target[0UL];
+        m_x_des[1UL] = request->target[1UL];
+        m_x_des[2UL] = request->target[2UL];
+        m_x_des[3UL] = request->target[3UL];
         response->success = true;
         response->message = "Moving";
       }
@@ -263,14 +260,14 @@ private:
     {
       if (m_flag_manual)
       {
-        m_robot->Set_Zero_Position(blaze::StaticVector<double, 4>(0.0));
-        m_x_des = blaze::StaticVector<double, 4>(0.0);
+        m_robot->Set_Zero_Position(blaze::StaticVector<double, 4UL>(0.00));
+        m_x_des = blaze::StaticVector<double, 4UL>(0.00);
         response->success = true;
         response->message = "Home is set";
-        response->position[0] = m_x[0];
-        response->position[1] = m_x[1];
-        response->position[2] = m_x[2];
-        response->position[3] = m_x[3];
+        response->position[0UL] = m_x[0UL];
+        response->position[1UL] = m_x[1UL];
+        response->position[2UL] = m_x[2UL];
+        response->position[3UL] = m_x[3UL];
       }
       else
       {
@@ -303,8 +300,8 @@ private:
       if (m_targpublisher_alive)
       {
         m_targpublisher_alive = false;
-        m_x_des = blaze::StaticVector<double, 4UL>(0.0);
-        m_x_dot_des = blaze::StaticVector<double, 4UL>(0.0);
+        m_x_des = blaze::StaticVector<double, 4UL>(0.00);
+        m_x_dot_des = blaze::StaticVector<double, 4UL>(0.00);
         RCLCPP_WARN(get_logger(), "publisher_node is dead");
       }
     }
@@ -314,14 +311,14 @@ private:
   // Wait in milliseconds
   void wait(int milliseconds)
   {
-    rclcpp::Rate rate(1000.0 / milliseconds);
+    rclcpp::Rate rate(1000.00 / milliseconds);
     rate.sleep();
   }
 
   size_t m_count;
   // const double m_control_sample_time = 0.0025; //[s]
-  const double m_control_sample_time = 0.050; //[s]
-  double m_kp, m_ki = 0.0;
+  constexpr double m_control_sample_time = 0.050; //[s]
+  double m_kp, m_ki = 0.00;
   bool m_flag_manual = false;
   bool m_emtracker_alive, m_emtracker_alive_tmep, m_targpublisher_alive, m_targpublisher_alive_tmep = false;
   std::unique_ptr<CTRobot> m_robot;
@@ -343,18 +340,18 @@ private:
   rclcpp::CallbackGroup::SharedPtr m_callback_group_watchdog_2;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr m_param_callback_handle;
 
-  blaze::StaticVector<double, 4UL> m_x_abs = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 4UL> m_x = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 4UL> m_x_dot = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<int, 4UL> m_c = blaze::StaticVector<double, 4UL>(0);
-  blaze::StaticVector<double, 4UL> m_x_des = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 4UL> m_x_error = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 4UL> m_x_error_int = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 4UL> m_x_error_dot = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 4UL> m_x_dot_forward = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 4UL> m_x_dot_des = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 4UL> m_x_des_home = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 3UL> m_x_catheter = blaze::StaticVector<double, 3UL>(0.0);
+  blaze::StaticVector<double, 4UL> m_x_abs;
+  blaze::StaticVector<double, 4UL> m_x;
+  blaze::StaticVector<double, 4UL> m_x_dot;
+  blaze::StaticVector<int, 4UL> m_c;
+  blaze::StaticVector<double, 4UL> m_x_des;
+  blaze::StaticVector<double, 4UL> m_x_error;
+  blaze::StaticVector<double, 4UL> m_x_error_int;
+  blaze::StaticVector<double, 4UL> m_x_error_dot;
+  blaze::StaticVector<double, 4UL> m_x_dot_forward;
+  blaze::StaticVector<double, 4UL> m_x_dot_des;
+  blaze::StaticVector<double, 4UL> m_x_des_home;
+  blaze::StaticVector<double, 3UL> m_x_catheter;
 };
 
 int main(int argc, char *argv[])
@@ -368,9 +365,9 @@ int main(int argc, char *argv[])
   return 0;
 }
 
-void print_robot_status(double t, blaze::StaticVector<double, 6> position, blaze::StaticVector<double, 6> velocity, blaze::StaticVector<double, 6> current)
+void print_robot_status(double t, const blaze::StaticVector<double, 6UL> &position, const blaze::StaticVector<double, 6UL> &velocity, const blaze::StaticVector<double, 6UL> &current)
 {
-  auto print_with_space_if_positive = [](double value)
+  auto print_with_space_if_positive = [](double value) -> void
   {
     if (value >= 0)
     {
@@ -389,9 +386,9 @@ void print_robot_status(double t, blaze::StaticVector<double, 6> position, blaze
     std::cout << "Node " << i + 1 << " =>  ";
     std::cout << "Pos: ";
     std::cout << std::fixed << std::setprecision(5);
-    print_with_space_if_positive(position[i] * 1e3);
+    print_with_space_if_positive(position[i] * 1.00E3);
     std::cout << "     Vel: ";
-    print_with_space_if_positive(velocity[i] * 1e3);
+    print_with_space_if_positive(velocity[i] * 1.00E3);
     std::cout << "     Current: ";
     print_with_space_if_positive(current[i]);
     std::cout << " \n";

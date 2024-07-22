@@ -119,7 +119,7 @@ private:
   quatTransformation m_transform_1_2_prev; // transformation from the system frame to the tool tip (not tool sensor)
   quatTransformation m_transform_dot_1_2;  // derivative of Transformation from CTR Robot frame to tool tip frame
 
-  blaze::StaticVector<double, 3> m_tran_vel_2_4 = blaze::StaticVector<double, 3>(0.0);
+  blaze::StaticVector<double, 3UL> m_tran_vel_2_4;
 
   std::string m_config_Dir;
   double m_measured_sample_time;
@@ -127,8 +127,8 @@ private:
   int m_num_active_sensors = 0;
   std::vector<quatTransformation> m_sec_transforms;
 
-  std::unique_ptr<ButterworthFilter<3>> m_filter_tran_robot, m_filter_tran_tool, m_filter_tran_probe, m_filter_tran_phantom;
-  std::unique_ptr<ButterworthFilter<4>> m_filter_rot_robot, m_filter_rot_tool, m_filter_rot_probe, m_filter_rot_phantom;
+  std::unique_ptr<ButterworthFilter<3UL>> m_filter_tran_robot, m_filter_tran_tool, m_filter_tran_probe, m_filter_tran_phantom;
+  std::unique_ptr<ButterworthFilter<4UL>> m_filter_rot_robot, m_filter_rot_tool, m_filter_rot_probe, m_filter_rot_phantom;
 
   std::string getToolInfo(std::string toolHandle);
   void onErrorPrintDebugmessage(const std::string &methodName, int errorCode);
@@ -138,25 +138,25 @@ private:
   void Read_Loop();
   void ToolData2Vector(const ToolData &toolData, std::vector<double> &toolCoord);
   void ToolData2QuatTransform(const ToolData &input, quatTransformation &output);
-  void log_tansformation(int number, blaze::StaticVector<double, 3> translation, blaze::StaticVector<double, 4> rotation, double sample_time);
+  void log_tansformation(const int number, const blaze::StaticVector<double, 3UL> &translation, const blaze::StaticVector<double, 4UL>& rotation, const double sample_time);
 
   /** @brief Checks if all distances are less than a threshold.
     The latest position is assumed to be the center of the sphere.
     @return true if all points are within the sphere with the given radius. */
-  bool points_in_sphere(const std::vector<blaze::StaticVector<double, 3>> &points_list, const double &radius);
+  bool points_in_sphere(const std::vector<blaze::StaticVector<double, 3UL>> &points_list, const double &radius);
   /* Save collected lanmark to a CSV file with X,Y,Z header */
   void save_landmarks_to_csv(const std::vector<blaze::StaticVector<double, 3>> &data, const std::string &filepath);
   /* Load lanmark from a CSV file with X,Y,Z header */
-  void load_landmarks_from_csv(const std::string &filename, std::vector<blaze::StaticVector<double, 3>> *output);
+  void load_landmarks_from_csv(const std::string &filename, std::vector<blaze::StaticVector<double, 3UL>> *output);
   /* Save QuatTransformation data to a CSV file with headers */
   void save_transformation_to_csv(const quatTransformation &data, const std::string &filename);
   /* Load QuatTransformation data from a CSV file */
   bool load_transformation_from_csv(const std::string &filename, quatTransformation &data);
   /* Calcualtes average of each colums */
-  void column_average(const std::vector<blaze::StaticVector<double, 3>> &data, blaze::StaticVector<double, 3> &columnAverages);
+  void column_average(const std::vector<blaze::StaticVector<double, 3UL>> &data, blaze::StaticVector<double, 3UL> &columnAverages);
 
   int read_sensor_config_from_yaml(const std::string &file_path, std::map<std::string, SensorConfig> &sensorConfig_map);
 };
 
 /* Sleep! */
-void SleepSeconds(unsigned numSeconds);
+void SleepSeconds(const unsigned numSeconds);
