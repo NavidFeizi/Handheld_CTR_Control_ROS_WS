@@ -31,6 +31,8 @@ find_package(interfaces REQUIRED) # Make sure this package correctly exports its
 
 # Define executable
 add_executable(control src/controller_node.cpp)
+# Adding the CTR static Library to the project
+add_subdirectory(ctr_library)
 
 ament_target_dependencies(control rclcpp std_msgs rclcpp_action interfaces)
 
