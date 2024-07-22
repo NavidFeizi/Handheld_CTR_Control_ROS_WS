@@ -93,10 +93,6 @@ private:
     m_subscription_phantom_tool = this->create_subscription<interfaces::msg::Taskspace>(
         "emt_phantom_tool", rclcpp::QoS(10), std::bind(&Controller::update_current_tip_in_phantom, this, _1), subs_options_2);
 
-    // // Service to receive target
-    // m_service_target = this->create_service<interfaces::srv::Target>(
-    //     "set_target", std::bind(&Controller::set_target_callback, this, _1, _2));
-
     // Action Server Setup
     m_action_server = rclcpp_action::create_server<interfaces::action::Target>(
         this, "set_target",
