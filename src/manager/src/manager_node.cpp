@@ -24,6 +24,9 @@ using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
 
+std::string package_name = "manager"; // Replace with any package in your workspace
+std::string WORKSPACE_DIR = ament_index_cpp::get_package_share_directory(package_name);
+
 template <typename MatrixType>
 MatrixType readFromCSV(MatrixType &Mat, const std::string &filePath);
 
@@ -36,8 +39,15 @@ public:
     ManagerNode::setup_ros_interfaces();
     RCLCPP_INFO(this->get_logger(), "Manager node initialized");
 
-    std::string fileName("Targets.csv");
-    ManagerNode::load_input_files(m_targets, fileName);
+    // initialize output file
+    std::string output_fileName = "output.csv";
+    std::string filePath = WORKSPACE_DIR + "/../../../../Output_Files/" + output_fileName;
+    m_output_file.open(filePath, std::ios::out); 
+    m_output_file << "Targ_X,Targ_Y,Targ_Z, Phan_Tool_X, Phan_Tool_Y, Phan_Tool_Z, Base_Tool_X, Base_Tool_Y, Base_Tool_Z\n";
+    RCLCPP_INFO(this->get_logger(), "Output file initialized");
+
+    std::string input_fileName("Targets.csv");
+    ManagerNode::load_input_files(m_targets, input_fileName);
     RCLCPP_INFO(this->get_logger(), "Target files loaded");
 
     // ManagerNode::send_recod_request();
@@ -47,10 +57,13 @@ public:
 
   ~ManagerNode()
   {
+    if (m_output_file.is_open())
+    {
+      m_output_file.close();
+    }
   }
 
 private:
-  
   // Function to declare and initialize parameters - parameters values should be set from the launch file
   void declare_parameters()
   {
@@ -103,10 +116,9 @@ private:
   void load_input_files(blaze::HybridMatrix<double, 200, 3UL> &targets, const std::string &fileName)
   {
     // /** read actuation targets */
-    std::string package_name = "manager"; // Replace with any package in your workspace
-    std::string workspace_directory = ament_index_cpp::get_package_share_directory(package_name);
+
     // std::string fileName("targets");
-    std::string filePath = workspace_directory + "/../../../../Input_Files/" + fileName;
+    std::string filePath = WORKSPACE_DIR + "/../../../../Input_Files/" + fileName;
     // std::cout << "ROS workspace directory: " << filePath << std::endl;
     readFromCSV(targets, filePath);
     RCLCPP_INFO(this->get_logger(), "--- Targets loaded ---");
@@ -148,7 +160,9 @@ private:
       RCLCPP_INFO(this->get_logger(), "All targets have been processed.");
       return;
     }
+
     auto goal_msg = interfaces::action::Target::Goal();
+
     goal_msg.target_pose[0] = m_targets(m_current_target_index, 0);
     goal_msg.target_pose[1] = m_targets(m_current_target_index, 1);
     goal_msg.target_pose[2] = m_targets(m_current_target_index, 2);
@@ -158,10 +172,11 @@ private:
     send_goal_options.result_callback = std::bind(&ManagerNode::action_result_callback, this, _1);
 
     m_client->async_send_goal(goal_msg, send_goal_options);
+    RCLCPP_INFO(this->get_logger(), "Target sent");
   }
 
   //
-  void action_feedback_callback(std::shared_ptr<rclcpp_action::ClientGoalHandle<interfaces::action::Target>> goal_handle,  const std::shared_ptr<const interfaces::action::Target::Feedback> feedback)
+  void action_feedback_callback(std::shared_ptr<rclcpp_action::ClientGoalHandle<interfaces::action::Target>> goal_handle, const std::shared_ptr<const interfaces::action::Target::Feedback> feedback)
   {
     RCLCPP_INFO(this->get_logger(), "Distance to target: %.2f, Status: %s", feedback->distance_to_target, feedback->current_status.c_str());
   }
@@ -172,7 +187,36 @@ private:
     if (result.code == rclcpp_action::ResultCode::SUCCEEDED)
     {
       RCLCPP_INFO(this->get_logger(), "Target reached successfully");
-      
+
+      RCLCPP_INFO(this->get_logger(), "Collecting tool position");
+      blaze::StaticVector<double, 3UL> sum_base_tool_pos = blaze::StaticVector<double, 3UL>(0.0);
+      blaze::StaticVector<double, 3UL> sum_phantom_tool_pos = blaze::StaticVector<double, 3UL>(0.0);
+
+      int num_samples = 100;
+      for (int i = 0; i < num_samples; ++i)
+      {
+        // Assuming you update these vectors elsewhere in your program
+        sum_base_tool_pos += m_base_tool_pos;
+        sum_phantom_tool_pos += m_phantom_tool_pos;
+
+        // Wait for 26 milliseconds before the next reading
+        std::this_thread::sleep_for(std::chrono::milliseconds(26));
+      }
+
+      // Calculate the average position for each tool
+      blaze::StaticVector<double, 3UL> avg_base_tool_pos = sum_base_tool_pos / num_samples;
+      blaze::StaticVector<double, 3UL> avg_phantom_tool_pos = sum_phantom_tool_pos / num_samples;
+
+      RCLCPP_INFO(this->get_logger(), "Collecting tool position");
+      m_output_file << m_targets(m_current_target_index, 0) << ","
+                    << m_targets(m_current_target_index, 1) << ","
+                    << m_targets(m_current_target_index, 2) << ","
+                    << avg_phantom_tool_pos[0] << ","
+                    << avg_phantom_tool_pos[1] << ","
+                    << avg_phantom_tool_pos[2] << ","
+                    << avg_base_tool_pos[0] << ","
+                    << avg_base_tool_pos[1] << ","
+                    << avg_base_tool_pos[2] << std::endl;
     }
     else
     {
@@ -208,6 +252,8 @@ private:
   std::vector<double> m_traj;
   long unsigned int m_traj_row = 0;
 
+  std::ofstream m_output_file;
+
   size_t m_current_target_index;
   blaze::HybridMatrix<double, 200UL, 3UL> m_targets;
   blaze::StaticVector<double, 3UL> m_base_tool_pos, m_phantom_tool_pos;
@@ -222,12 +268,11 @@ private:
 
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool_1;
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool_2;
-  
+
   rclcpp::CallbackGroup::SharedPtr m_callback_group_1;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_2;
 
   std::atomic<bool> m_is_experiment_running;
-
 };
 
 int main(int argc, char *argv[])
