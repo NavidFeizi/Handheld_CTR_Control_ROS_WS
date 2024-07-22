@@ -17,7 +17,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Taskspace.msg"
   "msg/Jointspace.msg"
   "msg/Robotbackbone.msg"
-  "msg/Tippos.msg"
   "srv/Startrecording.srv"
   "srv/Homing.srv"
   # "srv/Target.srv"

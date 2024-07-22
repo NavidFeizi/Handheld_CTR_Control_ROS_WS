@@ -1,4 +1,3 @@
-
 #include <chrono>
 #include <blaze/Blaze.h>
 #include <blaze/Math.h>
@@ -8,16 +7,14 @@
 #include <string>
 #include <iomanip>
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/msg/jointspace.hpp"
-// #include "interfaces/srv/target.hpp"
 #include "interfaces/action/target.hpp"
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
-
-void print_tip(double t, blaze::StaticVector<double, 3UL> position, blaze::StaticVector<double, 2UL> q);
 
 class Controller : public rclcpp::Node
 {
@@ -50,8 +47,8 @@ private:
   rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_control;           // Publisher object
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_base_tool;    // Subscriber object
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_phantom_tool; // Subscriber object
-  rclcpp::Service<interfaces::srv::Target>::SharedPtr m_service_target;                    // Service object for setting target
-  rclcpp_action::Server<my_robot_interfaces::action::NavigateToTarget>::SharedPtr action_server_;
+  // rclcpp::Service<interfaces::srv::Target>::SharedPtr m_service_target;                    // Service object for setting target
+  rclcpp_action::Server<interfaces::action::Target>::SharedPtr m_action_server;
 
   // Function to declare and initialize parameters - parameters values should be set from the launch file
   void declare_parameters()
@@ -149,7 +146,7 @@ private:
 
   void handle_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Target>> goal_handle)
   {
-    std::thread{std::bind(&Controller::execute, this, std::placeholders::_1), goal_handle}.detach();
+    std::thread{std::bind(&Controller::set_target_callback, this, std::placeholders::_1), goal_handle}.detach();
   }
 
   /**
@@ -158,7 +155,7 @@ private:
   void set_target_callback(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Target>> goal_handle)
   {
     const auto goal = goal_handle->get_goal();
-    m_target_position = blaze::StaticVector<double, 3UL>{goal->target.x, goal->target.y, goal->target.z};
+    m_target_position = blaze::StaticVector<double, 3UL>{goal->target_pose[0], goal->target_pose[1], goal->target_pose[2]};
 
     auto result = std::make_shared<interfaces::action::Target::Result>();
 
@@ -169,21 +166,6 @@ private:
     goal_handle->succeed(result);
     RCLCPP_INFO(this->get_logger(), "Goal processed successfully.");
   }
-
-  // /**
-  //  * @brief Service callback to set the target.
-  //  */
-  // void set_target_callback(const std::shared_ptr<interfaces::srv::Target::Request> request,
-  //                          std::shared_ptr<interfaces::srv::Target::Response> response)
-  // {
-  //   // Store the received target values
-  //   m_target_position = {request->target[0], request->target[1], request->target[2]};
-
-  //   // Call the control loop
-  //   control_loop();
-
-  //   response->success = true;
-  // }
 
   /**
    * @brief Main control loop to calculate the control and publish the joint space values.
@@ -214,122 +196,6 @@ private:
   }
 };
 
-int main(int argc, char *argv[])
-{
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<Controller>();
-  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 3);
-  executor.add_node(node);
-  executor.spin();
-  rclcpp::shutdown();
-  return 0;
-}
-
-void print_tip(double t, blaze::StaticVector<double, 3UL> position, blaze::StaticVector<double, 2UL> q)
-{
-  auto printWithSpaceIfPositive = [](double value)
-  {
-    if (value >= 0)
-    {
-      std::cout << " " << value;
-    }
-    else
-    {
-      std::cout << value;
-    }
-  };
-
-  std::cout << "\r" << std::dec << std::fixed << std::setprecision(4) << "t:" << t << " [s] |"
-            << "  ";
-  std::cout << "X:";
-  std::cout << std::fixed << std::setprecision(4);
-  printWithSpaceIfPositive(position[0]);
-  std::cout << "  ";
-  std::cout << "Y:";
-  std::cout << std::fixed << std::setprecision(4);
-  printWithSpaceIfPositive(position[1]);
-  std::cout << "  ";
-  std::cout << "Z:";
-  std::cout << std::fixed << std::setprecision(4);
-  printWithSpace
-
-      // updates current tool (tip) position in phantom frame
-      void
-      update_current_tip_in_phantom(const interfaces::msg::Taskspace::ConstSharedPtr msg)
-  {
-    m_base_tool = {msg->p[0] * 1e3,
-                   msg->q[0] * 1e3,
-                   msg->p[2] * 1e3,
-                   msg->q[2] * 1e3};
-    m_flag_new_feedback = true;
-  }
-
-  // updates current tool (tip) position in ctr frame
-  void update_current_tip_in_base(const interfaces::msg::Taskspace::ConstSharedPtr msg)
-  {
-    m_base_tool = {msg->p[0] * 1e3,
-                   msg->q[0] * 1e3,
-                   msg->p[2] * 1e3,
-                   msg->q[2] * 1e3};
-    m_flag_new_feedback = true;
-  }
-
-  // Service callback to set the target
-  void set_target_callback(const std::shared_ptr<interfaces::srv::SetTarget::Request> request,
-                           std::shared_ptr<interfaces::srv::SetTarget::Response> response)
-  {
-    // Store the received target values
-    m_target_position = {request->target[0], request->target[1], request->target[2]};
-
-    // Call the control loop
-    Controller::control_loop();
-
-    response->success = true;
-  }
-
-  void contol_loop()
-  {
-    auto t0 = std::chrono::high_resolution_clock::now();
-
-    // **** write your control loop code here *** //
-
-    msg.position[0] = 0.0;
-    msg.position[1] = 0.0;
-    msg.position[2] = 0.0;
-    msg.position[3] = 0.0;
-
-    m_publisher_control->publish(msg);
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0);
-
-    std::cout << std::fixed << std::setprecision(5); // Set the precision for the entire stream
-    std::cout
-        << "elapsed: " << elapsed.count() * 1e-3 << " [ms] | "
-        << std::endl;
-
-    return;
-  }
-
-  // Member variables
-  size_t count_;
-  double m_t_init = 0.0;
-  double m_control_sample_time;
-  bool m_flag_new_feedback = true;
-
-  std::chrono::time_point<std::chrono::high_resolution_clock> t0, t1;
-
-  blaze::StaticVector<double, 3UL> m_base_tool, m_phantom_tool, m_target_position = blaze::StaticVector<double, 3UL>(0.0);
-
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_sub1;                                  // callback grounp for running publisher callback function on separate thread
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_sub2;                                  // callback grounp for running subscriber callback function on separate thread
-  rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_control;           // publisher object
-  rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_base_tool;    // subscriber object
-  rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_phantom_tool; // subscriber object
-  rclcpp::Service<interfaces::srv::SetTarget>::SharedPtr m_service_target;                 // service object for setting target
-
-  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle;
-};
 
 int main(int argc, char *argv[])
 {
@@ -340,44 +206,4 @@ int main(int argc, char *argv[])
   executor.spin();
   rclcpp::shutdown();
   return 0;
-}
-
-void print_tip(double t, blaze::StaticVector<double, 3UL> position, blaze::StaticVector<double, 2UL> q)
-{
-  auto printWithSpaceIfPositive = [](double value)
-  {
-    if (value >= 0)
-    {
-      std::cout << " " << value;
-    }
-    else
-    {
-      std::cout << value;
-    }
-  };
-
-  std::cout << "\r" << std::dec << std::fixed << std::setprecision(4) << "t:" << t << " [s] |"
-            << "  ";
-  std::cout << "X:";
-  std::cout << std::fixed << std::setprecision(4);
-  printWithSpaceIfPositive(position[0]);
-  std::cout << "  ";
-  std::cout << "Y:";
-  std::cout << std::fixed << std::setprecision(4);
-  printWithSpaceIfPositive(position[1]);
-  std::cout << "  ";
-  std::cout << "Z:";
-  std::cout << std::fixed << std::setprecision(4);
-  printWithSpaceIfPositive(position[2]);
-  std::cout << " [m]";
-  std::cout << " | ";
-  std::cout << "q0:";
-  std::cout << std::fixed << std::setprecision(2);
-  printWithSpaceIfPositive(q[0]);
-  std::cout << "  ";
-  std::cout << "q1:";
-  std::cout << std::fixed << std::setprecision(2);
-  printWithSpaceIfPositive(q[1]);
-  std::cout << " [N]";
-  std::cout << std::endl;
 }

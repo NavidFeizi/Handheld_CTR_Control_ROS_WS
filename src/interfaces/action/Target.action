@@ -1,14 +1,13 @@
 # Target.action
 
 # Request
-# float64[4] target [0.0, 0.0, 0.0, 0.0]
-# Taskspace.msg
-
-interfaces/msg Taskspace
+# interfaces/msg/Taskspace target_pose
+float64[4] target_pose [0.0, 0.0, 0.0, 0.0]
 ---
 # Result definition
 bool success
 string message
+
 ---
 # Feedback definition
 float32 distance_to_target
