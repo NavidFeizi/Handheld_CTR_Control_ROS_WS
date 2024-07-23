@@ -30,7 +30,7 @@ private:
   double m_control_sample_time;
   bool m_flag_new_feedback = true;
   std::chrono::time_point<std::chrono::high_resolution_clock> t0, t1;
-  blaze::StaticVector<double, 3UL> m_tran_base_tool, m_tran_phantom_tool, m_tran_phantom_base, m_target_position, m_calyxPosition;
+  blaze::StaticVector<double, 3UL> m_tran_endEffector, m_tran_phantom_base, m_target_position, m_calyxPosition;
   blaze::StaticVector<double, 4UL> m_rot_phantom_base;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub1;                                  // Callback group for running subscriber callback function on separate thread
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub2;                                  // Callback group for running subscriber callback function on separate thread
@@ -50,6 +50,8 @@ private:
   blaze::StaticVector<double, 6UL> m_q;                  // joint values of the CTR
   constexpr double m_linearActuatorThickness = 30.00E-3; // thickness of the linear actuator stages --> collision avoidance
   constexpr double m_pos_tol = 1.00E-3;
+  // Selected surgical plan
+  blaze::HybridMatrix<double, 4UL, 4UL, blaze::columnMajor> m_H;
 
 public:
   // default class constructor
@@ -126,10 +128,39 @@ public:
                                           Tol,
                                           mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON,
                                           this->m_linearActuatorThickness);
+
+    // updating the EM alignment of the CTR, as it won't be identical to the surgical plan
+    updateExperimentalEMPose();
   }
 
   // class destructor
   ~Controller() = default;
+
+  /**
+   * @brief Reads the EM sensor data and updates current the pose of the handheld CTR in the EM space
+   */
+  void updateExperimentalEMPose()
+  {
+    blaze::StaticMatrix<double, 4UL, 4UL> H;
+    H(3UL, 3UL) = 1.00;
+
+    // getting the orientation of the handheld CTR
+    blaze::StaticMatrix<double, 3UL, 3UL, blaze::columnMajor> R;
+    mathOp::getSO3(this->m_rot_phantom_base, R);
+
+    blaze::submatrix<0UL, 0UL, 3UL, 3UL>(H) = R;
+
+    // getting the position of the handheld CTR
+    blaze::submatrix<0UL, 3UL, 3UL, 1UL>(H) = this->m_tran_phantom_base;
+
+    this->m_H = blaze::inv(H);
+
+    // accounting for the 10 mm retraction of the CTR
+    static constexpr blaze::StaticVector<double, 3UL> retraction{0.00, 0.00, 10.00E-3};
+    blaze::submatrix<0UL, 3UL, 3UL, 1UL>(this->m_H) += retraction;
+
+    m_robot.setHomogeneousTransformation(this->m_H);    
+  }
 
   // Function to declare and initialize parameters - parameters values should be set from the launch file
   void declare_parameters()
@@ -255,9 +286,13 @@ public:
    */
   void control_loop()
   {
+    // the targets on the CSV file are in the CT-Scan's coord frame. Need to convert to CTR coord frame for control
+    const blaze::StaticVector<double, 4UL> auxVec = {this->m_target_position[0UL], this->m_target_position[1UL], this->m_target_position[2UL], 1.00};
+    const blaze::StaticVector<double, 4UL> convertedTarget = this->m_H * auxVec;
+
     const auto t0 = std::chrono::high_resolution_clock::now();
 
-    this->m_robot->posCTRL(this->m_initGuess, this->m_target_position, this->m_pos_tol);
+    this->m_robot->posCTRL(this->m_initGuess, blaze::subvector<0UL, 3UL>(convertedTarget), this->m_pos_tol);
 
     this->m_q = this->m_robot.getConfiguration();
 

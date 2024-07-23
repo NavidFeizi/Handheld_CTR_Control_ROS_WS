@@ -163,10 +163,9 @@ namespace mathOp
 	{
 		// Gotta convert the angles to radians first.
 		double theta(0.50 * heading), phi(0.50 * attitude), psi(0.50 * bank);
-		double c1(cos(theta)), s1(sin(theta)), c2(cos(phi)), s2(sin(phi)), c3(cos(psi)), s3(sin(psi)), c1c2, s1s2;
-
-		c1c2 = c1 * c2;
-		s1s2 = s1 * s2;
+		double c1(cos(theta)), s1(sin(theta)), c2(cos(phi)), s2(sin(phi)), c3(cos(psi)), s3(sin(psi));
+		const double c1c2 = c1 * c2;
+		const double s1s2 = s1 * s2;
 
 		h[0UL] = c1c2 * c3 - s1s2 * s3;
 		h[1UL] = c1c2 * s3 + s1s2 * c3;
@@ -195,10 +194,10 @@ namespace mathOp
 	// function that returns the rotation matrix Rz of any angle theta
 	inline blaze::StaticMatrix<double, 3UL, 3UL> rotz(const double &theta)
 	{
-		double c(cos(theta)), s(sin(theta));
-		blaze::StaticMatrix<double, 3UL, 3UL> R = {{c, -s, 0.00},
-												   {s, c, 0.00},
-												   {0.00, 0.00, 1.00}};
+		const double c(cos(theta)), s(sin(theta));
+		const blaze::StaticMatrix<double, 3UL, 3UL> R = {{c, -s, 0.00},
+														 {s, c, 0.00},
+														 {0.00, 0.00, 1.00}};
 
 		return R;
 	}
@@ -206,10 +205,10 @@ namespace mathOp
 	// function that returns the derivative of the rotation matrix Rz
 	inline blaze::StaticMatrix<double, 3UL, 3UL> rotz_dot_transpose(const double &theta)
 	{
-		double c(cos(theta)), s(sin(theta));
-		blaze::StaticMatrix<double, 3UL, 3UL> dR = {{-s, c, 0.00},
-													{-c, -s, 0.00},
-													{0.00, 0.00, 0.00}};
+		const double c(cos(theta)), s(sin(theta));
+		const blaze::StaticMatrix<double, 3UL, 3UL> dR = {{-s, c, 0.00},
+														  {-c, -s, 0.00},
+														  {0.00, 0.00, 0.00}};
 
 		return dR;
 	}
@@ -217,51 +216,41 @@ namespace mathOp
 	// function that computes the premultiplication of a matrix M by v^, i.e., v^ * M
 	inline blaze::StaticMatrix<double, 3UL, 3UL> hatOperator(const blaze::StaticVector<double, 3UL> &v)
 	{
-		blaze::StaticMatrix<double, 3UL, 3UL> Res = {{0.00, -v[2UL], v[1UL]},
-													 {v[2UL], 0.00, -v[0UL]},
-													 {-v[1UL], v[0UL], 0.00}};
-
-		return Res;
+		return {{0.00, -v[2UL], v[1UL]},
+				{v[2UL], 0.00, -v[0UL]},
+				{-v[1UL], v[0UL], 0.00}};
 	}
 
 	// function that computes the premultiplication of a matrix M by v^, i.e., v^ * M
 	inline blaze::StaticMatrix<double, 3UL, 3UL> hatPreMultiply(const blaze::StaticVector<double, 3UL> &v, const blaze::StaticMatrix<double, 3UL, 3UL> &M)
 	{
-		blaze::StaticMatrix<double, 3UL, 3UL> Res = {{-M(1UL, 0UL) * v[2UL] + M(2UL, 0UL) * v[1UL], -M(1UL, 1UL) * v[2UL] + M(2UL, 1UL) * v[1UL], -M(1UL, 2UL) * v[2UL] + M(2UL, 2UL) * v[1UL]},
-													 {M(0UL, 0UL) * v[2UL] - M(2UL, 0UL) * v[0UL], M(0UL, 1UL) * v[2UL] - M(2UL, 1UL) * v[0UL], M(0UL, 2UL) * v[2UL] - M(2UL, 2UL) * v[0UL]},
-													 {-M(0UL, 0UL) * v[1UL] + M(1UL, 0UL) * v[0UL], -M(0UL, 1UL) * v[1UL] + M(1UL, 1UL) * v[0UL], -M(0UL, 2UL) * v[1UL] + M(1UL, 2UL) * v[0UL]}};
-
-		return Res;
+		return {{-M(1UL, 0UL) * v[2UL] + M(2UL, 0UL) * v[1UL], -M(1UL, 1UL) * v[2UL] + M(2UL, 1UL) * v[1UL], -M(1UL, 2UL) * v[2UL] + M(2UL, 2UL) * v[1UL]},
+				{M(0UL, 0UL) * v[2UL] - M(2UL, 0UL) * v[0UL], M(0UL, 1UL) * v[2UL] - M(2UL, 1UL) * v[0UL], M(0UL, 2UL) * v[2UL] - M(2UL, 2UL) * v[0UL]},
+				{-M(0UL, 0UL) * v[1UL] + M(1UL, 0UL) * v[0UL], -M(0UL, 1UL) * v[1UL] + M(1UL, 1UL) * v[0UL], -M(0UL, 2UL) * v[1UL] + M(1UL, 2UL) * v[0UL]}};
 	}
 
 	// function that computes the posmultiplication of a matrix M by v^, i.e., M * v^
 	inline blaze::StaticMatrix<double, 3UL, 3UL> hatPostMultiply(const blaze::StaticMatrix<double, 3UL, 3UL> &M, const blaze::StaticVector<double, 3UL> &v)
 	{
-		blaze::StaticMatrix<double, 3UL, 3UL> Res = {{M(0UL, 1UL) * v[2UL] - M(0UL, 2UL) * v[1UL], -M(0UL, 0UL) * v[2UL] + M(0UL, 2UL) * v[0UL], M(0UL, 0UL) * v[1UL] - M(0UL, 1UL) * v[0UL]},
-													 {M(1UL, 1UL) * v[2UL] - M(1UL, 2UL) * v[1UL], -M(1UL, 0UL) * v[2UL] + M(1UL, 2UL) * v[0UL], M(1UL, 0UL) * v[1UL] - M(1UL, 1UL) * v[0UL]},
-													 {M(2UL, 1UL) * v[2UL] - M(2UL, 2UL) * v[1UL], -M(2UL, 0UL) * v[2UL] + M(2UL, 2UL) * v[0UL], M(2UL, 0UL) * v[1UL] - M(2UL, 1UL) * v[0UL]}};
-
-		return Res;
+		return {{M(0UL, 1UL) * v[2UL] - M(0UL, 2UL) * v[1UL], -M(0UL, 0UL) * v[2UL] + M(0UL, 2UL) * v[0UL], M(0UL, 0UL) * v[1UL] - M(0UL, 1UL) * v[0UL]},
+				{M(1UL, 1UL) * v[2UL] - M(1UL, 2UL) * v[1UL], -M(1UL, 0UL) * v[2UL] + M(1UL, 2UL) * v[0UL], M(1UL, 0UL) * v[1UL] - M(1UL, 1UL) * v[0UL]},
+				{M(2UL, 1UL) * v[2UL] - M(2UL, 2UL) * v[1UL], -M(2UL, 0UL) * v[2UL] + M(2UL, 2UL) * v[0UL], M(2UL, 0UL) * v[1UL] - M(2UL, 1UL) * v[0UL]}};
 	}
 
 	// efficiently computes the product between a vector and the transpose of a matrix (R^T * v)
 	inline blaze::StaticVector<double, 3UL> transposePreMultiply(const blaze::StaticMatrix<double, 3UL, 3UL> &R, const blaze::StaticVector<double, 3UL> &v)
 	{
-		blaze::StaticVector<double, 3UL> res{R(0UL, 0UL) * v[0UL] + R(1UL, 0UL) * v[1UL] + R(2UL, 0UL) * v[2UL],
-											 R(0UL, 1UL) * v[0UL] + R(1UL, 1UL) * v[1UL] + R(2UL, 1UL) * v[2UL],
-											 R(0UL, 2UL) * v[0UL] + R(1UL, 2UL) * v[1UL] + R(2UL, 2UL) * v[2UL]};
-
-		return res;
+		return {R(0UL, 0UL) * v[0UL] + R(1UL, 0UL) * v[1UL] + R(2UL, 0UL) * v[2UL],
+				R(0UL, 1UL) * v[0UL] + R(1UL, 1UL) * v[1UL] + R(2UL, 1UL) * v[2UL],
+				R(0UL, 2UL) * v[0UL] + R(1UL, 2UL) * v[1UL] + R(2UL, 2UL) * v[2UL]};
 	}
 
 	// function that computes the differential quaternion evolution
 	inline blaze::StaticVector<double, 4UL> quaternionDiff(const blaze::StaticVector<double, 3UL> &u, const blaze::StaticVector<double, 4UL> &h)
 	{
-		blaze::StaticVector<double, 4UL> hs{0.50 * (-u[0UL] * h[1UL] - u[1UL] * h[2UL] - u[2UL] * h[3UL]),
-											0.50 * (u[0UL] * h[0UL] + u[2UL] * h[2UL] - u[1UL] * h[3UL]),
-											0.50 * (u[1UL] * h[0UL] - u[2UL] * h[1UL] + u[0UL] * h[3UL]),
-											0.50 * (u[2UL] * h[0UL] + u[1UL] * h[1UL] - u[0UL] * h[2UL])};
-
-		return hs;
+		return {0.50 * (-u[0UL] * h[1UL] - u[1UL] * h[2UL] - u[2UL] * h[3UL]),
+				0.50 * (u[0UL] * h[0UL] + u[2UL] * h[2UL] - u[1UL] * h[3UL]),
+				0.50 * (u[1UL] * h[0UL] - u[2UL] * h[1UL] + u[0UL] * h[3UL]),
+				0.50 * (u[2UL] * h[0UL] + u[1UL] * h[1UL] - u[0UL] * h[2UL])};
 	}
 }
