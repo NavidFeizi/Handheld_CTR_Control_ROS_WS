@@ -85,6 +85,7 @@ public:
   void landmark_registration(const std::string &landmarks_file_name, std::string ref_sensor_name);
   void start_read_thread();
   void stop_read_thread();
+  void freeze_phantom(bool status);
   void get_tool_transform_in_robot(quatTransformation &transform);
   void get_tool_transform_in_phantom(quatTransformation &transform);
   void get_tool_transform_in_robot_dot(quatTransformation &transform_dot);
@@ -102,7 +103,7 @@ private:
   std::vector<ToolData> enabledTools;
   std::map<std::string, SensorConfig> sensorConfigMap;
   std::vector<std::string> srom_paths;
-  bool m_flag_debug, m_flag_record, m_flag_filter = false;
+  bool m_flag_debug, m_flag_record, m_flag_filter, m_flag_freeze_phantom = false;
   std::string m_reference_trans_csv_path, m_tool_trans_csv_path;
   std::thread m_emThread;
   std::atomic<bool> stopFlag; // Flag to control the thread

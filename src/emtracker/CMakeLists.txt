@@ -25,6 +25,7 @@ set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(interfaces REQUIRED) 
 
 # EM tracker libraries
@@ -38,7 +39,7 @@ include(${OpenIGTLink_USE_FILE})
 
 add_executable(track src/EMtracker_node.cpp)
 target_link_libraries(track EMTlib)
-ament_target_dependencies(track rclcpp std_msgs interfaces OpenIGTLink)
+ament_target_dependencies(track rclcpp std_msgs std_srvs interfaces OpenIGTLink)
 
 install(TARGETS
   track

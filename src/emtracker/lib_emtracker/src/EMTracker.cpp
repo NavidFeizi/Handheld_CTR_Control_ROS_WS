@@ -340,7 +340,7 @@ void EMTracker::landmark_registration(const std::string &landmarks_file_name, st
   std::this_thread::sleep_for(std::chrono::milliseconds(5000));
 
   constexpr double threshold = 1.0; // threshold value for the radius of the error sphere [mm]
-  unsigned int i = 0;                // counter for the number of landmarks
+  unsigned int i = 0;               // counter for the number of landmarks
 
   // Monitor the probe tip for stationary instances to record landmark positions
   quatTransformation temp;
@@ -505,14 +505,17 @@ void EMTracker::Read_Loop()
     sensors_data = m_combinedAPI->getTrackingDataBX();
 
     ToolData2QuatTransform(sensors_data[sensorConfigMap["robot"].probe_handle_num], temp_1);
-    ToolData2QuatTransform(sensors_data[sensorConfigMap["tool"].probe_handle_num], temp_2);
-    ToolData2QuatTransform(sensors_data[sensorConfigMap["phantom"].probe_handle_num], temp_3);
-
     Combine_Quat_Transformation(temp_1, m_sec_transforms[sensorConfigMap["robot"].probe_handle_num], m_transform_0_1);
+    ToolData2QuatTransform(sensors_data[sensorConfigMap["tool"].probe_handle_num], temp_2);
     Combine_Quat_Transformation(temp_2, m_sec_transforms[sensorConfigMap["tool"].probe_handle_num], m_transform_0_2);
-    Combine_Quat_Transformation(temp_3, m_sec_transforms[sensorConfigMap["phantom"].probe_handle_num], m_transform_0_3);
+    
+    if (!m_flag_freeze_phantom)
+    {
+      ToolData2QuatTransform(sensors_data[sensorConfigMap["phantom"].probe_handle_num], temp_3);
+      Combine_Quat_Transformation(temp_3, m_sec_transforms[sensorConfigMap["phantom"].probe_handle_num], m_transform_0_3);
+    }
 
-    if (sensorConfigMap["probe_1"].active)
+        if (sensorConfigMap["probe_1"].active)
     {
       ToolData2QuatTransform(sensors_data[sensorConfigMap["probe_1"].probe_handle_num], temp_4);
       Combine_Quat_Transformation(temp_4, m_sec_transforms[sensorConfigMap["probe_1"].probe_handle_num], m_transform_0_6);
@@ -583,6 +586,11 @@ void EMTracker::Read_Loop()
       break;
     }
   }
+}
+
+void EMTracker::freeze_phantom(bool status)
+{
+  m_flag_freeze_phantom = status;
 }
 
 /**
