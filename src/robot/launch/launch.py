@@ -7,7 +7,7 @@ def generate_launch_description():
     robot_node = ExecuteProcess(
         cmd=[
             'taskset', '-c', '3',  # This sets the affinity to CPU core 1
-            'ros2', 'run', 'robot', 'run',
+            'ros2', 'run', 'robot', 'ctr_robot',
             # '--ros-args',
             '-p', 'Kp:=30.0',  # Correct syntax for setting parameter
             '-p', 'Ki:=5.0',  # Correct syntax for setting parameter
@@ -19,7 +19,7 @@ def generate_launch_description():
     keyboard_node = ExecuteProcess(
         cmd=[
             'taskset', '-c', '2',  # This sets the affinity to CPU core 1
-            'ros2', 'run', 'keyboard', 'run',
+            'ros2', 'run', 'robot', 'key_input',
             '--ros-args',
             # '-p', 'sample_time:=0.001',  # Correct syntax for setting parameter
             '--remap', '__node:=Publisher_node'

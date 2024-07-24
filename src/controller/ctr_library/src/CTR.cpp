@@ -196,7 +196,7 @@ blaze::StaticVector<double, 5UL> CTR::ODESolver(const blaze::StaticVector<double
 
 	// instantiating the vector of initial conditions for solving the state equations (15 x 1)
 	state_type y_0;
-	static constexpr double stepResolution = 1.00 / 40.00;
+	static constexpr double stepResolution = 1.00 / 25.00;
 
 	/*
 	 *****************************************************************************

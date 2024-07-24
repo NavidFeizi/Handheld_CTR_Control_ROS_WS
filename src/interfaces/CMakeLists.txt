@@ -19,7 +19,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Robotbackbone.msg"
   "srv/Startrecording.srv"
   "srv/Homing.srv"
-  # "srv/Target.srv"
+  "action/Jointstarget.action"
   "action/Target.action"
 )
 

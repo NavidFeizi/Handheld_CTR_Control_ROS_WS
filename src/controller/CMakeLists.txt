@@ -31,10 +31,13 @@ find_package(interfaces REQUIRED) # Make sure this package correctly exports its
 
 # Define executable
 add_executable(control src/controller_node.cpp)
-# Adding the CTR static Library to the project
-add_subdirectory(ctr_library)
 
 ament_target_dependencies(control rclcpp std_msgs rclcpp_action interfaces)
+
+# Adding the CTR static Library to the project
+add_subdirectory(ctr_library)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ctr_library/include)
+target_link_libraries(control CTRlib)
 
 # OpenMP
 find_package(OpenMP)

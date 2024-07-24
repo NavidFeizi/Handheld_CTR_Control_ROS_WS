@@ -2,8 +2,7 @@
 
 # Request
 # interfaces/msg/Taskspace target_pose
-float64[3] target_pose [0.0, 0.0, 0.0]
-float64[3] calyx_pose [0.0, 0.0, 0.0]
+float64[4] position [0.0, 0.0, 0.0, 0.0]
 ---
 # Result definition
 bool success

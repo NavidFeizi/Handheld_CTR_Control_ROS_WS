@@ -317,7 +317,7 @@ bool CTRobot::Get_Controller_Switch_Status()
   return m_flag_robot_switched_on;
 }
 
-/* Actuatre robot to the targert absolute joint positions in mm or deg unit
+/* Actuatre robot to the targert absolute joint positions in SI unit
         (with respect to zero position (distal limit) - positive value is towards proximal end)     */
 void CTRobot::set_target_position(blaze::StaticVector<double, 4> posTarget)
 {
@@ -329,20 +329,20 @@ void CTRobot::set_target_position(blaze::StaticVector<double, 4> posTarget)
     }
   }
 
-  m_inner_rot->Set_target_pos(posTarget[0]);   // in [deg]
-  m_inner_tran->Set_target_pos(posTarget[1]);  // in [mm]
-  m_middle_rot->Set_target_pos(posTarget[2]);  // in [deg]
-  m_middle_tran->Set_target_pos(posTarget[3]); // in [mm]
+  m_inner_rot->Set_target_pos(posTarget[0]);   // in [rad]
+  m_inner_tran->Set_target_pos(posTarget[1]);  // in [m]
+  m_middle_rot->Set_target_pos(posTarget[2]);  // in [rad]
+  m_middle_tran->Set_target_pos(posTarget[3]); // in [m]
 }
 
-/* Actuatre robot to the targert absolute joint positions in [mm/s] or [deg/s] unit
+/* Actuatre robot to the targert absolute joint positions in SI unit
         (with respect to zero position (distal limit) - positive value is towards proximal end)     */
 void CTRobot::Set_Target_Velocity(blaze::StaticVector<double, 4> velTarget)
 {
-  m_inner_rot->Set_target_vel(velTarget[0]);   // in [deg]
-  m_inner_tran->Set_target_vel(velTarget[1]);  // in [mm]
-  m_middle_rot->Set_target_vel(velTarget[2]);  // in [deg]
-  m_middle_tran->Set_target_vel(velTarget[3]); // in [mm]
+  m_inner_rot->Set_target_vel(velTarget[0]);   // in [rad]
+  m_inner_tran->Set_target_vel(velTarget[1]);  // in [m]
+  m_middle_rot->Set_target_vel(velTarget[2]);  // in [rad]
+  m_middle_tran->Set_target_vel(velTarget[3]); // in [m]
 }
 
 /* Gets the current in [mA] unit */
@@ -358,7 +358,7 @@ void CTRobot::Get_Current(blaze::StaticVector<int, 4> *p_current)
   }
 }
 
-/* Gets the current velocity (with respect to zero position - distal limit) of all actuators in [mm/s] or [deg/s] unit */
+/* Gets the current velocity (with respect to zero position - distal limit) of all actuators in SI unit */
 void CTRobot::Get_Velocity(blaze::StaticVector<double, 4> *p_velCurrent)
 {
   if (p_velCurrent)
@@ -371,7 +371,7 @@ void CTRobot::Get_Velocity(blaze::StaticVector<double, 4> *p_velCurrent)
   }
 }
 
-/* Gets the current absolute position (with respect to zero position - distal limit) of all actuators in [mm] or [deg] unit */
+/* Gets the current absolute position (with respect to zero position - distal limit) of all actuators in SI unit */
 void CTRobot::Get_Position(blaze::StaticVector<double, 4> *p_posCurrent)
 {
   if (p_posCurrent)

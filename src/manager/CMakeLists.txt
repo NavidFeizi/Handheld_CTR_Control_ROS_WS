@@ -30,7 +30,7 @@ find_package(rclcpp_action REQUIRED)
 find_package(interfaces REQUIRED) 
 
 # Define executables
-add_executable(mange src/manager_node.cpp)
+add_executable(manage src/manager_node.cpp)
 add_executable(record src/recorder_node.cpp)
 
 # OpenMP
@@ -56,12 +56,12 @@ endif()
 
 add_compile_definitions(OMP_NUM_THREADS=${OMP_NUM_THREADS})
 
-ament_target_dependencies(mange rclcpp std_msgs rclcpp_action interfaces)
+ament_target_dependencies(manage rclcpp std_msgs rclcpp_action interfaces)
 
 ament_target_dependencies(record rclcpp std_msgs interfaces)
 
 install(TARGETS
-mange
+manage
 record
   DESTINATION lib/${PROJECT_NAME})
 

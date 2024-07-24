@@ -336,15 +336,15 @@ private:
     rate.sleep();
   }
 
-  constexpr std::vector<double> m_steps = {1.00 * M_PI / 180.00, 0.50E-3, 1.00 * M_PI / 180.00, 0.50E-3};
+  const std::vector<double> m_steps = {1.00 * M_PI / 180.00, 0.50E-3, 1.00 * M_PI / 180.00, 0.50E-3};
   // std::vector<double> target(4, 0);
 
   // member variables
   size_t count_;
-  constexpr double m_sample_time = 1.00E-3; //[s]
+  double m_sample_time = 1.00E-3; //[s]
   double t0_, m_t, t0 = 0.00;
 
-  constexpr double m_expt_time = 30.0;
+  const double m_expt_time = 30.0;
 
   interfaces::msg::Jointspace m_msg;
 

@@ -7,7 +7,7 @@ def generate_launch_description():
     manager_node = ExecuteProcess(
         cmd=[
             'taskset', '-c', '2',  # This sets the affinity to CPU core 1
-            'ros2', 'run', 'manager', 'mange',
+            'ros2', 'run', 'manager', 'manage',
             '--ros-args',
             '-p', 'sample_time:=0.001',  # Correct syntax for setting parameter
             '--remap', '__node:=Manager_node'

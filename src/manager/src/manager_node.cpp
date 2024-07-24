@@ -25,10 +25,10 @@ using std::placeholders::_1;
 using std::placeholders::_2;
 
 std::string package_name = "manager"; // Replace with any package in your workspace
-std::string WORKSPACE_DIR = ament_index_cpp::get_package_share_directory(package_name);
+std::string PACKAGE_SHARE_DIR = ament_index_cpp::get_package_share_directory(package_name);
 
 template <typename MatrixType>
-MatrixType readFromCSV(MatrixType &Mat, const std::string &filePath);
+MatrixType readFromCSV(MatrixType &Mat, const std::filesystem::path &filePath);
 
 class ManagerNode : public rclcpp::Node
 {
@@ -41,11 +41,14 @@ public:
 
     // initialize output file
     std::string output_fileName = "output.csv";
-    std::string filePath = WORKSPACE_DIR + "/../../../../Output_Files/" + output_fileName;
-    m_output_file.open(filePath, std::ios::out); 
+    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
+    ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
+    std::filesystem::path filePath = ws_dir / "Output_Files" / output_fileName;
+    m_output_file.open(filePath, std::ios::out);
     m_output_file << "Targ_X,Targ_Y,Targ_Z, Phan_Tool_X, Phan_Tool_Y, Phan_Tool_Z, Base_Tool_X, Base_Tool_Y, Base_Tool_Z\n";
-    RCLCPP_INFO(this->get_logger(), "Output file initialized");
+    RCLCPP_INFO(this->get_logger(), "--- Output file initialized ---");
 
+    // load input file
     std::string input_fileName("Targets.csv");
     ManagerNode::load_input_files(m_targets, input_fileName);
     RCLCPP_INFO(this->get_logger(), "Target files loaded");
@@ -113,13 +116,12 @@ private:
   }
 
   // Function to load input CSV files
-  void load_input_files(blaze::HybridMatrix<double, 200UL, 3UL> &targets, const std::string &fileName)
+  void load_input_files(blaze::HybridMatrix<double, 200UL, 6UL> &targets, const std::string &fileName)
   {
-    // /** read actuation targets */
+    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
+    ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
+    std::filesystem::path filePath = ws_dir / "Input_Files" / fileName;
 
-    // std::string fileName("targets");
-    std::string filePath = WORKSPACE_DIR + "/../../../../Input_Files/" + fileName;
-    // std::cout << "ROS workspace directory: " << filePath << std::endl;
     readFromCSV(targets, filePath);
     RCLCPP_INFO(this->get_logger(), "--- Targets loaded ---");
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
@@ -162,16 +164,20 @@ private:
     }
 
     auto goal_msg = interfaces::action::Target::Goal();
-    goal_msg.target_pose[0UL] = m_targets(m_current_target_index, 0);
-    goal_msg.target_pose[1UL] = m_targets(m_current_target_index, 1);
-    goal_msg.target_pose[2UL] = m_targets(m_current_target_index, 2);
+    goal_msg.target_pose[0UL] = m_targets(m_current_target_index, 3) * -1;
+    goal_msg.target_pose[1UL] = m_targets(m_current_target_index, 4) * -1;
+    goal_msg.target_pose[2UL] = m_targets(m_current_target_index, 5);
+
+    goal_msg.calyx_pose[0UL] = m_targets(m_current_target_index, 0);
+    goal_msg.calyx_pose[1UL] = m_targets(m_current_target_index, 1);
+    goal_msg.calyx_pose[2UL] = m_targets(m_current_target_index, 2);
 
     auto send_goal_options = rclcpp_action::Client<interfaces::action::Target>::SendGoalOptions();
     send_goal_options.feedback_callback = std::bind(&ManagerNode::action_feedback_callback, this, _1, _2);
     send_goal_options.result_callback = std::bind(&ManagerNode::action_result_callback, this, _1);
 
     m_client->async_send_goal(goal_msg, send_goal_options);
-    RCLCPP_INFO(this->get_logger(), "Target sent");
+    RCLCPP_INFO(this->get_logger(), "Task target #%ld sent", m_current_target_index);
   }
 
   //
@@ -206,7 +212,6 @@ private:
       blaze::StaticVector<double, 3UL> avg_base_tool_pos = sum_base_tool_pos / num_samples;
       blaze::StaticVector<double, 3UL> avg_phantom_tool_pos = sum_phantom_tool_pos / num_samples;
 
-      RCLCPP_INFO(this->get_logger(), "Collecting tool position");
       m_output_file << m_targets(m_current_target_index, 0) << ","
                     << m_targets(m_current_target_index, 1) << ","
                     << m_targets(m_current_target_index, 2) << ","
@@ -253,25 +258,19 @@ private:
 
   std::ofstream m_output_file;
 
-  size_t m_current_target_index;
-  blaze::HybridMatrix<double, 200UL, 3UL> m_targets;
+  size_t m_current_target_index = 0;
+  blaze::HybridMatrix<double, 200UL, 6UL> m_targets;
   blaze::StaticVector<double, 3UL> m_base_tool_pos, m_phantom_tool_pos;
-
-  interfaces::msg::Jointspace m_msg;
 
   rclcpp::TimerBase::SharedPtr m_timer;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_pub;
   rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher;
   rclcpp::Client<interfaces::srv::Startrecording>::SharedPtr m_record_client;
   rclcpp_action::Client<interfaces::action::Target>::SharedPtr m_client;
-
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool_1;
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool_2;
-
   rclcpp::CallbackGroup::SharedPtr m_callback_group_1;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_2;
-
-  std::atomic<bool> m_is_experiment_running;
 };
 
 int main(int argc, char *argv[])
@@ -287,24 +286,25 @@ int main(int argc, char *argv[])
 
 // function that reads relevant clinical data from CSV files for each case
 template <typename MatrixType>
-MatrixType readFromCSV(MatrixType &Mat, const std::string &filePath)
+MatrixType readFromCSV(MatrixType &Mat, const std::filesystem::path &filePath)
 {
-  // Construct file path and name
-  const std::filesystem::path Dir(filePath);
-
-  // Ensure the directory exists
-  std::filesystem::create_directories(Dir);
-
-  // Open the CSV file
+  std::ifstream CSV_file;
   CSV_file.open(filePath, std::ifstream::in);
-  if (!csvFile.is_open())
+  if (!CSV_file.is_open())
   {
-    throw std::runtime_error("Error opening the CSV file: " + fileName.string());
+    throw std::runtime_error("Error opening the CSV file: " + filePath.string());
   }
 
   typedef boost::tokenizer<boost::escaped_list_separator<char>> Tokenizer;
 
   std::string line;
+
+  // Skip the first line (header)
+  if (!std::getline(CSV_file, line))
+  {
+    std::cerr << "Error reading the header line\n";
+    return Mat = -1.00;
+  }
 
   size_t row = 0UL, col = 0UL;
   double value;

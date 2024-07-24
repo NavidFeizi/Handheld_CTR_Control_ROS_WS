@@ -3,12 +3,14 @@
 #include <memory>
 #include <string>
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "rcl_interfaces/msg/log.hpp"
 #include "interfaces/msg/jointspace.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/srv/homing.hpp"
+#include "interfaces/action/jointstarget.hpp"
 #include "Robot.hpp"
 
 using namespace std::chrono_literals;
@@ -25,6 +27,7 @@ public:
   RobotNode() : Node("ctr_robot"), m_count(0)
   {
     // declare_parameters();
+    m_flag_use_target_action = true;
     setup_and_initialize_robot();
     setup_ros_interfaces();
     // setup_parameter_callback();
@@ -60,7 +63,7 @@ private:
     {
       m_robot->Enable_Operation(true);
     }
-    
+
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     m_robot->set_target_position({0.0, 0.0, 0.0, 0.0});
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -100,6 +103,13 @@ private:
 
     // Initialize the watchdog timer
     m_watchdog_timer_target = this->create_wall_timer(2000ms, std::bind(&RobotNode::check_target_publisher_alive, this), m_callback_group_watchdog_2);
+
+    // Action Server Setup
+    m_action_server = rclcpp_action::create_server<interfaces::action::Jointstarget>(
+        this, "joints_target",
+        std::bind(&RobotNode::handle_goal, this, _1, _2),
+        std::bind(&RobotNode::handle_cancel, this, _1),
+        std::bind(&RobotNode::handle_accepted, this, _1));
   }
 
   // Setup parameter callback function to handle dynamic parameter updates
@@ -153,7 +163,7 @@ private:
     msg.velocity[2UL] = m_x_dot[2UL];
     msg.velocity[3UL] = m_x_dot[3UL];
 
-    // m_publisher_robot->publish(msg);
+    m_publisher_robot->publish(msg);
   }
 
   // Timer callback function for joint space control loop
@@ -171,10 +181,7 @@ private:
   }
 
   // Perform a control step in joint space
-  void
-  joint_space_control_step(const blaze::StaticVector<double, 4UL> x_des,
-                           const blaze::StaticVector<double, 4UL> x_dot_des,
-                           blaze::StaticVector<double, 4UL> &q_dot_command)
+  void joint_space_control_step(const blaze::StaticVector<double, 4UL> x_des, const blaze::StaticVector<double, 4UL> x_dot_des, blaze::StaticVector<double, 4UL> &q_dot_command)
   {
     m_x_error = x_des - m_x;
     m_x_error_int = m_x_error_int + m_x_error * m_control_sample_time;
@@ -197,18 +204,70 @@ private:
   // Subscription callback function to updates the target joint positions and velocities
   void target_callback(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
-    if (!m_flag_manual)
+    if (!m_flag_manual && !m_flag_use_target_action)
     {
       m_targpublisher_alive_tmep = true;
       m_x_des = blaze::StaticVector<double, 4UL>(0.00);
 
-      m_x_des[0UL] = msg->position[0UL]*360/M_PI;
-      m_x_des[1UL] = msg->position[1UL]*1e3;
-      m_x_des[2UL] = msg->position[2UL]*360/M_PI;
-      m_x_des[3UL] = msg->position[3UL]*1e3;
+      m_x_des[0UL] = msg->position[0UL];
+      m_x_des[1UL] = msg->position[1UL];
+      m_x_des[2UL] = msg->position[2UL];
+      m_x_des[3UL] = msg->position[3UL];
     }
 
     // RCLCPP_INFO(this->get_logger(), "New Target");
+  }
+
+  //
+  rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const interfaces::action::Jointstarget::Goal> goal)
+  {
+    // RCLCPP_INFO(this->get_logger(), "Target request received ");
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+  }
+
+  //
+  rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> goal_handle)
+  {
+    RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
+    return rclcpp_action::CancelResponse::ACCEPT;
+  }
+
+  //
+  void handle_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> goal_handle)
+  {
+    std::thread{std::bind(&RobotNode::set_action_target_callback, this, std::placeholders::_1), goal_handle}.detach();
+  }
+
+  //
+  void set_action_target_callback(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> &goal_handle)
+  {
+    const auto goal = goal_handle->get_goal();
+
+    if (!m_flag_manual && m_flag_use_target_action)
+    {
+      m_x_des[0UL] = goal->position[0UL];
+      m_x_des[1UL] = goal->position[1UL];
+      m_x_des[2UL] = goal->position[2UL];
+      m_x_des[3UL] = goal->position[3UL];
+    }
+    else
+    {
+      RCLCPP_INFO(this->get_logger(), "Target is not accepten in manual mode");
+    }
+
+    RCLCPP_INFO(this->get_logger(), "Joints target received: R1: %0.1f [deg]  T1: %0.1f [mm]  R2: %0.1f [deg]  T2: %0.1f [mm]",
+                m_x_des[0UL] * 360 / M_PI, m_x_des[1UL] * 1e3, m_x_des[2UL] * 360 / M_PI, m_x_des[3UL] * 1e3);
+
+    auto result = std::make_shared<interfaces::action::Jointstarget::Result>();
+
+    // Call the control loop
+    rclcpp::sleep_for(200ms);
+    m_robot->Wait_until_reach();
+    // rclcpp::sleep_for(2000ms);
+
+    result->success = true; // Indicate success in the result
+    goal_handle->succeed(result);
+    RCLCPP_INFO(this->get_logger(), "Target reached successfully");
   }
 
   // Subscription callback function updates the current catheter tip status using EMTracker topic
@@ -219,8 +278,7 @@ private:
   }
 
   // Service callback to perform the homing procedure
-  void manual_callback(const std::shared_ptr<interfaces::srv::Homing::Request> request,
-                       std::shared_ptr<interfaces::srv::Homing::Response> response)
+  void manual_callback(const std::shared_ptr<interfaces::srv::Homing::Request> request, std::shared_ptr<interfaces::srv::Homing::Response> response)
   {
     if (request->command == "ON")
     {
@@ -301,8 +359,8 @@ private:
       if (m_targpublisher_alive)
       {
         m_targpublisher_alive = false;
-        m_x_des = blaze::StaticVector<double, 4UL>(0.00);
-        m_x_dot_des = blaze::StaticVector<double, 4UL>(0.00);
+        // m_x_des = blaze::StaticVector<double, 4UL>(0.00);
+        // m_x_dot_des = blaze::StaticVector<double, 4UL>(0.00);
         RCLCPP_WARN(get_logger(), "publisher_node is dead");
       }
     }
@@ -320,7 +378,7 @@ private:
   // const double m_control_sample_time = 0.0025; //[s]
   const double m_control_sample_time = 0.050; //[s]
   double m_kp, m_ki = 0.00;
-  bool m_flag_manual = false;
+  bool m_flag_manual, m_flag_use_target_action = false;
   bool m_emtracker_alive, m_emtracker_alive_tmep, m_targpublisher_alive, m_targpublisher_alive_tmep = false;
   std::unique_ptr<CTRobot> m_robot;
 
@@ -332,6 +390,7 @@ private:
   rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_robot;
   rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subscription_target;
   rclcpp::Service<interfaces::srv::Homing>::SharedPtr m_homing_service;
+  rclcpp_action::Server<interfaces::action::Jointstarget>::SharedPtr m_action_server;
 
   rclcpp::CallbackGroup::SharedPtr m_callback_group_pub1;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub1;
@@ -345,7 +404,7 @@ private:
   blaze::StaticVector<double, 4UL> m_x;
   blaze::StaticVector<double, 4UL> m_x_dot;
   blaze::StaticVector<int, 4UL> m_c;
-  blaze::StaticVector<double, 4UL> m_x_des;
+  blaze::StaticVector<double, 4UL> m_x_des; // in SI units
   blaze::StaticVector<double, 4UL> m_x_error;
   blaze::StaticVector<double, 4UL> m_x_error_int;
   blaze::StaticVector<double, 4UL> m_x_error_dot;
