@@ -116,7 +116,7 @@ private:
   }
 
   // Function to load input CSV files
-  void load_input_files(blaze::HybridMatrix<double, 200UL, 6UL> &targets, const std::string &fileName)
+  void load_input_files(blaze::HybridMatrix<double, 3000UL, 6UL> &targets, const std::string &fileName)
   {
     std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
     ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
@@ -168,9 +168,13 @@ private:
     goal_msg.target_pose[1UL] = m_targets(m_current_target_index, 4) * -1;
     goal_msg.target_pose[2UL] = m_targets(m_current_target_index, 5);
 
-    goal_msg.calyx_pose[0UL] = m_targets(m_current_target_index, 0);
-    goal_msg.calyx_pose[1UL] = m_targets(m_current_target_index, 1);
+    goal_msg.calyx_pose[0UL] = m_targets(m_current_target_index, 0) * -1;
+    goal_msg.calyx_pose[1UL] = m_targets(m_current_target_index, 1) * -1;
     goal_msg.calyx_pose[2UL] = m_targets(m_current_target_index, 2);
+
+    // goal_msg.target_pose[0UL] = m_targets(m_current_target_index, 0);
+    // goal_msg.target_pose[1UL] = m_targets(m_current_target_index, 1);
+    // goal_msg.target_pose[2UL] = m_targets(m_current_target_index, 2);
 
     auto send_goal_options = rclcpp_action::Client<interfaces::action::Target>::SendGoalOptions();
     send_goal_options.feedback_callback = std::bind(&ManagerNode::action_feedback_callback, this, _1, _2);
@@ -259,7 +263,7 @@ private:
   std::ofstream m_output_file;
 
   size_t m_current_target_index = 0;
-  blaze::HybridMatrix<double, 200UL, 6UL> m_targets;
+  blaze::HybridMatrix<double, 3000UL, 6UL> m_targets;
   blaze::StaticVector<double, 3UL> m_base_tool_pos, m_phantom_tool_pos;
 
   rclcpp::TimerBase::SharedPtr m_timer;

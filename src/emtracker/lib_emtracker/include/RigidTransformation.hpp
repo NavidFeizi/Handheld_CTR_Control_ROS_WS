@@ -122,6 +122,8 @@ void Rotmat2Quaternion(const StaticMatrix<double,3UL,3UL> &R, StaticVector<doubl
 /* Function to convert Euler angles rotation to quaternion */
 void Euler2Quaternion(const double heading, const double attitude, const double bank, StaticVector<double, 4UL> &h);
 
+void quat2Rotmat(const blaze::StaticVector<double, 4UL> &h, blaze::StaticMatrix<double, 3UL, 3UL> &R);
+
 /* Function to convert Quaternion to Euler angles rotation */
 void QuaternionToEuler(const StaticVector<double,4UL> &quaternion, double *azimuth, double *elevation, double *roll);
 
@@ -133,5 +135,5 @@ StaticMatrix<double, 3UL, 3UL> RotX(const double &theta);
 StaticMatrix<double, 3UL, 3UL> RotY(const double &theta);
 StaticMatrix<double, 3UL, 3UL> RotZ(const double &theta);
 void EulerToRotMat(const std::vector<double> &Angles, StaticMatrix<double, 3UL, 3UL> &R);
-StaticMatrix<double, 3UL, 3UL> quaternion2rotmat(std::vector<double>& q);
+
 std::vector<double> QuaternionToEulerAngles(const std::vector<double>& q);

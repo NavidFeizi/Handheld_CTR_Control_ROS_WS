@@ -10,6 +10,8 @@
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "interfaces/msg/taskspace.hpp"
+#include "interfaces/srv/transformation.hpp"
+
 #include "EMTracker.hpp"
 // #include "butterworth.hpp"
 
@@ -72,6 +74,11 @@ private:
     m_freeze_phantom_service = this->create_service<std_srvs::srv::SetBool>(
         "freeze_phantom",
         std::bind(&EMTrackerNode::handle_freeze_phantom, this, std::placeholders::_1, std::placeholders::_2));
+
+    // Service server for geting the CT-SCAN -> CTR tranformation using tranformation.hpp
+    m_ctr_tranform_service = this->create_service<interfaces::srv::Transformation>(
+        "get_transformation",
+        std::bind(&EMTrackerNode::handle_tranformation_service_request, this, std::placeholders::_1, std::placeholders::_2));
   }
 
   void setup_parameters_callback()
@@ -218,6 +225,29 @@ private:
     // double time = static_cast<double>(now.nanoseconds()) / 1E9;
     // log_position(time, tool_transform.translation, sample_time);
     // log_position(time, Pos_tip_F, SampleTime);
+  }
+
+  void handle_tranformation_service_request(
+      const std::shared_ptr<interfaces::srv::Transformation::Request> request,
+      std::shared_ptr<interfaces::srv::Transformation::Response> response)
+  {
+    // Populate your transformation matrix here
+    // Example transformation matrix (identity matrix)
+
+    blaze::StaticMatrix<double, 3UL, 3UL> R;
+    quat2Rotmat(m_robot_transform.rotation, R);
+
+    blaze::StaticMatrix<double, 4, 4> tran_matrix_robot = m_robot_transform.toMatrix();
+
+    response->transformation_matrix = {
+        tran_matrix_robot(0, 0), tran_matrix_robot(0, 1), tran_matrix_robot(0, 2), tran_matrix_robot(0, 3),
+        tran_matrix_robot(1, 0), tran_matrix_robot(1, 1), tran_matrix_robot(1, 2), tran_matrix_robot(1, 3),
+        tran_matrix_robot(2, 0), tran_matrix_robot(2, 1), tran_matrix_robot(2, 2), tran_matrix_robot(2, 3),
+        0.0, 0.0, 0.0, 1.0};
+
+    std::cout << "CT-SCAN -> CTR transformation: \n" << tran_matrix_robot << std::endl;
+
+    RCLCPP_INFO(this->get_logger(), "Sending transformation matrix");
   }
 
   void igtl_points_callback()
@@ -375,6 +405,8 @@ private:
     RCLCPP_INFO(get_logger(), "%s", oss.str().c_str());
   }
 
+
+
   size_t count_;
   double m_sample_time;
   double m_cutoff_freq;
@@ -393,6 +425,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr m_callback_group_read;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_heartbeat;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr m_freeze_phantom_service;
+  rclcpp::Service<interfaces::srv::Transformation>::SharedPtr m_ctr_tranform_service;
 
   igtl::ClientSocket::Pointer m_socket;
   igtl::PointMessage::Pointer m_pm_emtracker;

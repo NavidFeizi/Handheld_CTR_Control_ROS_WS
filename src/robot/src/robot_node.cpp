@@ -11,6 +11,8 @@
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/srv/homing.hpp"
 #include "interfaces/action/jointstarget.hpp"
+#include "interfaces/srv/jointstarget.hpp" // Adjust the path to match your package and service name
+
 #include "Robot.hpp"
 
 using namespace std::chrono_literals;
@@ -104,12 +106,15 @@ private:
     // Initialize the watchdog timer
     m_watchdog_timer_target = this->create_wall_timer(2000ms, std::bind(&RobotNode::check_target_publisher_alive, this), m_callback_group_watchdog_2);
 
-    // Action Server Setup
-    m_action_server = rclcpp_action::create_server<interfaces::action::Jointstarget>(
-        this, "joints_target",
-        std::bind(&RobotNode::handle_goal, this, _1, _2),
-        std::bind(&RobotNode::handle_cancel, this, _1),
-        std::bind(&RobotNode::handle_accepted, this, _1));
+    m_target_service = this->create_service<interfaces::srv::Jointstarget>(
+        "joints_space/target", std::bind(&RobotNode::handle_service_request, this, std::placeholders::_1, std::placeholders::_2));
+
+    // // Action Server Setup
+    // m_action_server = rclcpp_action::create_server<interfaces::action::Jointstarget>(
+    //     this, "joints_target",
+    //     std::bind(&RobotNode::handle_goal, this, _1, _2),
+    //     std::bind(&RobotNode::handle_cancel, this, _1),
+    //     std::bind(&RobotNode::handle_accepted, this, _1));
   }
 
   // Setup parameter callback function to handle dynamic parameter updates
@@ -219,56 +224,84 @@ private:
   }
 
   //
-  rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const interfaces::action::Jointstarget::Goal> goal)
+  void handle_service_request(
+      const std::shared_ptr<interfaces::srv::Jointstarget::Request> request,
+      std::shared_ptr<interfaces::srv::Jointstarget::Response> response)
   {
-    // RCLCPP_INFO(this->get_logger(), "Target request received ");
-    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-  }
-
-  //
-  rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> goal_handle)
-  {
-    RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
-    return rclcpp_action::CancelResponse::ACCEPT;
-  }
-
-  //
-  void handle_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> goal_handle)
-  {
-    std::thread{std::bind(&RobotNode::set_action_target_callback, this, std::placeholders::_1), goal_handle}.detach();
-  }
-
-  //
-  void set_action_target_callback(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> &goal_handle)
-  {
-    const auto goal = goal_handle->get_goal();
-
     if (!m_flag_manual && m_flag_use_target_action)
     {
-      m_x_des[0UL] = goal->position[0UL];
-      m_x_des[1UL] = goal->position[1UL];
-      m_x_des[2UL] = goal->position[2UL];
-      m_x_des[3UL] = goal->position[3UL];
+      m_x_des[0UL] = request->position[0UL];
+      m_x_des[1UL] = request->position[1UL];
+      m_x_des[2UL] = request->position[2UL];
+      m_x_des[3UL] = request->position[3UL];
     }
     else
     {
-      RCLCPP_INFO(this->get_logger(), "Target is not accepten in manual mode");
+      RCLCPP_INFO(this->get_logger(), "Target is not accepted in manual mode");
     }
 
     RCLCPP_INFO(this->get_logger(), "Joints target received: R1: %0.1f [deg]  T1: %0.1f [mm]  R2: %0.1f [deg]  T2: %0.1f [mm]",
                 m_x_des[0UL] * 360 / M_PI, m_x_des[1UL] * 1e3, m_x_des[2UL] * 360 / M_PI, m_x_des[3UL] * 1e3);
 
-    auto result = std::make_shared<interfaces::action::Jointstarget::Result>();
-
-    // Call the control loop
     rclcpp::sleep_for(200ms);
     m_robot->Wait_until_reach();
-    // rclcpp::sleep_for(2000ms);
-
-    result->success = true; // Indicate success in the result
-    goal_handle->succeed(result);
-    RCLCPP_INFO(this->get_logger(), "Target reached successfully");
+    RCLCPP_INFO(this->get_logger(), "Joints target reached");
+    response->success = true;
+    response->message = "Joints target reached!";
+    
   }
+
+  // //
+  // rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const interfaces::action::Jointstarget::Goal> goal)
+  // {
+  //   // RCLCPP_INFO(this->get_logger(), "Target request received ");
+  //   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+  // }
+
+  // //
+  // rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> goal_handle)
+  // {
+  //   RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
+  //   return rclcpp_action::CancelResponse::ACCEPT;
+  // }
+
+  // //
+  // void handle_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> goal_handle)
+  // {
+  //   std::thread{std::bind(&RobotNode::set_action_target_callback, this, std::placeholders::_1), goal_handle}.detach();
+  // }
+
+  // //
+  // void set_action_target_callback(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> &goal_handle)
+  // {
+  //   const auto goal = goal_handle->get_goal();
+
+  //   if (!m_flag_manual && m_flag_use_target_action)
+  //   {
+  //     m_x_des[0UL] = goal->position[0UL];
+  //     m_x_des[1UL] = goal->position[1UL];
+  //     m_x_des[2UL] = goal->position[2UL];
+  //     m_x_des[3UL] = goal->position[3UL];
+  //   }
+  //   else
+  //   {
+  //     RCLCPP_INFO(this->get_logger(), "Target is not accepten in manual mode");
+  //   }
+
+  //   RCLCPP_INFO(this->get_logger(), "Joints target received: R1: %0.1f [deg]  T1: %0.1f [mm]  R2: %0.1f [deg]  T2: %0.1f [mm]",
+  //               m_x_des[0UL] * 360 / M_PI, m_x_des[1UL] * 1e3, m_x_des[2UL] * 360 / M_PI, m_x_des[3UL] * 1e3);
+
+  //   auto result = std::make_shared<interfaces::action::Jointstarget::Result>();
+
+  //   // Call the control loop
+  //   rclcpp::sleep_for(200ms);
+  //   m_robot->Wait_until_reach();
+  //   // rclcpp::sleep_for(2000ms);
+
+  //   result->success = true; // Indicate success in the result
+  //   goal_handle->succeed(result);
+  //   RCLCPP_INFO(this->get_logger(), "Target reached successfully");
+  // }
 
   // Subscription callback function updates the current catheter tip status using EMTracker topic
   void current_tool_callback(const interfaces::msg::Taskspace::ConstSharedPtr msg)
@@ -390,7 +423,8 @@ private:
   rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_robot;
   rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subscription_target;
   rclcpp::Service<interfaces::srv::Homing>::SharedPtr m_homing_service;
-  rclcpp_action::Server<interfaces::action::Jointstarget>::SharedPtr m_action_server;
+  // rclcpp_action::Server<interfaces::action::Jointstarget>::SharedPtr m_action_server;
+  rclcpp::Service<interfaces::srv::Jointstarget>::SharedPtr m_target_service;
 
   rclcpp::CallbackGroup::SharedPtr m_callback_group_pub1;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub1;

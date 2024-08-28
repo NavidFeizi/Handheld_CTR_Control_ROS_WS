@@ -315,6 +315,30 @@ void Euler2Quaternion(const double heading, const double attitude, const double 
   h[3UL] = c1 * s2 * c3 - s1 * c2 * s3;
 }
 
+
+void quat2Rotmat(const blaze::StaticVector<double, 4UL> &h, blaze::StaticMatrix<double, 3UL, 3UL> &R)
+{
+  const double scale = 2.00 / blaze::sqrNorm(h);
+
+  R(0UL, 0UL) = 1.00 + scale * (-h[2UL] * h[2UL] - h[3UL] * h[3UL]);
+  R(0UL, 1UL) = scale * (h[1UL] * h[2UL] - h[3UL] * h[0UL]);
+  R(0UL, 2UL) = scale * (h[1UL] * h[3UL] + h[2UL] * h[0UL]);
+
+  R(1UL, 0UL) = scale * (h[1UL] * h[2UL] + h[3UL] * h[0UL]);
+  R(1UL, 1UL) = 1.00 + scale * (-h[1UL] * h[1UL] - h[3UL] * h[3UL]);
+  R(1UL, 2UL) = scale * (h[2UL] * h[3UL] - h[1UL] * h[0UL]);
+
+  R(2UL, 0UL) = scale * (h[1UL] * h[3UL] - h[2UL] * h[0UL]);
+  R(2UL, 1UL) = scale * (h[2UL] * h[3UL] + h[1UL] * h[0UL]);
+  R(2UL, 2UL) = 1.00 + scale * (-h[1UL] * h[1UL] - h[2UL] * h[2UL]);
+
+  // StaticMatrix<double, 3UL, 3UL> R = {{2.00 * (q[0UL] * q[0UL] + q[1UL] * q[1UL]) - 1.00, 2.00 * (q[1UL] * q[2UL] - q[0UL] * q[3UL]), 2.00 * (q[1UL] * q[3UL] + q[0UL] * q[2.00])},
+  //                                     {2.00 * (q[1UL] * q[2UL] + q[0UL] * q[3UL]), 2.00 * (q[0UL] * q[0UL] + q[2UL] * q[2UL]) - 1.00, 2.00 * (q[2UL] * q[3UL] - q[0UL] * q[1.00])},
+  //                                     {2.00 * (q[1UL] * q[3UL] - q[0UL] * q[2UL]), 2.00 * (q[2UL] * q[3UL] + q[0UL] * q[1UL]), 2.00 * (q[0UL] * q[0UL] + q[3UL] * q[3UL]) - 1.00}};
+
+  return;
+}
+
 /* Function to convert Quaternion to Euler angles rotation */
 void QuaternionToEuler(const StaticVector<double, 4UL> &quaternion, double *azimuth, double *elevation, double *roll)
 {
@@ -382,15 +406,6 @@ StaticMatrix<double, 3UL, 3UL> RotZ(const double &theta)
 void EulerToRotMat(const std::vector<double> &Angles, StaticMatrix<double, 3UL, 3UL> &R)
 {
   R = RotZ(Angles[0UL]) * RotY(Angles[1UL]) * RotX(Angles[2UL]);
-}
-
-StaticMatrix<double, 3UL, 3UL> quaternion2rotmat(std::vector<double> &q)
-{
-  StaticMatrix<double, 3UL, 3UL> R = {{2.00 * (q[0UL] * q[0UL] + q[1UL] * q[1UL]) - 1.00, 2.00 * (q[1UL] * q[2UL] - q[0UL] * q[3UL]), 2.00 * (q[1UL] * q[3UL] + q[0UL] * q[2.00])},
-                                      {2.00 * (q[1UL] * q[2UL] + q[0UL] * q[3UL]), 2.00 * (q[0UL] * q[0UL] + q[2UL] * q[2UL]) - 1.00, 2.00 * (q[2UL] * q[3UL] - q[0UL] * q[1.00])},
-                                      {2.00 * (q[1UL] * q[3UL] - q[0UL] * q[2UL]), 2.00 * (q[2UL] * q[3UL] + q[0UL] * q[1UL]), 2.00 * (q[0UL] * q[0UL] + q[3UL] * q[3UL]) - 1.00}};
-
-  return R;
 }
 
 std::vector<double> QuaternionToEulerAngles(const std::vector<double> &q)

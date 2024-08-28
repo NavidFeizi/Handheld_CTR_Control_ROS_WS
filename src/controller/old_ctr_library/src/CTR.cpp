@@ -169,15 +169,8 @@ blaze::StaticVector<double, 5UL> CTR::ODESolver(const blaze::StaticVector<double
 	// ##################################################### NUMERICAL METHODS FOR ODE INTEGRATION #####################################################
 
 	// ********************************  8-th ORDER ADAPTIVE ADAMS-BASHFORTH-MOULTON STEPPER ********************************
-	// Instantiate the stepper with the appropriate algebra type
-	boost::numeric::odeint::adaptive_adams_bashforth_moulton<8UL,
-															 State,
-															 double,
-															 State,
-															 double,
-															 boost::numeric::odeint::custom_algebra,
-															 boost::numeric::odeint::default_operations,
-															 boost::numeric::odeint::initially_resizer>
+	boost::numeric::odeint::adaptive_adams_bashforth_moulton<8UL, state_type, double, state_type, double,
+															 boost::numeric::odeint::vector_space_algebra, boost::numeric::odeint::default_operations, boost::numeric::odeint::initially_resizer>
 		abm8_stepper;
 
 	// ********************************  4-th ORDER CLASSIC RUNGE-KUTTA STEPPER ********************************
@@ -202,17 +195,11 @@ blaze::StaticVector<double, 5UL> CTR::ODESolver(const blaze::StaticVector<double
 	// #################################################################################################################################################
 
 	// start and end points, in terms of arc-length s, of each CTR segment and initial step-size for integration (ds)
-	double startArcLength, endArcLength;
-	constexpr double ds = 1.00E-3;
-
-	// Tolerance parameters for the adaptive stepper
-	constexpr double abs_tol = 1.00E-10;
-	constexpr double rel_tol = 1.00E-8;
-
-	auto controlled_stepper = boost::numeric::odeint::make_controlled(abs_tol, rel_tol, abm8_stepper);
+	double s_start, s_end, ds;
 
 	// instantiating the vector of initial conditions for solving the state equations (15 x 1)
 	state_type y_0;
+	static constexpr double stepResolution = 1.00 / 40.00;
 
 	/*
 	 *****************************************************************************
@@ -246,23 +233,16 @@ blaze::StaticVector<double, 5UL> CTR::ODESolver(const blaze::StaticVector<double
 	for (size_t seg = 0; seg < len_seg; ++seg)
 	{
 		// specifying the interval of integration (in terms of tube segment arc-lengths)
-		startArcLength = S[seg];
-		endArcLength = S[seg + 1UL];
+		s_start = S[seg];
+		s_end = S[seg + 1UL];
+		ds = (s_end - s_start) * stepResolution; // 30 points per segment
 
 		// passing the tube parameters in the segment to the state equation method
 		this->m_stateEquations->setEquationParameters(blaze::column(U_x, seg), blaze::column(U_y, seg), blaze::column(EI, seg), blaze::column(GJ, seg), this->m_wf);
 
 		// ##################################################### NUMERICAL INTEGRATION #####################################################
 		// Employs the selected stepper (Numerical method) and integrates the system of ODEs along the segment considered
-		boost::numeric::odeint::integrate_adaptive(
-			abm8_stepper,			 // controlled adaptive stepper with error tolerances
-			*this->m_stateEquations, // ODE system
-			y_0,					 // initial conditions
-			startArcLength,			 // initial arc-length (start of i-th CTR segment)
-			endArcLength,			 // initial arc-length (end of i-th CTR segment)
-			ds,						 // initial spatial step
-			*this->m_stateObserver	 // observer for saving the values of the state vector
-		);
+		boost::numeric::odeint::integrate_adaptive(abm8_stepper, *this->m_stateEquations, y_0, s_start, s_end, ds, *this->m_stateObserver);
 	}
 
 	//
@@ -790,13 +770,13 @@ bool CTR::Modified_Newton_Raphson(blaze::StaticVector<double, 5UL> &initGuess)
 	blaze::StaticMatrix<double, 5UL, 5UL> D, D_inv;
 	double h, h_0, lambda, gamma, improvementFactor, d_norm, Dh_norm;
 	size_t j = 0UL, k = 0UL;
-	static constexpr size_t k_max = 300UL;
+	static constexpr size_t k_max = 500UL;
 	std::vector<double> h_k; // vector to store all h_k's
 	h_k.reserve(k_max);
 
 	found = (blaze::linfNorm(f) <= this->m_accuracy);
 
-	static constexpr size_t maxIter_D = 15UL;
+	static constexpr size_t maxIter_D = 20UL;
 	size_t iter_D = 0UL;
 
 	// returns true if a maximum number of iterations has been surpassed
@@ -948,7 +928,7 @@ bool CTR::actuate_CTR(blaze::StaticVector<double, 5UL> &initGuess, const blaze::
 }
 
 // function that implements the position control ==> returns timeout [bool]
-bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::StaticVector<double, 3UL> &target, const double posTol, const blaze::StaticVector<double, 3UL> &tip_em)
+bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::StaticVector<double, 3UL> &target, const double posTol)
 {
 	double minError = 1.00E3;										 // minimum distance to target
 	bool status;													 // status = TRUE (FALSE) indicates convergence (lack thereof)
@@ -968,7 +948,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	readjustInitialGuesses(initGuess);
 
 	// proportional, derivative, and integral gains for position control
-	constexpr double kp = 1.00, ki = 5.00E4, kd = 1.00E-4;
+	constexpr double kp = 1.0000, ki = 0.0005, kd = 0.0001;
 
 	const blaze::DiagonalMatrix<blaze::StaticMatrix<double, 3UL, 3UL, blaze::columnMajor>> Kp{
 		{kp, 0.00, 0.00},
@@ -997,8 +977,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 		return status;
 
 	blaze::StaticVector<double, 3UL> x_CTR = this->getTipPos();
-	const blaze::StaticVector<double, 3UL> DC_error = tip_em - x_CTR;
-	blaze::StaticVector<double, 3UL> tipError = target - (x_CTR + DC_error);
+	blaze::StaticVector<double, 3UL> tipError = target - x_CTR;
 	blaze::StaticVector<double, 3UL> last_tipError = tipError;
 	blaze::StaticVector<double, 3UL> d_tipError, int_tipError;
 
@@ -1038,12 +1017,12 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	// iterations counter
 	size_t N_itr = 0UL;
 	// maximum admissible number of iterations in the position control loop
-	static constexpr size_t maxIter = 300UL;
+	static constexpr size_t maxIter = 750UL;
 	// parameters for local optimization (joint limits avoidance)
 	static constexpr double ke = 2.00;
 
 	size_t iterJ = 0UL;
-	static constexpr size_t maxIter_J = 15UL;
+	static constexpr size_t maxIter_J = 25UL;
 
 	// position control loop
 	while ((dist2Tgt > posTol) && (N_itr < maxIter))
@@ -1056,7 +1035,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 
 		while (!blaze::isfinite(J))
 		{
-			initGuess *= 0.75;
+			initGuess *= 0.750;
 			readjustInitialGuesses(initGuess);
 			this->ODESolver(initGuess);
 			x_CTR = this->getTipPos();
@@ -1147,7 +1126,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 		while (!blaze::isfinite(x_CTR))
 		{
 			if (blaze::isfinite(initGuess))
-				initGuess *= 0.50;
+				initGuess *= 0.25;
 			else
 				initGuess = 0.00;
 
@@ -1157,7 +1136,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 		}
 
 		// current position error
-		tipError = target - (x_CTR + DC_error);
+		tipError = target - x_CTR;
 		// integrating the position error
 		int_tipError += tipError;
 		// derivative of the position error
@@ -1222,7 +1201,7 @@ std::tuple<double, double, bool> CTR::constrainedPosCTRL(blaze::StaticVector<dou
 	auto readjustInitialGuesses = [](blaze::StaticVector<double, 5UL> &initial_guesses)
 	{
 		blaze::subvector<2UL, 3UL>(initial_guesses) = blaze::map(blaze::subvector<2UL, 3UL>(initial_guesses), [](double d)
-																 { return (!blaze::isfinite(d)) ? 0.00 : blaze::sign(d) * std::min(blaze::abs(d), 70.00); });
+																 { return (!blaze::isfinite(d)) ? 0.00 : blaze::sign(d) * std::min(blaze::abs(d), 50.00); });
 		// mb_x(0) = mb_y(0) = u3_z(0) = 0.00;
 		initial_guesses[0UL] = initial_guesses[1UL] = initial_guesses[4UL] = 0.00;
 	};

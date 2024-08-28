@@ -16,7 +16,7 @@
 #include "Observer.hpp"
 #include "openIGTLink.hpp"
 #include "mathOperations.hpp"
-#include "boostBlazeAlgebra.hpp"
+#include <boost/numeric/odeint.hpp>
 #include <memory>
 #include <tuple>
 #include <chrono>
@@ -81,7 +81,7 @@ public:
 	bool actuate_CTR(blaze::StaticVector<double, 5UL> &initGuess, const blaze::StaticVector<double, 6UL> &q_input);
 
 	// function that implements the position control ==> returns [u_0, Jac, q_min, timeout]
-	bool posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::StaticVector<double, 3UL> &target, const double Tol, const blaze::StaticVector<double, 3UL> &tip_em);
+	bool posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::StaticVector<double, 3UL> &target, const double Tol);
 
 	// function that implements the constrained position control || inputs: [initGuess, target, tolerance, delta, arcLength] ==> returns [u_0, Jac, q_min, timeout]
 	std::tuple<double, double, bool> constrainedPosCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::StaticVector<double, 3UL> &calyx, const blaze::StaticVector<double, 3UL> &target, const double posTol);

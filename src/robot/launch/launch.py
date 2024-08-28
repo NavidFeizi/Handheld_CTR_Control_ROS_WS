@@ -22,7 +22,7 @@ def generate_launch_description():
             'ros2', 'run', 'robot', 'key_input',
             '--ros-args',
             # '-p', 'sample_time:=0.001',  # Correct syntax for setting parameter
-            '--remap', '__node:=Publisher_node'
+            '--remap', '__node:=keyboard_node'
         ],
         output='screen',
     )

@@ -26,7 +26,8 @@ sensor_config:
 
   - sensor:
       name: tool
-      serial_number: 3CD50C00        # Handheld ctr tip sensor
+    #   serial_number: 3CD50C00        # Handheld ctr tip sensor
+      serial_number: 3CD50C08           # Handheld ctr tip sensor - new
       srom_filename: 610158_ctrtip.rom
       load_srom: true
       tran_filename: None
