@@ -8,6 +8,7 @@
           "source /opt/ros/jazzy/setup.bash;",
           "colcon build",
           "--cmake-args -DCMAKE_BUILD_TYPE=Release",
+          "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
           "--parallel-workers 8",
           // "--symlink-install", 
           // "--event-handlers console_cohesion+",
