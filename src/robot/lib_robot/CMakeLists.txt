@@ -1,11 +1,15 @@
 # cmake_minimum_required(VERSION 3.22)
 # set (CMAKE_CXX_STANDARD 14)
 
-project(ROBOTlib)
+project(ROBOTlib VERSION 1.1.0)
+
+# Set the release date manually
+set(PROJECT_RELEASE_DATE "2025-02-11")
 
 set(SRC_FILES 
     src/Robot.cpp
     src/CiA301node.cpp
+    src/CanEssentials.cpp
 	)
 
 # Create a static library named ROBOTlib using the listed source files
@@ -39,6 +43,20 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE CANopenFiles_directory="${CAN
 # Pass the CANopenFiles_directory variable as a preprocessor definition
 target_compile_definitions(${PROJECT_NAME} PRIVATE EnoderStoreFiles_directory="${CMAKE_CURRENT_SOURCE_DIR}/config/")
 target_compile_definitions(${PROJECT_NAME} PRIVATE Log_directory="${CMAKE_SOURCE_DIR}/Output_Files/Log/Robot/")
+
+
+# Find and link Blaze package
+set(blaze_DIR /usr/local/include/blaze)
+find_package(blaze REQUIRED PATH ${blaze_DIR})
+if( blaze_FOUND )
+   message(STATUS ">>> Blaze library has been found!")
+   target_link_libraries(${PROJECT_NAME} PRIVATE blaze::blaze)
+elseif(NOT Blaze_FOUND)
+    error(STATUS ">>> Blaze has not been found!")
+endif()
+
+find_package(spdlog REQUIRED)
+target_link_libraries(${PROJECT_NAME} PRIVATE spdlog::spdlog)
 
 # remove the cdf and bin files from the share directory
 add_custom_command( TARGET ${PROJECT_NAME} POST_BUILD

@@ -36,9 +36,17 @@ using namespace lely;
  * @param ProfileAcc Profile position or profile velocity acceleration in SI units.
  * @param ProfileVel Profile position velocity in SI units.
  */
-Node::Node(CTRobot *parent, ev_exec_t * /*exec*/, canopen::AsyncMaster &master, unsigned int NodeID,
-           double EncoderResolution, double GearRatio, double VelocityFactor,
-           unsigned int SampleTime, int OperationMode, double ProfileAcc, double ProfileVel)
+Node::Node(CTRobot *parent,
+           ev_exec_t * /*exec*/,
+           canopen::AsyncMaster &master,
+           unsigned int NodeID,
+           double EncoderResolution,
+           double GearRatio,
+           double VelocityFactor,
+           unsigned int SampleTime,
+           int OperationMode,
+           double ProfileAcc,
+           double ProfileVel)
     : FiberDriver(master, NodeID), parent_robot(parent)
 {
     this->m_controller_brand = "Faulhaber"; // manually set the brand: "Faulhaber" or "Maxon"
@@ -46,11 +54,19 @@ Node::Node(CTRobot *parent, ev_exec_t * /*exec*/, canopen::AsyncMaster &master, 
     this->m_operation_mode = OperationMode;
     this->m_ppu = (EncoderResolution / GearRatio);
 
-    // convert profile position parameters
+    // this->m_node_id = std::to_string(NodeID);
+
+    // m_flags.set(Flags::FlagIndex::BOOT_SUCCESS, false);
+    // m_flags.set(Flags::FlagIndex::TASKS_POSTED, false);
+    // m_flags.set(Flags::FlagIndex::ENCODER_SET, false);
+    // m_flags.set(Flags::FlagIndex::NEW_TARG_READY, false);
+    // m_flags.set(Flags::FlagIndex::ENCODER_MEM_READY, false);
+
+    // check motion controller brand and convert profile position parameters
     if (this->m_controller_brand == "Maxon")
     {
-        this->m_profile_acc = static_cast<unsigned int>(ProfileAcc * 60 / GearRatio); // mm/s^2 to rpm/s
         this->m_profile_vel = static_cast<unsigned int>(ProfileVel * 60 / GearRatio); // mm/s to  rpm
+        this->m_profile_acc = static_cast<unsigned int>(ProfileAcc * 60 / GearRatio); // mm/s^2 to rpm/s
     }
     else if (this->m_controller_brand == "Faulhaber")
     {
@@ -499,7 +515,7 @@ void Node::OnBoot(canopen::NmtState /*st*/, char es,
 
         Node::Set_encoder(m_encoder_memory_value);
         Node::Enable_operation(true);
-        encoder_set =  true;
+        encoder_set = true;
 
         // wait for all nodes to get operational
         while (!parent_robot->m_flag_operation_enabled || !parent_robot->m_encoders_set)

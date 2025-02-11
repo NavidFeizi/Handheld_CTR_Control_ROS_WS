@@ -206,8 +206,8 @@ blaze::StaticVector<double, 5UL> CTR::ODESolver(const blaze::StaticVector<double
 	constexpr double ds = 1.00E-3;
 
 	// Tolerance parameters for the adaptive stepper
-	constexpr double abs_tol = 1.00E-10;
-	constexpr double rel_tol = 1.00E-8;
+	constexpr double abs_tol = 1.00E-8;
+	constexpr double rel_tol = 1.00E-7;
 
 	auto controlled_stepper = boost::numeric::odeint::make_controlled(abs_tol, rel_tol, abm8_stepper);
 
@@ -968,7 +968,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	readjustInitialGuesses(initGuess);
 
 	// proportional, derivative, and integral gains for position control
-	constexpr double kp = 1.00, ki = 5.00E4, kd = 1.00E-4;
+	constexpr double kp = 1.00, ki = 5.00E-4, kd = 1.00E-4;
 
 	const blaze::DiagonalMatrix<blaze::StaticMatrix<double, 3UL, 3UL, blaze::columnMajor>> Kp{
 		{kp, 0.00, 0.00},
@@ -1038,7 +1038,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	// iterations counter
 	size_t N_itr = 0UL;
 	// maximum admissible number of iterations in the position control loop
-	static constexpr size_t maxIter = 300UL;
+	static constexpr size_t maxIter = 400UL;
 	// parameters for local optimization (joint limits avoidance)
 	static constexpr double ke = 2.00;
 
@@ -1119,7 +1119,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 
 		// wrapping the actuation angles to the [0.00,2Pi) interval
 		blaze::subvector<3UL, 3UL>(q) = blaze::map(blaze::subvector<3UL, 3UL>(q), [](double theta)
-												   { return mathOp::wrapToPi(theta); });
+												   { return mathOp::wrapTo2Pi(theta); });
 
 		// actuate the CTR to new configuration and retrieve execution timeout status
 		status = this->actuate_CTR(initGuess, q);

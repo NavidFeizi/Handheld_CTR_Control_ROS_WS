@@ -15,11 +15,11 @@ CTRobot::CTRobot(int sample_time,
   this->encoder_res = {100 * 180 * M_1_PI,
                        1000 * 1000.0,
                        100 * 180 * M_1_PI,
-                       1000 * 1000.0};
+                       1000 * 1000.0};  // this is not real encoder count,
   this->velocity_factor = {10.0,
                            10.0,
                            10.0,
-                           10.0}; // this is not real encoder count,
+                           10.0}; 
 
   // the real encoder count and gear ratio are integrated into
   // motion controller factors. these are just a factor

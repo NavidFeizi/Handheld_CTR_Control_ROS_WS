@@ -117,7 +117,7 @@ private:
     //     std::bind(&RobotNode::handle_accepted, this, _1));
   }
 
-  // Setup parameter callback function to handle dynamic parameter updates
+  // Setup ROS parameter callback function to handle dynamic parameter (Kp, Ki) updates
   void setup_parameter_callback()
   {
     auto param_callback = [this](const std::vector<rclcpp::Parameter> &parameters) -> rcl_interfaces::msg::SetParametersResult
@@ -243,6 +243,7 @@ private:
     RCLCPP_INFO(this->get_logger(), "Joints target received: R1: %0.1f [deg]  T1: %0.1f [mm]  R2: %0.1f [deg]  T2: %0.1f [mm]",
                 m_x_des[0UL] * 360 / M_PI, m_x_des[1UL] * 1e3, m_x_des[2UL] * 360 / M_PI, m_x_des[3UL] * 1e3);
 
+    RCLCPP_INFO(this->get_logger(), "Waiting");
     rclcpp::sleep_for(200ms);
     m_robot->Wait_until_reach();
     RCLCPP_INFO(this->get_logger(), "Joints target reached");

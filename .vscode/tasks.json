@@ -1,0 +1,35 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "colcon: build",
+        "type": "shell",
+        "command": [
+          "source /opt/ros/jazzy/setup.bash;",
+          "colcon build",
+          "--cmake-args -DCMAKE_BUILD_TYPE=Release",
+          "--parallel-workers 8",
+          // "--symlink-install", 
+          // "--event-handlers console_cohesion+",
+          "--packages-select interfaces emtracker robot",
+        ],
+        "group": {
+          "kind": "build",
+          "isDefault": true
+        },
+        "problemMatcher": [],
+        "detail": "Colcon Build task for ROS2"
+      },
+
+      {
+        "label": "colcon: clean",
+        "type": "shell",
+        "command": [
+          "cd project-workspace;",
+          "rm -rf build/ install/ log/;"
+        ],
+        "problemMatcher": [],
+        "detail": "Colcon clean task"
+      },
+    ]
+  }

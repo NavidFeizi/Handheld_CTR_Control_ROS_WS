@@ -29,6 +29,8 @@ find_package(std_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(interfaces REQUIRED) 
 
+find_package(ament_index_cpp REQUIRED)
+
 # Define executables
 add_executable(manage src/manager_node.cpp)
 add_executable(record src/recorder_node.cpp)
@@ -56,9 +58,9 @@ endif()
 
 add_compile_definitions(OMP_NUM_THREADS=${OMP_NUM_THREADS})
 
-ament_target_dependencies(manage rclcpp std_msgs rclcpp_action interfaces)
+ament_target_dependencies(manage rclcpp std_msgs rclcpp_action interfaces ament_index_cpp)
 
-ament_target_dependencies(record rclcpp std_msgs interfaces)
+ament_target_dependencies(record rclcpp std_msgs interfaces ament_index_cpp)
 
 install(TARGETS
 manage

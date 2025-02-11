@@ -28,6 +28,7 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(interfaces REQUIRED) 
+find_package(ament_index_cpp REQUIRED)
 
 add_subdirectory(lib_robot)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_robot/include)
@@ -37,7 +38,7 @@ target_link_libraries(ctr_robot ROBOTlib)
 ament_target_dependencies(ctr_robot rclcpp std_msgs std_srvs rclcpp_action interfaces)
 
 add_executable(key_input src/keyboard_node.cpp)
-ament_target_dependencies(key_input rclcpp std_msgs interfaces)
+ament_target_dependencies(key_input rclcpp std_msgs interfaces ament_index_cpp)
 
 # Add SDL2
 find_package(SDL2 REQUIRED)

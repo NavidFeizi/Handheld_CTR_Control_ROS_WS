@@ -16,6 +16,7 @@
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/msg/jointspace.hpp"
 #include "interfaces/srv/startrecording.hpp"
+#include "interfaces/srv/jointstarget.hpp"
 #include "interfaces/action/target.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -48,14 +49,27 @@ public:
     m_output_file << "Targ_X,Targ_Y,Targ_Z, Phan_Tool_X, Phan_Tool_Y, Phan_Tool_Z, Base_Tool_X, Base_Tool_Y, Base_Tool_Z\n";
     RCLCPP_INFO(this->get_logger(), "--- Output file initialized ---");
 
-    // load input file
-    std::string input_fileName("Targets.csv");
-    ManagerNode::load_input_files(m_targets, input_fileName);
+    // load planned path file
+    std::string configs_fileName("plannedPath_MidPole.csv");
+    ManagerNode::load_plannedPath_file(m_plannedPath, configs_fileName);
+    RCLCPP_INFO(this->get_logger(), "Planned path files loaded");
+
+    // load target file
+    std::string targets_fileName("phantomTargets.csv");
+    ManagerNode::load_targets_file(m_targets, targets_fileName);
     RCLCPP_INFO(this->get_logger(), "Target files loaded");
+
+    RCLCPP_INFO(this->get_logger(), "Planned path following started");
+    ManagerNode::follow_planned_path(m_plannedPath, true);
+    RCLCPP_INFO(this->get_logger(), "Planned path following finished");
+    rclcpp::sleep_for(std::chrono::milliseconds(5000));
+    
 
     // ManagerNode::send_recod_request();
 
     ManagerNode::send_next_target();
+
+    
   }
 
   ~ManagerNode()
@@ -102,6 +116,9 @@ private:
       RCLCPP_ERROR(this->get_logger(), "Action server not available after waiting");
     }
 
+    // Joint space target SRV client
+    m_target_service = this->create_client<interfaces::srv::Jointstarget>("joints_space/target");
+
     // Tool position subscriptions
     m_callback_group_1 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     m_callback_group_2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -116,14 +133,71 @@ private:
   }
 
   // Function to load input CSV files
-  void load_input_files(blaze::HybridMatrix<double, 3000UL, 6UL> &targets, const std::string &fileName)
+  void load_plannedPath_file(blaze::HybridMatrix<double, 6000UL, 6UL> &data, const std::string &fileName)
+  {
+    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
+    ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
+    std::filesystem::path filePath = ws_dir / "Input_Files" / fileName;
+
+    readFromCSV(data, filePath);
+    // RCLCPP_INFO(this->get_logger(), "--- Data loaded ---");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  }
+
+  // Function to actuate the robot using the planned path
+  void follow_planned_path(const blaze::HybridMatrix<double, 6000UL, 6UL> &plannedPath, bool forward)
+  {
+    constexpr blaze::StaticVector<double, 4UL> posOffsets = {0.0, -147.0E-3, 0.0, -77.0E-3};
+    blaze::StaticVector<double, 4UL> pose_in_robot_system;
+    interfaces::msg::Jointspace msg;
+
+    if(forward)
+    {
+      for(size_t row = 0UL; row < plannedPath.rows(); row += 20)
+      {
+        auto it = plannedPath.begin(row);
+        pose_in_robot_system[0UL] = *(it + 3UL) - posOffsets[0UL];
+        pose_in_robot_system[1UL] = *(it + 0UL) - posOffsets[1UL];
+        pose_in_robot_system[2UL] = *(it + 4UL) - posOffsets[2UL];
+        pose_in_robot_system[3UL] = *(it + 1UL) - posOffsets[3UL];
+
+        RCLCPP_INFO(this->get_logger(), "Planned path - joints config %d sent to robot: R_in:%0.3f [deg]  T_in:%0.3f [mm]  R_mid:%0.3f [deg]  T_mid: %0.3f [mm]",
+                  static_cast<int>(row), pose_in_robot_system[0UL] * 360 * M_1_PI, pose_in_robot_system[1UL] * 1e3, pose_in_robot_system[2UL] * 360 * M_1_PI, pose_in_robot_system[3UL] * 1e3);
+
+        ManagerNode::send_request(pose_in_robot_system);
+        rclcpp::sleep_for(std::chrono::milliseconds(10));
+      }
+    }
+    else
+    {
+      for(int row = plannedPath.rows()-1; row>=0; row-=20)
+      {
+        auto it = plannedPath.begin(row);
+        pose_in_robot_system[0UL] = *(it + 3UL) - posOffsets[0UL];
+        pose_in_robot_system[1UL] = *(it + 0UL) - posOffsets[1UL];
+        pose_in_robot_system[2UL] = *(it + 4UL) - posOffsets[2UL];
+        pose_in_robot_system[3UL] = *(it + 1UL) - posOffsets[3UL];
+
+        RCLCPP_INFO(this->get_logger(), "Planned path - joints config %d sent to robot: R_in:%0.3f [deg]  T_in:%0.3f [mm]  R_mid:%0.3f [deg]  T_mid: %0.3f [mm]",
+                  row, pose_in_robot_system[0UL] * 360 * M_1_PI, pose_in_robot_system[1UL] * 1e3, pose_in_robot_system[2UL] * 360 * M_1_PI, pose_in_robot_system[3UL] * 1e3);
+
+        ManagerNode::send_request(pose_in_robot_system);
+        rclcpp::sleep_for(std::chrono::milliseconds(10));
+        RCLCPP_INFO(this->get_logger(), "Checkpoint_1");
+      }
+    }   
+    RCLCPP_INFO(this->get_logger(), "--- Planned path following finished ---");
+  }
+
+  // Function to load input CSV files
+  void load_targets_file(blaze::HybridMatrix<double, 3000UL, 6UL> &targets, const std::string &fileName)
   {
     std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
     ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
     std::filesystem::path filePath = ws_dir / "Input_Files" / fileName;
 
     readFromCSV(targets, filePath);
-    RCLCPP_INFO(this->get_logger(), "--- Targets loaded ---");
+    // RCLCPP_INFO(this->get_logger(), "--- Targets loaded ---");
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
   }
 
@@ -160,6 +234,13 @@ private:
     if (m_current_target_index >= m_targets.rows())
     {
       RCLCPP_INFO(this->get_logger(), "All targets have been processed.");
+
+      rclcpp::sleep_for(std::chrono::milliseconds(5000));
+      // RCLCPP_INFO(this->get_logger(), "Reverse planned path following started");
+      // ManagerNode::follow_planned_path(m_plannedPath, false);
+      // RCLCPP_INFO(this->get_logger(), "Reverse Planned path following finished");
+      // rclcpp::sleep_for(std::chrono::milliseconds(5000));
+
       return;
     }
 
@@ -234,6 +315,69 @@ private:
     send_next_target();       // Send the next target
   }
 
+  //
+  void send_request(const blaze::StaticVector<double, 4UL> &target)
+  {
+    while (!m_target_service->wait_for_service(std::chrono::seconds(1)))
+    {
+      if (!rclcpp::ok())
+      {
+        RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for the service. Exiting.");
+        return;
+      }
+      RCLCPP_INFO(this->get_logger(), "Waiting for the service to appear...");
+    }
+    auto request = std::make_shared<interfaces::srv::Jointstarget::Request>();
+    for (size_t i = 0; i < target.size(); ++i)
+    {
+      request->position[i] = target[i];
+    }
+
+    // Sending request and non-blocking wait for the future
+    auto future_result = m_target_service->async_send_request(request);
+
+    // Use the node's executor to keep processing other callbacks while waiting for this future to complete
+    auto status = rclcpp::spin_until_future_complete(this->get_node_base_interface(), future_result, std::chrono::seconds(10)); // specify a timeout
+
+    if (status == rclcpp::FutureReturnCode::SUCCESS) {
+        try {
+            auto response = future_result.get();
+            if (response->success) {
+                RCLCPP_INFO(this->get_logger(), "Response from server: %s", response->message.c_str());
+            } else {
+                RCLCPP_ERROR(this->get_logger(), "Service execution failed: %s", response->message.c_str());
+            }
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "Exception while getting response: %s", e.what());
+        }
+    } else if (status == rclcpp::FutureReturnCode::TIMEOUT) {
+        RCLCPP_ERROR(this->get_logger(), "Service did not respond within the timeout period.");
+    } else {
+        RCLCPP_ERROR(this->get_logger(), "Service call failed or was cancelled.");
+    }
+
+    // // m_target_service->
+
+    // future_result.wait(); // Explicitly wait on the future without spinning
+
+    // if (future_result.valid() && future_result.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+    // {
+    //   auto response = future_result.get();
+    //   if (response->success)
+    //   {
+    //     RCLCPP_INFO(this->get_logger(), "Response from server: %s", response->message.c_str());
+    //   }
+    //   else
+    //   {
+    //     RCLCPP_ERROR(this->get_logger(), "Failed to run robot: %s", response->message.c_str());
+    //   }
+    // }
+    // else
+    // {
+    //   RCLCPP_ERROR(this->get_logger(), "Failed to receive response from service");
+    // }
+  }
+
   // Subscriber callback function to update catheter tip position from the em tracker
   void base_tool_callback(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
@@ -263,6 +407,7 @@ private:
   std::ofstream m_output_file;
 
   size_t m_current_target_index = 0;
+  blaze::HybridMatrix<double, 6000UL, 6UL> m_plannedPath;
   blaze::HybridMatrix<double, 3000UL, 6UL> m_targets;
   blaze::StaticVector<double, 3UL> m_base_tool_pos, m_phantom_tool_pos;
 
@@ -275,13 +420,14 @@ private:
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool_2;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_1;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_2;
+  rclcpp::Client<interfaces::srv::Jointstarget>::SharedPtr m_target_service;
 };
 
 int main(int argc, char *argv[])
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<ManagerNode>();
-  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 3);
+  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 5);
   executor.add_node(node);
   executor.spin();
   rclcpp::shutdown();

@@ -22,7 +22,7 @@ To build the nodes, follow these instructions:
 
 1. **Build the packages:**
    ```bash
-   colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-select interfaces emtracker robot controller manager
+   colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON --packages-select interfaces emtracker robot controller manager
    ```
 
 ## Setup CANopen Connection to the Robot

@@ -49,13 +49,13 @@ public:
     std::string folder_address = workspace_directory + "/../../../../Output_Files/" + ss.str();
     std::filesystem::create_directories(folder_address);
 
-    m_output_file.open(folder_address + "/" + "errors.csv");
+    m_output_file.open(folder_address + "/" + "Results.csv");
     if (!m_output_file.is_open())
     {
       RCLCPP_ERROR(this->get_logger(), "Failed to open Robot.csv");
       return;
     }
-    m_output_file << "x,y,z" << "\n";
+    m_output_file << "tgt_x,tgt_y,tgt_z,e_x,e_y,e_z" << "\n";
 
     // node initialization time
     rclcpp::Time now = this->get_clock()->now();
@@ -138,6 +138,9 @@ public:
     std::cout << "m_H: \n"
               << m_H << std::endl;
     this->m_robot->setHomogeneousTransformation(m_H);
+
+    constexpr blaze::StaticVector<double, 6UL> init_conf = {-0.083473,-0.0516,0,-0.647814,-1.49396,0};   // need to be corrected and grab it from the manager
+    this->m_robot->actuate_CTR(this->m_initGuess, init_conf);     
 
     // // updating the EM alignment of the CTR, as it won't be identical to the surgical plan
     // rclcpp::sleep_for(2s);
@@ -353,12 +356,18 @@ public:
 
     // Call the control loop for n times
     blaze::StaticVector<double, 3UL> error;
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < 10; i++)
     {
+      // introduces a delay in case there's a NAN in the EM data
+      while (!blaze::isfinite(this->m_target_position))
+      {
+        rclcpp::sleep_for(std::chrono::milliseconds(500));
+      }
       error = Controller::control_loop();
     }
 
     m_output_file << std::fixed << std::setprecision(4)
+                  << m_target_position[0] << ',' << m_target_position[1] << ',' << m_target_position[2] << ','
                   << error[0] << ',' << error[1] << ',' << error[2] << '\n';
 
     result->success = true; // Indicate success in the result
@@ -389,6 +398,8 @@ public:
 
 
     this->m_q = this->m_robot->getConfiguration();
+    RCLCPP_INFO(this->get_logger(), "m_q: q[0]:%0.6f  q[1]:%0.6f  q[2]:%0.6f  q[3]: %0.6f  q[4]: %0.6f  q[5]: %0.6f",
+               m_q[0UL], m_q[1UL], m_q[2UL], m_q[3UL], m_q[4UL], m_q[5UL]);
 
     constexpr blaze::StaticVector<double, 4UL> posOffsets = {0.0, -147.0E-3, 0.0, -77.0E-3};
     blaze::StaticVector<double, 4UL> pose_in_robot_system;
@@ -441,7 +452,7 @@ public:
     return pos_error;
   }
 
-  void send_request(blaze::StaticVector<double, 4UL> target)
+  void send_request(const blaze::StaticVector<double, 4UL> &target)
   {
     while (!m_target_service->wait_for_service(std::chrono::seconds(1)))
     {

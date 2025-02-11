@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 import os
 # import seaborn as sns
 
+
+
 def remove_outliers(data, threshold=1.5):
     q25, q75 = np.percentile(data, 25, axis=0), np.percentile(data, 75, axis=0)
     iqr = q75 - q25
@@ -13,7 +15,7 @@ def remove_outliers(data, threshold=1.5):
     return filtered_data, outliers
 
 # Read data from the .dat file
-folderName = "2024-06-30_17-52-06";
+folderName = "2024-08-31_16-00-12";
 robot_data = np.genfromtxt("Output_Files/" + folderName + "/Robot.csv", delimiter=",", dtype=float)
 FT_data = np.genfromtxt("Output_Files/" + folderName + "/FTsensor.csv", delimiter=",", dtype=float)
 EMT_data = np.genfromtxt("Output_Files/" + folderName + "/EMtracker.csv", delimiter=",", dtype=float)
@@ -39,14 +41,14 @@ ax[0].plot(t, current[:,column]*1e3, c="b", label="Current", linewidth=1)  # Sca
 # ax[0].set_xlabel(r"$\mathrm{Time}$ [s]")
 ax[0].set_ylabel(r"$\mathrm{current}$ [mA]")
 ax[0].minorticks_on()
-ax[0].grid(which="minor", color="lightgray", linestyle="--", linewidth=0.5)
+ax[0].grid(which="both", color="lightgray", linestyle="--", linewidth=0.5)
 ax[0].legend()
 
 ax[1].plot(t, q[:, column]*1e3, c="black", label="Target", linewidth=1.5)  # Scatter plot with red circles
 ax[1].plot(t, pos[:, column]*1e3, c="red", label="Position", linewidth=1.5)  # Scatter plot with red circles
 ax[1].set_ylabel(r"$\mathrm{joint}$ [mm]")
 ax[1].minorticks_on()
-ax[1].grid(which="minor", color="lightgray", linestyle="--", linewidth=0.5)
+ax[1].grid(which="both", color="lightgray", linestyle="--", linewidth=0.5)
 ax2 = ax[1].twinx()
 ax2.plot(t, velocity[:, 3] * 1e3, c="blue", label="Velocity", linewidth=1)  # Position plot
 ax2.plot(t, q_dot[:, 3] * 1e3, c="cyan", label="q_dot", linewidth=1)  # Position plot
@@ -59,7 +61,7 @@ ax[2].plot(t, Force[:,2], c="b", label="Force", linewidth=1.5)  # Scatter plot w
 # ax[2].set_xlabel(r"$\mathrm{Time}$ [s]")
 ax[2].set_ylabel(r"$\mathrm{force}$ [N]")
 ax[2].minorticks_on()
-ax[2].grid(which="minor", color="lightgray", linestyle="--", linewidth=0.5)
+ax[2].grid(which="both", color="lightgray", linestyle="--", linewidth=0.5)
 ax[2].legend()
 
 ax[3].plot(t, Pos[:,0]*1E3, c="r", label="X", linewidth=1.5)  # Scatter plot with red circles
@@ -68,7 +70,7 @@ ax[3].plot(t, Pos[:,2]*1E3, c="g", label="Z", linewidth=1.5)  # Scatter plot wit
 ax[3].set_xlabel(r"$\mathrm{Time}$ [s]")
 ax[3].set_ylabel(r"$\mathrm{tip}$ [mm]")
 ax[3].minorticks_on()
-ax[3].grid(which="minor", color="lightgray", linestyle="--", linewidth=0.5)
+ax[3].grid(which="both", color="lightgray", linestyle="--", linewidth=0.5)
 ax[3].legend()
 
 plt.subplots_adjust(hspace=0.3)  # Set the spacing between subplots
