@@ -36,9 +36,19 @@
 #include <blaze/Math.h>
 #include <blaze/math/DenseMatrix.h>
 
+#include "spdlog/spdlog.h"
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <memory>
+
+#include <deque>
+#include <numeric>
+#include <optional>
+
 #include "CiA301node.hpp"
-// #include "MotionContollerNode.hpp"
+#include "CanEssentials.hpp"
 #include "Robot.hpp"
+#include "SharedStates.hpp"
 
 #include <cstring>
 #include <csignal>
@@ -58,35 +68,49 @@
 #include <sstream>
 #include <string>
 
-class Node;
+class Cia301Node;
 
 class CTRobot
 {
-
 public:
-    CTRobot(int sample_time,
-            int operation_mode,
-            blaze::StaticVector<double, 4UL> max_acc,
-            blaze::StaticVector<double, 4UL> max_vel,
-            bool position_limit);
+    CTRobot(int sample_time, OpMode operation_mode, bool position_limit);
     CTRobot(const CTRobot &rhs);
     ~CTRobot();
-    bool Get_Controller_Switch_Status();
-    void Start_Thread();
-    void Enable_Operation(bool enable);
-    void Set_Zero_Position(blaze::StaticVector<double, 4UL> offset);
 
-    void set_target_position(blaze::StaticVector<double, 4UL> posTarget);
-    void Set_Target_Velocity(blaze::StaticVector<double, 4UL> velTarget);
-    void Get_Current(blaze::StaticVector<int, 4UL> *p_current);
-    void Get_Velocity(blaze::StaticVector<double, 4UL> *p_velCurrent);
-    void Get_Position(blaze::StaticVector<double, 4UL> *p_posCurrent);
-    void Get_PosVelCur(blaze::StaticVector<double, 4UL> *p_posCurrent,
-                       blaze::StaticVector<double, 4UL> *p_velCurrent,
-                       blaze::StaticVector<int, 4UL> *p_current);
-    bool Get_reachStatus();
-    void Wait_until_reach();
-    void Log_message(const std::string &message, bool print);
+    void startFiber();
+    void enableOperation(const bool enable);
+
+    // ========================== Command and Feedback Methods ===========================
+    void setTargetPos(const blaze::StaticVector<double, 4UL> &target);
+    void setTargetVel(const blaze::StaticVector<double, 4UL> &target);
+    void getCurrent(blaze::StaticVector<double, 4UL> &val) const;
+    void getVel(blaze::StaticVector<double, 4UL> &val) const;
+    void getPos(blaze::StaticVector<double, 4UL> &val) const;
+    void getPosVelCur(blaze::StaticVector<double, 4UL> &pos,
+                      blaze::StaticVector<double, 4UL> &vel,
+                      blaze::StaticVector<double, 4UL> &current) const;
+
+    // ============================== Configuration Methods ==============================
+    void setMaxTorque(const blaze::StaticVector<double, 4UL> negative,
+                      const blaze::StaticVector<double, 4UL> positive);
+    void setProfileParams(const blaze::StaticVector<double, 4UL> max_vel,
+                          const blaze::StaticVector<double, 4UL> max_acc,
+                          const blaze::StaticVector<double, 4UL> max_dcc);
+    void setOperationMode(const OpMode mode);
+    bool getSwitchStatus(blaze::StaticVector<bool, 4> &status) const;
+    bool getSwitchStatus() const;
+    bool getEnableStatus(blaze::StaticVector<bool, 4> &status) const;
+    bool getEnableStatus() const;
+    bool getEncoderStatus(blaze::StaticVector<bool, 4> &status) const;
+    bool getEncoderStatus() const;
+    bool getDisabledStatus(blaze::StaticVector<bool, 4> &status) const;
+    bool getDisabledStatus() const;
+    bool getReachedStatus(blaze::StaticVector<bool, 4> &status) const;
+    bool getReachedStatus() const;
+
+    // ============================== Utility Methods ==============================
+    void waitUntilReach();
+    void findTransEncoders();
 
     bool m_boot_success = false;
     bool m_flag_robot_switched_on = false;
@@ -94,36 +118,41 @@ public:
     bool m_encoders_set;
 
 private:
-    void Fiber_loop();
-    void Convert_pos_to_CTR_frame(blaze::StaticVector<double, 4UL> &posCurrent, blaze::StaticVector<double, 4UL> *posInCTRFrame);
-    int Position_limits_check(blaze::StaticVector<double, 4UL> posTarget);
+    void initFiberDriver();
+    void convPosToRobotFrame(const blaze::StaticVector<double, 4UL> &posCurrent,
+                             blaze::StaticVector<double, 4UL> &posInCTRFrame) const;
+    int checkPosLimits(const blaze::StaticVector<double, 4UL> &posTarget) const;
+    void initLogger();
 
-    bool check_all_nodes_switched_on();
-    bool check_all_nodes_enabled();
-    bool check_all_encoders_set();
+    // the real encoder count and gear ratio are integrated into
+    // motion controller factors. these are just a factor
+    // to convert 0.01 mm to mm and 0.1 deg to deg
+    // pulse per mm/deg - conversion to SI unit is done internally in the node class
+    static constexpr blaze::StaticVector<double, 4UL> m_encodersResolution = {100 * 180 * M_1_PI, 1000 * 1000.0, 100 * 180 * M_1_PI, 1000 * 1000.0};
+    static constexpr blaze::StaticVector<double, 4UL> m_velocityFactors = {10.0, 10.0, 10.0, 10.0};
+    static constexpr blaze::StaticVector<double, 4UL> m_gearRatios = {1, 1, 1, 1}; 
 
-    std::shared_ptr<Node> m_inner_rot;
-    std::shared_ptr<Node> m_inner_tran;
-    std::shared_ptr<Node> m_middle_rot;
-    std::shared_ptr<Node> m_middle_tran;
-    std::thread EnableThread;
+    std::thread m_thread;
+    std::shared_ptr<spdlog::logger> m_logger;
+    std::shared_ptr<SharedState> m_shared_state;
+    std::shared_ptr<Cia301Node> m_inrTubeRot;
+    std::shared_ptr<Cia301Node> m_inrTubeTrn;
+    std::shared_ptr<Cia301Node> m_mdlTubeRot;
+    std::shared_ptr<Cia301Node> m_mdlTubeTrn;
+    
+    unsigned int m_sampleTime; // commandPeriod [ms]
+    OpMode operation_mode;
 
-    std::ofstream logFile;
+    blaze::StaticVector<double, 4UL> m_maxAcc; 
+    blaze::StaticVector<double, 4UL> m_maxVel;
+    blaze::StaticVector<double, 4UL> m_lowerBounds;
+    blaze::StaticVector<double, 4UL> m_upperBounds;
+    blaze::StaticVector<double, 4UL> m_posOffsets;
+    double m_minClearance;
+    double m_maxClearance;
+    bool m_flagPositionLimit;
 
-    unsigned int sample_time; // commandPeriod [ms], minimum
-    int operation_mode;
-    blaze::StaticVector<double, 4UL> encoder_res;
-    blaze::StaticVector<double, 4UL> velocity_factor;
-    blaze::StaticVector<double, 4UL> gear_ratio;
-    blaze::StaticVector<double, 4UL> m_max_acc; // deg->rev or mm->rev
-    blaze::StaticVector<double, 4UL> m_max_vel;
-
-    blaze::StaticVector<double, 4UL> lowerBounds;
-    blaze::StaticVector<double, 4UL> upperBounds;
-    blaze::StaticVector<double, 4UL> posOffsets;
-    double clearance_min;
-    double clearance_max;
-    bool flag_position_limit;
+    // std::ofstream logFile;
 
 protected:
 };

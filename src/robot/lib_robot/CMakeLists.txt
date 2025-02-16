@@ -41,8 +41,9 @@ set(CANopenFiles_directory ${CMAKE_BINARY_DIR}/CANopenFiles)
 # Pass the CANopenFiles_directory variable as a preprocessor definition
 target_compile_definitions(${PROJECT_NAME} PRIVATE CANopenFiles_directory="${CANopenFiles_directory}")
 # Pass the CANopenFiles_directory variable as a preprocessor definition
-target_compile_definitions(${PROJECT_NAME} PRIVATE EnoderStoreFiles_directory="${CMAKE_CURRENT_SOURCE_DIR}/config/")
-target_compile_definitions(${PROJECT_NAME} PRIVATE Log_directory="${CMAKE_SOURCE_DIR}/Output_Files/Log/Robot/")
+# target_compile_definitions(${PROJECT_NAME} PRIVATE EnoderStoreFiles_directory="${CMAKE_CURRENT_SOURCE_DIR}/config/")
+target_compile_definitions(${PROJECT_NAME} PRIVATE EnoderStoreFiles_directory="$ENV{HOME}/Documents/handheld_CTR/encoder_memory/")
+target_compile_definitions(${PROJECT_NAME} PRIVATE Log_directory="log/Robot/")
 
 
 # Find and link Blaze package

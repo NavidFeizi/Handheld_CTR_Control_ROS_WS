@@ -17,7 +17,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "interfaces/msg/jointspace.hpp"
-#include "interfaces/srv/homing.hpp"
+#include "interfaces/srv/config.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 // #include "keyboardInput.hpp"
@@ -31,7 +31,7 @@ public:
   KeyboardNode() : Node("keyboard"), count_(0)
   {
     steps = {1.00 * M_PI / 180.00, 0.50E-3, 1.00 * M_PI / 180.00, 0.50E-3};
-    target = 0.00;
+    m_com_vel = 0.00;
     counter = 0;
     m_sample_time = 1.00E-3;
     t0_ = 0.00;
@@ -76,7 +76,7 @@ private:
     // m_publisher = this->create_publisher<interfaces::msg::Jointspace>("JointsActuation_target", 10);     // to actuate the task space jarget generator
     m_publisher = this->create_publisher<interfaces::msg::Jointspace>("JointsActuation", 10); // to directly actuate the robot
 
-    m_record_client = this->create_client<interfaces::srv::Homing>("homing");
+    m_record_client = this->create_client<interfaces::srv::Config>("config");
     while (!m_record_client->wait_for_service(std::chrono::seconds(1)))
     {
       if (!rclcpp::ok())
@@ -96,10 +96,10 @@ private:
   //
   void send_homing_request(std::string message)
   {
-    auto request = std::make_shared<interfaces::srv::Homing::Request>();
+    auto request = std::make_shared<interfaces::srv::Config::Request>();
     request->command = message; // Set the desired duration
 
-    using ServiceResponseFuture = rclcpp::Client<interfaces::srv::Homing>::SharedFuture;
+    using ServiceResponseFuture = rclcpp::Client<interfaces::srv::Config>::SharedFuture;
     auto response_received_callback = std::bind(&KeyboardNode::handle_homing_response, this, std::placeholders::_1);
     auto future_result = m_record_client->async_send_request(request, response_received_callback);
   }
@@ -107,20 +107,20 @@ private:
   //
   void send_target(const blaze::StaticVector<double, 4UL> targ)
   {
-    auto request = std::make_shared<interfaces::srv::Homing::Request>();
+    auto request = std::make_shared<interfaces::srv::Config::Request>();
     request->command = "move";        // Set the desired duration
     request->target[0UL] = targ[0UL]; // Set the desired duration
     request->target[1UL] = targ[1UL]; // Set the desired duration
     request->target[2UL] = targ[2UL]; // Set the desired duration
     request->target[3UL] = targ[3UL]; // Set the desired duration
 
-    using ServiceResponseFuture = rclcpp::Client<interfaces::srv::Homing>::SharedFuture;
+    using ServiceResponseFuture = rclcpp::Client<interfaces::srv::Config>::SharedFuture;
     auto response_received_callback = std::bind(&KeyboardNode::handle_homing_response, this, std::placeholders::_1);
     auto future_result = m_record_client->async_send_request(request, response_received_callback);
   }
 
   //
-  void handle_homing_response(const rclcpp::Client<interfaces::srv::Homing>::SharedFuture future)
+  void handle_homing_response(const rclcpp::Client<interfaces::srv::Config>::SharedFuture future)
   {
     // Get the result of the future object
     auto response = future.get();
@@ -129,10 +129,10 @@ private:
     {
       if (response->message == "Manual mode activated" or response->message == "Home is set")
       {
-        target[0UL] = response->position[0UL];
-        target[1UL] = response->position[1UL];
-        target[2UL] = response->position[2UL];
-        target[3UL] = response->position[3UL];
+        m_com_vel[0UL] = response->position[0UL];
+        m_com_vel[1UL] = response->position[1UL];
+        m_com_vel[2UL] = response->position[2UL];
+        m_com_vel[3UL] = response->position[3UL];
         RCLCPP_INFO(this->get_logger(), "Current positino is: %0.4f  %0.4f  %0.4f  %0.4f",
                     response->position[0UL], response->position[1UL], response->position[2UL], response->position[3UL]);
       }
@@ -192,6 +192,8 @@ private:
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, SDL_ALPHA_OPAQUE); // Set background color to black
     SDL_RenderClear(renderer);
 
+    m_com_vel = {0.0, 0.0, 0.0, 0.0,};
+
     // Coordinates for the triangle
     constexpr int centerX = 320; // Half of window width
     constexpr int centerY = 240; // Half of window height
@@ -207,100 +209,118 @@ private:
 
     while (SDL_PollEvent(&event))
     {
-      if (event.type == SDL_WINDOWEVENT)
-      {
-        if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
+        if (event.type == SDL_WINDOWEVENT)
         {
-          isFocused = true;
-          // std::cout << "Window focused" << std::endl;
+            if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
+                isFocused = true;
+            else if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+                isFocused = false;
+            else if (event.window.event == SDL_WINDOWEVENT_CLOSE)
+                running = false;
         }
-        else if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+        else if (event.type == SDL_QUIT)
         {
-          isFocused = false;
-          // std::cout << "Window unfocused" << std::endl;
+            running = false;
         }
-        else if (event.window.event == SDL_WINDOWEVENT_CLOSE)
-        {
-          running = false;
-        }
-      }
-      else if (event.type == SDL_KEYDOWN && isFocused)
-      {
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        auto timeDiff = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - lastPressTime);
+    }
 
-        if (timeDiff.count() >= 50)
-        {
-          SDL_Keycode key = event.key.keysym.sym;
-          // std::cout << "event: " << key << std::endl;
-          switch (key)
-          {
-          case SDLK_RIGHT:
-            target[0UL] += steps[0UL];
-            KeyboardNode::send_target(target);
-            break;
-          case SDLK_LEFT:
-            target[0UL] -= steps[0UL];
-            KeyboardNode::send_target(target);
-            break;
-          case SDLK_UP:
-            target[1UL] += steps[1UL];
-            KeyboardNode::send_target(target);
-            break;
-          case SDLK_DOWN:
-            target[1UL] -= steps[1UL];
-            KeyboardNode::send_target(target);
-            break;
-          case SDLK_d:
-            target[2UL] += steps[2UL];
-            KeyboardNode::send_target(target);
-            break;
-          case SDLK_a:
-            target[2UL] -= steps[2UL];
-            KeyboardNode::send_target(target);
-            break;
-          case SDLK_w:
-            target[3UL] += steps[3UL];
-            KeyboardNode::send_target(target);
-            break;
-          case SDLK_s:
-            target[3UL] -= steps[3UL];
-            KeyboardNode::send_target(target);
-            break;
-          case SDLK_0:
-            target = 0.00;
-            KeyboardNode::send_target(target);
-            break;
-          case SDLK_SPACE:
-            if (m_flag_manual)
-            {
-              m_flag_manual = false;
-              KeyboardNode::send_homing_request("OFF");
-            }
-            else
-            {
-              m_flag_manual = true;
-              KeyboardNode::send_homing_request("ON");
-            }
-            break;
-          case SDLK_h:
-            if (m_flag_manual)
-            {
-              KeyboardNode::send_homing_request("set_home");
-            }
-            break;
-          default:
-            break;
-          }
+    const Uint8 *state = SDL_GetKeyboardState(NULL);
+    if (state[SDL_SCANCODE_RIGHT] && !state[SDL_SCANCODE_LEFT])  m_com_vel[0UL] = 2.0;
+    if (state[SDL_SCANCODE_LEFT] && !state[SDL_SCANCODE_RIGHT])   m_com_vel[0UL] = -2.0;
+    if (state[SDL_SCANCODE_UP] && !state[SDL_SCANCODE_DOWN])     m_com_vel[1UL] = 1.0;
+    if (state[SDL_SCANCODE_DOWN] && !state[SDL_SCANCODE_UP])   m_com_vel[1UL] = -1.0;
+    if (state[SDL_SCANCODE_D] && !state[SDL_SCANCODE_A])      m_com_vel[2UL] = 2.0;
+    if (state[SDL_SCANCODE_A] && !state[SDL_SCANCODE_D])      m_com_vel[2UL] = -2.0;
+    if (state[SDL_SCANCODE_W] && !state[SDL_SCANCODE_S])      m_com_vel[3UL] = 1.0;
+    if (state[SDL_SCANCODE_S] && !state[SDL_SCANCODE_W])      m_com_vel[3UL] = -1.0;
 
-          lastPressTime = std::chrono::high_resolution_clock::now();
-        }
-      }
-      else if (event.type == SDL_QUIT)
-      {
-        running = false;
+    KeyboardNode::send_target(m_com_vel);
+
+    if (state[SDL_SCANCODE_SPACE] && isFocused) {
+      if (m_flag_manual) {
+          m_flag_manual = false;
+          KeyboardNode::send_homing_request("OFF");
+      } else {
+          m_flag_manual = true;
+          KeyboardNode::send_homing_request("ON");
       }
     }
+    if (state[SDL_SCANCODE_H] && m_flag_manual) {
+        KeyboardNode::send_homing_request("set_home");
+    }
+
+    lastPressTime = std::chrono::high_resolution_clock::now();
+
+      // else if (event.type == SDL_KEYDOWN && isFocused)
+      // {
+      //   auto currentTime = std::chrono::high_resolution_clock::now();
+      //   auto timeDiff = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - lastPressTime);
+
+      //   if (timeDiff.count() >= 50)
+      //   {
+      //     SDL_Keycode key = event.key.keysym.sym;
+      //     // std::cout << "event: " << key << std::endl;
+      //     switch (key)
+      //     {
+      //     case SDLK_RIGHT:
+      //       m_com_vel[0UL] = 1.0;
+      //       break;
+      //     case SDLK_LEFT:
+      //       m_com_vel[0UL] = -1.0;
+      //       break;
+      //     case SDLK_UP:
+      //       m_com_vel[1UL] = 1.0;
+      //       break;
+      //     case SDLK_DOWN:
+      //       m_com_vel[1UL] = -1.0;
+      //       break;
+      //     case SDLK_d:
+      //       m_com_vel[2UL] = 1.0;
+      //       break;
+      //     case SDLK_a:
+      //       m_com_vel[2UL] = -1.0;
+      //       break;
+      //     case SDLK_w:
+      //       m_com_vel[3UL] = 1.0;
+      //       break;
+      //     case SDLK_s:
+      //       m_com_vel[3UL] = -1.0;
+      //       KeyboardNode::send_target(m_com_vel);
+      //       break;
+      //     case SDLK_0:
+      //       m_com_vel = 0.00;
+      //       KeyboardNode::send_target(m_com_vel);
+      //       break;
+      //     case SDLK_SPACE:
+      //       if (m_flag_manual)
+      //       {
+      //         m_flag_manual = false;
+      //         KeyboardNode::send_homing_request("OFF");
+      //       }
+      //       else
+      //       {
+      //         m_flag_manual = true;
+      //         KeyboardNode::send_homing_request("ON");
+      //       }
+      //       break;
+      //     case SDLK_h:
+      //       if (m_flag_manual)
+      //       {
+      //         KeyboardNode::send_homing_request("set_home");
+      //       }
+      //       break;
+      //     default:
+      //       break;
+      //     }
+
+      //     lastPressTime = std::chrono::high_resolution_clock::now();
+      //   }
+      // }
+      // else if (event.type == SDL_QUIT)
+      // {
+      //   running = false;
+      // }
+    // }
   }
 
   // Timer callback function to publish the target joints config
@@ -308,15 +328,16 @@ private:
   {
     rclcpp::Time now = this->get_clock()->now();
 
-    m_msg.position[0UL] = target[0UL];
-    m_msg.position[1UL] = target[1UL];
-    m_msg.position[2UL] = target[2UL];
-    m_msg.position[3UL] = target[3UL];
+    m_msg.position[0UL] = m_com_vel[0UL];
+    m_msg.position[1UL] = m_com_vel[1UL];
+    m_msg.position[2UL] = m_com_vel[2UL];
+    m_msg.position[3UL] = m_com_vel[3UL];
 
     // std::cout << "new target: ";
     // std::cout << std::fixed << std::setprecision(4);
     // std::cout << m_msg.position[0UL] << std::endl;
   }
+
 
   void drawTriangle(SDL_Renderer *renderer, int x1, int y1, int x2, int y2, int x3, int y3)
   {
@@ -354,7 +375,7 @@ private:
 
   rclcpp::CallbackGroup::SharedPtr m_callback_group_pub;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_event;
-  rclcpp::Client<interfaces::srv::Homing>::SharedPtr m_record_client;
+  rclcpp::Client<interfaces::srv::Config>::SharedPtr m_record_client;
 
   std::atomic<bool> m_is_experiment_running;
   std::thread m_experiment_thread;
@@ -366,7 +387,7 @@ private:
 
   // std::vector<double> &target;
   std::vector<double> steps;
-  blaze::StaticVector<double, 4UL> target = blaze::StaticVector<double, 4UL>(0.0);
+  blaze::StaticVector<double, 4UL> m_com_vel = blaze::StaticVector<double, 4UL>(0.0);
   std::unique_ptr<int> counter;
 
   bool shiftQPressed;

@@ -14,11 +14,12 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/Status.msg"
   "msg/Taskspace.msg"
   "msg/Jointspace.msg"
   "msg/Robotbackbone.msg"
   "srv/Startrecording.srv"
-  "srv/Homing.srv"
+  "srv/Config.srv"
   "srv/Transformation.srv"
   "srv/Jointstarget.srv"
   "action/Jointstarget.action"

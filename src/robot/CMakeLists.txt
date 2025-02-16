@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.5)
 project(robot VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -29,6 +29,9 @@ find_package(std_srvs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(interfaces REQUIRED) 
 find_package(ament_index_cpp REQUIRED)
+find_package(Qt5 COMPONENTS Widgets REQUIRED)
+
+set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
 add_subdirectory(lib_robot)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_robot/include)
@@ -39,6 +42,11 @@ ament_target_dependencies(ctr_robot rclcpp std_msgs std_srvs rclcpp_action inter
 
 add_executable(key_input src/keyboard_node.cpp)
 ament_target_dependencies(key_input rclcpp std_msgs interfaces ament_index_cpp)
+
+add_executable(qt_gui src/qt_node.cpp)
+target_link_libraries(qt_gui Qt5::Widgets)
+ament_target_dependencies(qt_gui rclcpp interfaces)
+
 
 # Add SDL2
 find_package(SDL2 REQUIRED)
@@ -53,6 +61,7 @@ endif()
 install(TARGETS
   ctr_robot
   key_input
+  qt_gui
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY

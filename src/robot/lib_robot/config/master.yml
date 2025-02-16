@@ -1,6 +1,6 @@
 master:
   node_id: 7
-  sync_period: 1000 # us 
+  sync_period: 5000 # us 
 
 slave_1:
   dcf: "605.0141.01-L.eds"

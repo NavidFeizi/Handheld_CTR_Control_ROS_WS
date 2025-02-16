@@ -5,76 +5,40 @@ using namespace lely;
 
 std::vector<double> Position_Target_Generator(double t);
 
-CTRobot::CTRobot(int sample_time,
-                 int operation_mode,
-                 blaze::StaticVector<double, 4UL> max_acc,
-                 blaze::StaticVector<double, 4UL> max_vel,
-                 bool position_limit)
-
-{ // pulse per mm/deg - conversion to SI unit is done internally in the node class
-  this->encoder_res = {100 * 180 * M_1_PI,
-                       1000 * 1000.0,
-                       100 * 180 * M_1_PI,
-                       1000 * 1000.0};  // this is not real encoder count,
-  this->velocity_factor = {10.0,
-                           10.0,
-                           10.0,
-                           10.0}; 
-
-  // the real encoder count and gear ratio are integrated into
-  // motion controller factors. these are just a factor
-  // to convert 0.01 mm to mm and 0.1 deg to deg
-  this->gear_ratio = {1, 1, 1, 1}; // deg->rev or mm->rev
-  m_max_acc = max_acc;             // deg->rev or mm->rev
-  m_max_vel = max_vel;             // deg->rev or mm->rev
-  this->sample_time = sample_time; // commandPeriod [ms], minimum
+CTRobot::CTRobot(int sample_time, OpMode operation_mode, bool position_limit)
+{
+  m_maxAcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
+  m_maxVel = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
+  // m_max_acc = max_acc;             // deg->rev or mm->rev
+  // m_max_vel = max_vel;             // deg->rev or mm->rev
+  this->m_sampleTime = sample_time; // commandPeriod [ms], minimum
   this->operation_mode = operation_mode;
+  this->m_lowerBounds = {-2 * M_PI, 0.0, -2 * M_PI, 0.0};
+  this->m_upperBounds = {2 * M_PI, 97.0E-3, 2 * M_PI, 52.0E-3};
+  this->m_posOffsets = {0.0, -147.0E-3, 0.0, -77.0E-3};
+  this->m_minClearance = 29.0E-3;
+  this->m_maxClearance = 70.0E-3;
+  this->m_flagPositionLimit = position_limit;
 
-  this->lowerBounds = {-2 * M_PI, 0.0, -2 * M_PI, 0.0};
-  this->upperBounds = {2 * M_PI, 97.0E-3, 2 * M_PI, 52.0E-3};
-
-  this->posOffsets = {0.0, -147.0E-3, 0.0, -77.0E-3};
-  this->clearance_min = 29.0E-3;
-  this->clearance_max = 70.0E-3;
-  this->flag_position_limit = position_limit;
-
-  // /* Create log file and name it with time*/
-  // std::filesystem::create_directories(Log_directory);
-  // // Get the current date and time to create a unique filename
-  // auto now = std::chrono::system_clock::now();
-  // auto time = std::chrono::system_clock::to_time_t(now);
-  // struct tm tm;
-  // localtime_r(&time, &tm);
-  // // Format the filename using the date and time
-  // char buffer[80];
-  // strftime(buffer, sizeof(buffer), "%Y-%m-%d_%H-%M-%S", &tm);
-  // std::string filename = std::string(buffer) + ".txt"; // Use the formatted time as the filename
-  // logFile.open(Log_directory + filename, std::ios::app);
-  // if (!logFile.is_open())
-  // {
-  //   std::cerr << "Failed to open the log file for writing." << std::endl;
-  // }
+  m_shared_state = std::make_shared<SharedState>(); // states are shared with the Cia301 nodes
+  CTRobot::initLogger();
 }
 
 /* Copy constructor */
-CTRobot::CTRobot(const CTRobot &rhs) : m_inner_rot(rhs.m_inner_rot),
-                                       m_inner_tran(rhs.m_inner_tran),
-                                       m_middle_rot(rhs.m_middle_rot),
-                                       m_middle_tran(rhs.m_middle_tran) {};
+CTRobot::CTRobot(const CTRobot &rhs) : m_inrTubeRot(rhs.m_inrTubeRot),
+                                       m_inrTubeTrn(rhs.m_inrTubeTrn),
+                                       m_mdlTubeRot(rhs.m_mdlTubeRot),
+                                       m_mdlTubeTrn(rhs.m_mdlTubeTrn) {};
 
 /* class destructor: move the joints to zero position, disable, and close cotrollers. */
 CTRobot::~CTRobot()
 {
-  Log_message("------- Closing -------", true);
+  m_logger->info("[Master]  Closing");
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  // if (logFile.is_open())
-  // {
-  //   logFile.close(); // Close the file in the destructor
-  // }
 }
 
 /* initilizes the fiber driver for each node and what the status on all nodes */
-void CTRobot::Fiber_loop()
+void CTRobot::initFiberDriver()
 {
   // Initialize the I/O library. This is required on Windows, but a no-op on
   // Linux (for now).
@@ -143,17 +107,21 @@ void CTRobot::Fiber_loop()
   // MyDriver driver_5(exec, master, 5);
 
   exec.post([&]()
-            { m_inner_rot = std::make_shared<Node>(this, exec, master, 3, encoder_res[0], gear_ratio[0], velocity_factor[0],
-                                                   sample_time, operation_mode, m_max_acc[0], m_max_vel[0]); });
+            { m_inrTubeRot = std::make_shared<Cia301Node>(exec, master, 1, "Faulhaber", m_encodersResolution[0], m_gearRatios[0], m_velocityFactors[0],
+                                                          m_sampleTime, operation_mode, m_maxAcc[0], m_maxVel[0],
+                                                          m_shared_state, m_logger); });
   exec.post([&]()
-            { m_inner_tran = std::make_shared<Node>(this, exec, master, 4, encoder_res[1], gear_ratio[1], velocity_factor[1],
-                                                    sample_time, operation_mode, m_max_acc[1], m_max_vel[1]); });
+            { m_inrTubeTrn = std::make_shared<Cia301Node>(exec, master, 2, "Faulhaber", m_encodersResolution[1], m_gearRatios[1], m_velocityFactors[1],
+                                                          m_sampleTime, operation_mode, m_maxAcc[1], m_maxVel[1],
+                                                          m_shared_state, m_logger); });
   exec.post([&]()
-            { m_middle_rot = std::make_shared<Node>(this, exec, master, 1, encoder_res[2], gear_ratio[2], velocity_factor[2],
-                                                    sample_time, operation_mode, m_max_acc[2], m_max_vel[2]); });
+            { m_mdlTubeRot = std::make_shared<Cia301Node>(exec, master, 3, "Faulhaber", m_encodersResolution[2], m_gearRatios[2], m_velocityFactors[2],
+                                                          m_sampleTime, operation_mode, m_maxAcc[2], m_maxVel[2],
+                                                          m_shared_state, m_logger); });
   exec.post([&]()
-            { m_middle_tran = std::make_shared<Node>(this, exec, master, 2, encoder_res[3], gear_ratio[3], velocity_factor[3],
-                                                     sample_time, operation_mode, m_max_acc[3], m_max_vel[3]); });
+            { m_mdlTubeTrn = std::make_shared<Cia301Node>(exec, master, 4, "Faulhaber", m_encodersResolution[3], m_gearRatios[3], m_velocityFactors[3],
+                                                          m_sampleTime, operation_mode, m_maxAcc[3], m_maxVel[3],
+                                                          m_shared_state, m_logger); });
   {
     std::thread t1([&]()
                    { loop.run(); });
@@ -164,257 +132,436 @@ void CTRobot::Fiber_loop()
 
   std::chrono::seconds timeout(5);
   auto startTime = std::chrono::high_resolution_clock::now();
-  while (!m_boot_success)
+  while (!m_shared_state->m_boot_success)
   {
 
     auto currentTime = std::chrono::high_resolution_clock::now();
     auto elapsedTime = std::chrono::duration_cast<std::chrono::seconds>(currentTime - startTime);
     if (elapsedTime >= timeout)
     {
-      Log_message("Bootup Timed Out!  --->  Reseting All Nodes -------", true);
+      m_logger->warn("Bootup Timed Out!  --->  Reseting All Nodes -------");
       std::raise(SIGINT);
       master.Reset();
       std::this_thread::sleep_for(std::chrono::milliseconds(2000));
       // break; // Exit the loop on timeout
     }
-    if (m_inner_rot->flag_bootSuccess &&
-        m_inner_tran->flag_bootSuccess &&
-        m_middle_rot->flag_bootSuccess &&
-        m_middle_tran->flag_bootSuccess)
+    if (m_inrTubeRot->getFlags(Flags::FlagIndex::BOOT_SUCCESS) &&
+        m_inrTubeTrn->getFlags(Flags::FlagIndex::BOOT_SUCCESS) &&
+        m_mdlTubeRot->getFlags(Flags::FlagIndex::BOOT_SUCCESS) &&
+        m_mdlTubeTrn->getFlags(Flags::FlagIndex::BOOT_SUCCESS))
     {
-      m_boot_success = true;
-      Log_message("------- Nodes Booted Successfully -------", true);
+      // shared_state->signalBootSuccess();
+      m_shared_state->m_boot_success = true;
+      m_logger->info("[Master] Nodes Booted Successfully");
     }
   }
 
   while (true)
   {
-    if (CTRobot::check_all_nodes_switched_on())
+    if (CTRobot::getSwitchStatus())
     {
-      if (!m_flag_robot_switched_on)
+      if (!m_shared_state->m_flag_robot_switched_on)
       {
-        m_flag_robot_switched_on = true;
-        Log_message("------- Nodes Switched ON -------", true);
+        m_shared_state->m_flag_robot_switched_on = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        m_logger->info("[Master] All Nodes Switched ON");
       }
     }
     else
     {
-      if (m_flag_robot_switched_on)
+      if (m_shared_state->m_flag_robot_switched_on)
       {
-        m_flag_robot_switched_on = false;
-        Log_message("------- At Least One Node Switched OFF -------", true);
+        m_shared_state->m_flag_robot_switched_on = false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        m_logger->info("[Master] At Least One Node Switched OFF");
       }
     }
 
-    if (CTRobot::check_all_nodes_enabled())
+    if (CTRobot::getEnableStatus())
     {
-      if (!m_flag_operation_enabled)
+      if (!m_shared_state->m_flag_operation_enabled)
       {
-        m_flag_operation_enabled = true;
-        Log_message("------- Nodes Enabled -------", true);
+        m_shared_state->m_flag_operation_enabled = true;
+        m_shared_state->m_flag_operation_enabled_2 = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        m_logger->info("[Master] All Nodes Enabled");
+      }
+    }
+    else if (CTRobot::getDisabledStatus())
+    {
+      if (m_shared_state->m_flag_operation_enabled_2)
+      {
+        m_shared_state->m_flag_operation_enabled = false;
+        m_shared_state->m_flag_operation_enabled_2 = false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        m_logger->info("[Master] All Nodes Disabled");
       }
     }
     else
     {
-      if (m_flag_operation_enabled)
+      if (m_shared_state->m_flag_operation_enabled)
       {
-        m_flag_operation_enabled = false;
-        Log_message("------- At Least One Node Disabled -------", true);
+        m_shared_state->m_flag_operation_enabled = false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        m_logger->info("[Master] At Least One Node Disabled");
       }
     }
 
-    if (CTRobot::check_all_encoders_set())
-    {
-      if (!m_encoders_set)
-      {
-        m_encoders_set = true;
-        Log_message("------- Encoders Set -------", true);
-      }
-    }
-    else
-    {
-      if (m_encoders_set)
-      {
-        m_encoders_set = false;
-      }
-    }
+    if (CTRobot::getDisabledStatus())
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      if (CTRobot::getEncoderStatus())
+      {
+        if (!m_shared_state->m_encoders_set)
+        {
+          m_shared_state->m_encoders_set = true;
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          m_logger->info("[Master] Encoders Set");
+        }
+      }
+      else
+      {
+        if (m_shared_state->m_encoders_set)
+        {
+          m_shared_state->m_encoders_set = false;
+        }
+      }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
-}
-
-bool CTRobot::check_all_nodes_switched_on()
-{
-  return m_inner_rot->m_status_word.switched_ON &&
-         m_inner_tran->m_status_word.switched_ON &&
-         m_middle_rot->m_status_word.switched_ON &&
-         m_middle_tran->m_status_word.switched_ON;
-}
-
-bool CTRobot::check_all_nodes_enabled()
-{
-  return m_inner_rot->m_status_word.operation_enabled &&
-         m_inner_tran->m_status_word.operation_enabled &&
-         m_middle_rot->m_status_word.operation_enabled &&
-         m_middle_tran->m_status_word.operation_enabled;
-}
-
-bool CTRobot::check_all_encoders_set()
-{
-  return m_inner_rot->encoder_set &&
-         m_inner_tran->encoder_set &&
-         m_middle_rot->encoder_set &&
-         m_middle_tran->encoder_set;
 }
 
 /* starts the Fiber_Loop in a separate thread */
-void CTRobot::Start_Thread()
+void CTRobot::startFiber()
 {
-  EnableThread = std::thread(&CTRobot::Fiber_loop, this);
-  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-  while (!m_inner_rot->m_tasks_posted ||
-         !m_inner_tran->m_tasks_posted ||
-         !m_middle_rot->m_tasks_posted ||
-         !m_middle_tran->m_tasks_posted)
+  m_thread = std::thread(&CTRobot::initFiberDriver, this);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // wait untill all nodes tasks are posted to proceed
+  while (!m_inrTubeRot->getFlags(Flags::FlagIndex::TASKS_POSTED) ||
+         !m_inrTubeTrn->getFlags(Flags::FlagIndex::TASKS_POSTED) ||
+         !m_mdlTubeRot->getFlags(Flags::FlagIndex::TASKS_POSTED) ||
+         !m_mdlTubeTrn->getFlags(Flags::FlagIndex::TASKS_POSTED))
   {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
-  Log_message("------- Tasks Posted -------", true);
+  m_logger->info("[Master] Tasks Posted");
 }
 
 /* enable operation of all joints
   @param enable: true = enable, false = disable */
-void CTRobot::Enable_Operation(bool enable)
+void CTRobot::enableOperation(const bool enable)
 {
-  m_inner_rot->Enable_operation(enable);
-  m_inner_tran->Enable_operation(enable);
-  m_middle_rot->Enable_operation(enable);
-  m_middle_tran->Enable_operation(enable);
+  m_inrTubeRot->enableOperation(enable);
+  m_inrTubeTrn->enableOperation(enable);
+  m_mdlTubeRot->enableOperation(enable);
+  m_mdlTubeTrn->enableOperation(enable);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100)); // wait for the command to be executed
 }
 
-/* set the current positoin of the robot as zero position on the motion controller
-  - this function halts the target task loop while running */
-void CTRobot::Set_Zero_Position(blaze::StaticVector<double, 4> offset)
+/* template */
+bool CTRobot::getSwitchStatus(blaze::StaticVector<bool, 4> &status) const
 {
-  Log_message("---- Setting zero position ----", true);
-  m_inner_rot->m_configing = true;
-  m_inner_tran->m_configing = true;
-  m_middle_rot->m_configing = true;
-  m_middle_tran->m_configing = true;
+  status[0] = m_inrTubeRot->getStatusword().switched_ON;
+  status[1] = m_inrTubeTrn->getStatusword().switched_ON;
+  status[2] = m_mdlTubeRot->getStatusword().switched_ON;
+  status[3] = m_mdlTubeTrn->getStatusword().switched_ON;
+  return status[0] && status[1] && status[2] && status[3];
+}
 
-  while (m_inner_rot->m_configing || m_inner_tran->m_configing || m_middle_rot->m_configing || m_middle_tran->m_configing)
+/* overloaded */
+bool CTRobot::getSwitchStatus() const
+{
+  blaze::StaticVector<bool, 4> status;
+  return this->getSwitchStatus(status);
+}
+
+/* template */
+bool CTRobot::getEnableStatus(blaze::StaticVector<bool, 4> &status) const
+{
+  status[0] = m_inrTubeRot->getStatusword().operation_enabled;
+  status[1] = m_inrTubeTrn->getStatusword().operation_enabled;
+  status[2] = m_mdlTubeRot->getStatusword().operation_enabled;
+  status[3] = m_mdlTubeTrn->getStatusword().operation_enabled;
+  return status[0] && status[1] && status[2] && status[3];
+}
+
+/* overloaded */
+bool CTRobot::getEnableStatus() const
+{
+  blaze::StaticVector<bool, 4> status;
+  return this->getEnableStatus(status);
+}
+
+/* template */
+bool CTRobot::getDisabledStatus(blaze::StaticVector<bool, 4> &status) const
+{
+  status[0] = !m_inrTubeRot->getStatusword().operation_enabled;
+  status[1] = !m_inrTubeTrn->getStatusword().operation_enabled;
+  status[2] = !m_mdlTubeRot->getStatusword().operation_enabled;
+  status[3] = !m_mdlTubeTrn->getStatusword().operation_enabled;
+  return status[0] && status[1] && status[2] && status[3];
+}
+
+/* overloaded */
+bool CTRobot::getDisabledStatus() const
+{
+  blaze::StaticVector<bool, 4> status;
+  return this->getDisabledStatus(status);
+}
+
+/* template */
+bool CTRobot::getEncoderStatus(blaze::StaticVector<bool, 4> &status) const
+{
+  status[0] = m_inrTubeRot->getFlags(Flags::FlagIndex::ENCODER_SET);
+  status[1] = m_inrTubeTrn->getFlags(Flags::FlagIndex::ENCODER_SET);
+  status[2] = m_mdlTubeRot->getFlags(Flags::FlagIndex::ENCODER_SET);
+  status[3] = m_mdlTubeTrn->getFlags(Flags::FlagIndex::ENCODER_SET);
+  return status[0] && status[1] && status[2] && status[3];
+}
+
+/* overloaded */
+bool CTRobot::getEncoderStatus() const
+{
+  blaze::StaticVector<bool, 4> status;
+  return this->getEncoderStatus(status);
+}
+
+/* template */
+bool CTRobot::getReachedStatus(blaze::StaticVector<bool, 4> &status) const
+{
+  bool all_reached = m_inrTubeRot->isReached() &&
+                     m_inrTubeTrn->isReached() &&
+                     m_mdlTubeRot->isReached() &&
+                     m_mdlTubeTrn->isReached();
+
+  status[0] = m_inrTubeRot->isReached();
+  status[1] = m_inrTubeTrn->isReached();
+  status[2] = m_mdlTubeRot->isReached();
+  status[3] = m_mdlTubeTrn->isReached();
+
+  return all_reached;
+}
+
+/* overloaded */
+bool CTRobot::getReachedStatus() const
+{
+  blaze::StaticVector<bool, 4> status;
+  return this->getReachedStatus(status);
+}
+
+/* Actuatre robot to the targert absolute joint positions in SI unit with respect to zero position
+  operation mode must be set to PositionProfile in advance     */
+void CTRobot::setTargetPos(const blaze::StaticVector<double, 4> &target)
+{
+
+  // if (this->flag_position_limit)
+  // {
+  //   if (!(CTRobot::Position_limits_check(target) == 0))
+  //   {
+  //     return;
+  //   }
+  // }
+  m_inrTubeRot->setPos(target[0]); // in [rad]
+  m_inrTubeTrn->setPos(target[1]); // in [m]
+  m_mdlTubeRot->setPos(target[2]); // in [rad]
+  m_mdlTubeTrn->setPos(target[3]); // in [m]
+}
+
+/* Actuatre robot with the targert velocity in SI unit
+  operation mode must be set to VelocityProfile in advance*/
+void CTRobot::setTargetVel(const blaze::StaticVector<double, 4> &target)
+{
+  blaze::StaticVector<double, 4> velTarget = target;
+
+  // // Clamp the velTarget values to stay within the bounds
+  // for (size_t i = 0; i < velTarget.size(); ++i)
+  // {
+  //   if (velTarget[i] > velocity_upper_bounds[i])
+  //   {
+  //     velTarget[i] = velocity_upper_bounds[i];
+  //   }
+  //   else if (velTarget[i] < velocity_lower_bounds[i])
+  //   {
+  //     velTarget[i] = velocity_lower_bounds[i];
+  //   }
+  // }
+
+  // Now set the clamped values
+
+  m_inrTubeRot->setVel(velTarget[0]); // in [rad]
+  m_inrTubeTrn->setVel(velTarget[1]); // in [m]
+  m_mdlTubeRot->setVel(velTarget[2]); // in [rad]
+  m_mdlTubeTrn->setVel(velTarget[3]); // in [m]
+}
+
+/* set the limit of the maximum current (or torque) */
+void CTRobot::setMaxTorque(const blaze::StaticVector<double, 4UL> negative,
+                           const blaze::StaticVector<double, 4UL> positive)
+{
+  m_inrTubeRot->setMaxTorque(negative[0], positive[0]); // in [rad]
+  m_inrTubeTrn->setMaxTorque(negative[1], positive[1]); // in [m]
+  m_mdlTubeRot->setMaxTorque(negative[2], positive[2]); // in [rad]
+  m_mdlTubeTrn->setMaxTorque(negative[3], positive[3]); // in [m]
+  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+}
+
+/* set the parameters of the postion profile (acc, dcc, vel) for PositionProfile mode
+  set the parameters of the velocty profile (acc, dcc) for VelocityProfile mode*/
+void CTRobot::setProfileParams(const blaze::StaticVector<double, 4UL> max_vel,
+                               const blaze::StaticVector<double, 4UL> max_acc,
+                               const blaze::StaticVector<double, 4UL> max_dcc)
+{
+  m_inrTubeRot->setProfileParams(max_acc[0], max_dcc[0], max_vel[0]); // in [rad]
+  m_inrTubeTrn->setProfileParams(max_acc[1], max_dcc[1], max_vel[1]); // in [m]
+  m_mdlTubeRot->setProfileParams(max_acc[2], max_dcc[2], max_vel[2]); // in [rad]
+  m_mdlTubeTrn->setProfileParams(max_acc[3], max_dcc[3], max_vel[3]); // in [m]
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+}
+
+/*set operation mode for all joints*/
+void CTRobot::setOperationMode(const OpMode mode)
+{
+  if (!(static_cast<int8_t>(mode) == static_cast<int8_t>(m_inrTubeRot->getOperationMode()) &&
+        static_cast<int8_t>(mode) == static_cast<int8_t>(m_inrTubeTrn->getOperationMode()) &&
+        static_cast<int8_t>(mode) == static_cast<int8_t>(m_mdlTubeRot->getOperationMode()) &&
+        static_cast<int8_t>(mode) == static_cast<int8_t>(m_mdlTubeTrn->getOperationMode())))
   {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    m_inrTubeRot->setOperationMode(mode); // in [rad]
+    m_inrTubeTrn->setOperationMode(mode); // in [m]
+    m_mdlTubeRot->setOperationMode(mode); // in [rad]
+    m_mdlTubeTrn->setOperationMode(mode); // in [m]
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
   }
-  Log_message("---- Setting zero position done ----", true);
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-}
-
-/* returns the status of motion controller switches
-  - true, when all motion controllers are switched on and ready to enable operation */
-bool CTRobot::Get_Controller_Switch_Status()
-{
-  return m_flag_robot_switched_on;
-}
-
-/* Actuatre robot to the targert absolute joint positions in SI unit
-        (with respect to zero position (distal limit) - positive value is towards proximal end)     */
-void CTRobot::set_target_position(blaze::StaticVector<double, 4> posTarget)
-{
-  if (this->flag_position_limit)
-  {
-    if (!(CTRobot::Position_limits_check(posTarget) == 0))
-    {
-      return;
-    }
-  }
-
-  m_inner_rot->Set_target_pos(posTarget[0]);   // in [rad]
-  m_inner_tran->Set_target_pos(posTarget[1]);  // in [m]
-  m_middle_rot->Set_target_pos(posTarget[2]);  // in [rad]
-  m_middle_tran->Set_target_pos(posTarget[3]); // in [m]
-}
-
-/* Actuatre robot to the targert absolute joint positions in SI unit
-        (with respect to zero position (distal limit) - positive value is towards proximal end)     */
-void CTRobot::Set_Target_Velocity(blaze::StaticVector<double, 4> velTarget)
-{
-  m_inner_rot->Set_target_vel(velTarget[0]);   // in [rad]
-  m_inner_tran->Set_target_vel(velTarget[1]);  // in [m]
-  m_middle_rot->Set_target_vel(velTarget[2]);  // in [rad]
-  m_middle_tran->Set_target_vel(velTarget[3]); // in [m]
+  else
+    m_logger->debug("[Master] Requeset operation mode is already set");
 }
 
 /* Gets the current in [mA] unit */
-void CTRobot::Get_Current(blaze::StaticVector<int, 4> *p_current)
+void CTRobot::getCurrent(blaze::StaticVector<double, 4> &val) const
 {
-  if (p_current)
+  this->m_inrTubeRot->getCurrentAvg(val[0]);
+  this->m_inrTubeTrn->getCurrentAvg(val[1]);
+  this->m_mdlTubeRot->getCurrentAvg(val[2]);
+  this->m_mdlTubeTrn->getCurrentAvg(val[3]);
+}
+
+/* Gets the current velocity of all actuators in SI unit */
+void CTRobot::getVel(blaze::StaticVector<double, 4> &val) const
+{
+  this->m_inrTubeRot->getVel(val[0]);
+  this->m_inrTubeTrn->getVel(val[1]);
+  this->m_mdlTubeRot->getVel(val[2]);
+  this->m_mdlTubeTrn->getVel(val[3]);
+}
+
+/* Gets the current absolute position of all actuators in SI unit */
+void CTRobot::getPos(blaze::StaticVector<double, 4> &val) const
+{
+  this->m_inrTubeRot->getPos(val[0]);
+  this->m_inrTubeTrn->getPos(val[1]);
+  this->m_mdlTubeRot->getPos(val[2]);
+  this->m_mdlTubeTrn->getPos(val[3]);
+}
+
+/* get current posistion, velocity, and current */
+void CTRobot::getPosVelCur(blaze::StaticVector<double, 4> &pos,
+                           blaze::StaticVector<double, 4> &vel,
+                           blaze::StaticVector<double, 4> &current) const
+{
+  CTRobot::getPos(pos);
+  CTRobot::getVel(vel);
+  CTRobot::getCurrent(current);
+}
+
+/* Actuatre robot to the targert absolute joint positions in SI unit
+  (with respect to zero position (distal limit) - positive value is towards proximal end)     */
+void CTRobot::findTransEncoders()
+{
+  blaze::StaticVector<double, 4UL> negative = {400.0, 220.0, 400.0, 220.0};
+  blaze::StaticVector<double, 4UL> positive = {400.0, 220.0, 400.0, 220.0};
+
+  blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
+  blaze::StaticVector<double, 4UL> max_vel = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
+  blaze::StaticVector<double, 4UL> max_acc = 0.1 * max_dcc;
+  double current = 0.0;
+  double pos1, pos0, pos2 = 0.0;
+  double collet_minimum_clearance = 0.040; // *********** needs to be adjusted ***********
+
+  CTRobot::setOperationMode(OpMode::VelocityProfile);
+  // std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
+  CTRobot::setMaxTorque(negative, positive);
+
+  CTRobot::setProfileParams(max_vel, max_acc, max_dcc);
+
+  this->m_inrTubeTrn->getPos(pos1);
+
+  CTRobot::setTargetVel({-0.0, -0.003, -0.0, -0.003});
+
+  this->m_inrTubeTrn->getCurrentAvg(current);
+  CTRobot::enableOperation(true);
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  while (current > -210.0)
   {
-    // Get the motor torque for each member and store it in p_current
-    this->m_inner_rot->Get_current(&((*p_current)[0]));
-    this->m_inner_tran->Get_current(&((*p_current)[1]));
-    this->m_middle_rot->Get_current(&((*p_current)[2]));
-    this->m_middle_tran->Get_current(&((*p_current)[3]));
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    this->m_inrTubeTrn->getCurrentAvg(current);
   }
-}
+  m_logger->info("[Master] inner carriage hit back");
+  CTRobot::setTargetVel({0.0, 0.0, 0.0, 0.0});
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-/* Gets the current velocity (with respect to zero position - distal limit) of all actuators in SI unit */
-void CTRobot::Get_Velocity(blaze::StaticVector<double, 4> *p_velCurrent)
-{
-  if (p_velCurrent)
+  this->m_inrTubeTrn->getPos(pos0);
+
+  // this->m_inner_tran->set_encoder(0.0);
+  // std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+  // CTRobot::Enable_Operation(true);
+
+  // std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  CTRobot::setTargetVel({0.0, 0.003, 0.0, 0.0});
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  this->m_inrTubeTrn->getCurrentAvg(current);
+
+  m_logger->info("[Master] checkpoint_3");
+  while (current < 210.0)
   {
-    // Get the motor torque for each member and store it in p_current
-    this->m_inner_rot->Get_actual_vel(&((*p_velCurrent)[0]));
-    this->m_inner_tran->Get_actual_vel(&((*p_velCurrent)[1]));
-    this->m_middle_rot->Get_actual_vel(&((*p_velCurrent)[2]));
-    this->m_middle_tran->Get_actual_vel(&((*p_velCurrent)[3]));
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    this->m_inrTubeTrn->getCurrentAvg(current);
   }
+  m_logger->info("[Master] inner carriage hit middle carriage");
+  CTRobot::setTargetVel({1.0, 0.0, 1.0, 0.0});
+  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+  CTRobot::setTargetVel({0.0, 0.0, 0.0, 0.0});
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  this->m_inrTubeTrn->getPos(pos2);
+  this->m_inrTubeTrn->setEncoder(pos2 - pos0);
+  this->m_mdlTubeTrn->setEncoder(pos2 - pos0 + collet_minimum_clearance);
+  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+  m_logger->info("[Master] encoders found");
+  CTRobot::enableOperation(false);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
-/* Gets the current absolute position (with respect to zero position - distal limit) of all actuators in SI unit */
-void CTRobot::Get_Position(blaze::StaticVector<double, 4> *p_posCurrent)
-{
-  if (p_posCurrent)
-  {
-    // Get the motor position for each member and store it in p_current
-    this->m_inner_rot->Get_actual_pos(&((*p_posCurrent)[0]));
-    this->m_inner_tran->Get_actual_pos(&((*p_posCurrent)[1]));
-    this->m_middle_rot->Get_actual_pos(&((*p_posCurrent)[2]));
-    this->m_middle_tran->Get_actual_pos(&((*p_posCurrent)[3]));
-  }
-}
-
-/**/
-void CTRobot::Get_PosVelCur(blaze::StaticVector<double, 4> *p_posCurrent,
-                            blaze::StaticVector<double, 4> *p_velCurrent,
-                            blaze::StaticVector<int, 4> *p_current)
-{
-  CTRobot::Get_Position(p_posCurrent);
-  CTRobot::Get_Velocity(p_velCurrent);
-  CTRobot::Get_Current(p_current);
-}
-
-/* Gets the current absolute position (with respect to zero position - distal limit) of all actuators in [mm] or [deg] unit */
-void CTRobot::Convert_pos_to_CTR_frame(blaze::StaticVector<double, 4> &posCurrent,
-                                       blaze::StaticVector<double, 4> *posInCTRFrame)
+/* Gets the current absolute position (with respect to zero position) of all actuators in [mm] or [deg] unit */
+void CTRobot::convPosToRobotFrame(const blaze::StaticVector<double, 4> &posCurrent,
+                                  blaze::StaticVector<double, 4> &posInCTRFrame) const
 {
   for (size_t i = 0; i < posCurrent.size(); ++i)
   {
-    (*posInCTRFrame)[i] = posCurrent[i] + this->posOffsets[i];
+    posInCTRFrame[i] = posCurrent[i] + this->m_posOffsets[i];
   }
 }
 
 /**/
-int CTRobot::Position_limits_check(blaze::StaticVector<double, 4> posTarget)
+int CTRobot::checkPosLimits(const blaze::StaticVector<double, 4> &posTarget) const
 {
   for (size_t i = 0; i < posTarget.size(); ++i)
   {
-    if (posTarget[i] < lowerBounds[i])
+    if (posTarget[i] < m_lowerBounds[i])
     {
       std::cout << "static lower bound reached" << std::endl;
       return -1;
     }
-    if (posTarget[i] > upperBounds[i])
+    if (posTarget[i] > m_upperBounds[i])
     {
       std::cout << "static upper bound reached" << std::endl;
       return -1;
@@ -422,13 +569,13 @@ int CTRobot::Position_limits_check(blaze::StaticVector<double, 4> posTarget)
   }
   blaze::StaticVector<double, 4> posInCTRFrame = blaze::StaticVector<double, 4>(0.0);
 
-  CTRobot::Convert_pos_to_CTR_frame(posTarget, &posInCTRFrame);
-  if ((posInCTRFrame[3] - posInCTRFrame[1]) < clearance_min)
+  this->convPosToRobotFrame(posTarget, posInCTRFrame);
+  if ((posInCTRFrame[3] - posInCTRFrame[1]) < m_minClearance)
   {
     std::cout << "dynamic position lower limit reached - preventing collision => position target ignored" << std::endl;
     return -1;
   }
-  if ((posInCTRFrame[3] - posInCTRFrame[1]) > clearance_max)
+  if ((posInCTRFrame[3] - posInCTRFrame[1]) > m_maxClearance)
   {
     std::cout << "dynamic position upper limit reached - preventing illegan tube configuration => position target ignored" << std::endl;
     return -1;
@@ -436,64 +583,35 @@ int CTRobot::Position_limits_check(blaze::StaticVector<double, 4> posTarget)
   return 0;
 }
 
-/**/
-bool CTRobot::Get_reachStatus()
+/* variable wait untill current position is reached to target position */
+void CTRobot::waitUntilReach()
 {
-  if (m_inner_rot->Is_reached() &&
-      m_inner_tran->Is_reached() &&
-      m_middle_rot->Is_reached() &&
-      m_middle_tran->Is_reached())
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  while (!this->getReachedStatus())
   {
-    return 1;
-  }
-  else
-  {
-    return 0;
-  }
-  // std::vector<double> thresholds = {0.1, 0.05, 0.1, 0.05};
-  // std::vector<double> velocity;
-  // CTRobot::Get_Velocity(&velocity);
-
-  // for (size_t i = 0; i < velocity.size(); i++)
-  // {
-  //   if (std::abs(velocity[i]) >= thresholds[i])
-  //   {
-  //     return false; // At least one velocity exceeds the threshold
-  //   }
-  // }
-  // return true;
-}
-
-/**/
-void CTRobot::Wait_until_reach()
-{
-  // std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  while (!CTRobot::Get_reachStatus())
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
 }
 
-/**/
-void CTRobot::Log_message(const std::string &message, bool print)
+/* Get the current date and time and format the filename using the date and time  */
+void CTRobot::initLogger()
 {
-  // Get the current date and time to include in the log entry
-  time_t now = time(0);
-  tm *localTime = localtime(&now);
-  char timestamp[80];
-  strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localTime);
-  if (logFile.is_open())
-  {
-    // Write the message to the log file along with a timestamp
-    logFile << "[Robot : " << timestamp << "] " << message << std::endl;
-  }
-  else
-  {
-    // std::cerr << "Error: Unable to open the log file for writing." << std::endl;
-  }
-  // Print the message to the console using std::cout
-  if (print)
-  {
-    std::cout << "[Robot : " << timestamp << "] " << message << std::endl;
-  }
+  auto now = std::chrono::system_clock::now();
+  auto time = std::chrono::system_clock::to_time_t(now);
+  struct tm tm;
+  localtime_r(&time, &tm);
+  char buffer[80];
+  strftime(buffer, sizeof(buffer), "%Y-%m-%d_%H-%M-%S", &tm);
+  std::string filename = std::string(buffer) + ".txt"; // Use the formatted time as the filename
+  std::filesystem::create_directories(Log_directory);
+  std::string logDir = Log_directory + filename;
+
+  /* instansiate the logger object */
+  auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+  auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logDir, true);
+  console_sink->set_level(spdlog::level::info);                                                               // Only print warnings and above to console
+  file_sink->set_level(spdlog::level::debug);                                                                 // Log all messages to the file
+  this->m_logger = std::make_shared<spdlog::logger>("CTR", spdlog::sinks_init_list{console_sink, file_sink}); // instansiate the logger
+  this->m_logger->set_level(spdlog::level::debug);                                                            // This enables debug messages to be processed
+  this->m_logger->flush_on(spdlog::level::debug);                                                             // Flush immediately on debug level
 }
