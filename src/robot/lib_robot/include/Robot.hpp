@@ -73,11 +73,13 @@ class Cia301Node;
 class CTRobot
 {
 public:
-    CTRobot(int sample_time, OpMode operation_mode, bool position_limit);
+    CTRobot(bool position_limit);
+    CTRobot();
+
     CTRobot(const CTRobot &rhs);
     ~CTRobot();
 
-    void startFiber();
+    void startRobotCommunication(int sample_time);
     void enableOperation(const bool enable);
 
     // ========================== Command and Feedback Methods ===========================
@@ -86,9 +88,6 @@ public:
     void getCurrent(blaze::StaticVector<double, 4UL> &val) const;
     void getVel(blaze::StaticVector<double, 4UL> &val) const;
     void getPos(blaze::StaticVector<double, 4UL> &val) const;
-    void getPosVelCur(blaze::StaticVector<double, 4UL> &pos,
-                      blaze::StaticVector<double, 4UL> &vel,
-                      blaze::StaticVector<double, 4UL> &current) const;
 
     // ============================== Configuration Methods ==============================
     void setMaxTorque(const blaze::StaticVector<double, 4UL> negative,
@@ -117,8 +116,11 @@ public:
     bool m_flag_operation_enabled = false;
     bool m_encoders_set;
 
+protected:
+    std::shared_ptr<spdlog::logger> m_logger;
+
 private:
-    void initFiberDriver();
+    void startCANopenNodes();
     void convPosToRobotFrame(const blaze::StaticVector<double, 4UL> &posCurrent,
                              blaze::StaticVector<double, 4UL> &posInCTRFrame) const;
     int checkPosLimits(const blaze::StaticVector<double, 4UL> &posTarget) const;
@@ -133,7 +135,6 @@ private:
     static constexpr blaze::StaticVector<double, 4UL> m_gearRatios = {1, 1, 1, 1}; 
 
     std::thread m_thread;
-    std::shared_ptr<spdlog::logger> m_logger;
     std::shared_ptr<SharedState> m_shared_state;
     std::shared_ptr<Cia301Node> m_inrTubeRot;
     std::shared_ptr<Cia301Node> m_inrTubeTrn;

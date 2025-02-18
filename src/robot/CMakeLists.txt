@@ -29,7 +29,7 @@ find_package(std_srvs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(interfaces REQUIRED) 
 find_package(ament_index_cpp REQUIRED)
-find_package(Qt5 COMPONENTS Widgets REQUIRED)
+find_package(Qt5 REQUIRED COMPONENTS Core Widgets Concurrent)
 
 set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
@@ -37,7 +37,7 @@ add_subdirectory(lib_robot)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_robot/include)
 
 add_executable(ctr_robot src/robot_node.cpp)
-target_link_libraries(ctr_robot ROBOTlib)
+target_link_libraries(ctr_robot ROBOTlib Qt5::Widgets Qt5::Core Qt5::Concurrent)
 ament_target_dependencies(ctr_robot rclcpp std_msgs std_srvs rclcpp_action interfaces)
 
 add_executable(key_input src/keyboard_node.cpp)

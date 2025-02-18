@@ -1,7 +1,22 @@
+#include <QApplication>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QWidget>
+#include <QObject>
+#include <QString>
+#include <QPushButton>
+#include <QKeyEvent>
+#include <QSet>
+#include <QDebug>
+#include <QRadioButton>
+#include <QGroupBox>
+#include <QtConcurrent>
+
 #include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
+
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -12,32 +27,312 @@
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/srv/config.hpp"
 #include "interfaces/action/jointstarget.hpp"
-#include "interfaces/srv/jointstarget.hpp" // Adjust the path to match your package and service name
+#include "interfaces/srv/jointstarget.hpp"
 
 #include "Robot.hpp"
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
-void print_robot_status(double t,
-                        const blaze::StaticVector<double, 6UL> &position,
-                        const blaze::StaticVector<double, 6UL> &velocity,
-                        const blaze::StaticVector<double, 6UL> &current);
 
-class RobotNode : public rclcpp::Node
+// Declare your enum class
+enum class CtrlMode : int
 {
+  Config = 0x00,
+  Manual = 0x01,
+  Position = 0x02,
+  Velocity = 0x03,
+};
+
+class RobotNode : public QWidget, public rclcpp::Node, public CTRobot
+{
+  Q_OBJECT
+
 public:
-  RobotNode() : Node("ctr_robot"), m_count(0)
+  explicit RobotNode(QWidget *parent = nullptr) : QWidget(parent), rclcpp::Node("ctr_robot")
   {
-    // declare_parameters();
     m_flag_use_target_action = true;
-    setup_and_initialize_robot();
-    setup_ros_interfaces();
-    // setup_parameter_callback();
+    // declare_parameters();
+    initGui();
+    initRosInterfaces();
+    startRobotCommunication(m_sample_time);
+  }
+
+  void keyPressEvent(QKeyEvent *event) override
+  {
+    m_keysPressed.insert(event->key()); // Store pressed key
+  }
+
+  void keyReleaseEvent(QKeyEvent *event) override
+  {
+    m_keysPressed.remove(event->key()); // Remove key when released
+  }
+
+signals: // Functions declared (Qt specific)
+  void dataReceived(QString m1_v1, QString m1_v2, QString m1_v3, QString m2_v1, QString m2_v2, QString m2_v3, QString m3_v1, QString m3_v2, QString m3_v3, QString m4_v1, QString m4_v2, QString m4_v3);
+  void update_enable_button_Text(QString text);     // Signal to update button text
+  void update_wrench_pos_button_Text(QString text); // Signal to update button text
+  void update_lock_button_Text(QString text);       // Signal to update button text
+
+private slots: // Functions that receive and handle signals - can be connected to signals (Qt specific)
+  void updateLabel(QString m1_v1, QString m1_v2, QString m1_v3, QString m2_v1, QString m2_v2, QString m2_v3, QString m3_v1, QString m3_v2, QString m3_v3, QString m4_v1, QString m4_v2, QString m4_v3)
+  {
+    QString text = QString("          Inr Rot  |  Inr Trn  |  Mdl Rot  |  Mdl Trn\n"
+                           "Position: %1  |  %2   |   %3   |   %4\n"
+                           "Velocity: %5  |  %6   |   %7   |   %8\n"
+                           "Current:  %9  |  %10   |   %11   |   %12")
+                       .arg(m1_v1)
+                       .arg(m2_v1)
+                       .arg(m3_v1)
+                       .arg(m4_v1)
+                       .arg(m1_v2)
+                       .arg(m2_v2)
+                       .arg(m3_v2)
+                       .arg(m4_v2)
+                       .arg(m1_v3)
+                       .arg(m2_v3)
+                       .arg(m3_v3)
+                       .arg(m4_v3);
+
+    mp_label->setText(text);
+  }
+
+  //
+  void toggleEnable()
+  {
+    if (!m_flag_enabled)
+      enableOperation(true);
+    else
+      enableOperation(false);
+  }
+
+  //
+  void findEncoders()
+  {
+    QtConcurrent::run([this]()
+                      {
+                        mp_option0->setChecked(true);
+                        findTransEncoders(); // This is the blocking function
+                      });
+
+    // mp_option0->setChecked(true);
+    // findTransEncoders();
+  }
+
+  //
+  void positionColletsToWrench()
+  {
+    QtConcurrent::run([this]()
+                      {
+      mp_option0->setChecked(true);
+
+      if (!m_ready_to_proceed)
+      {
+        blaze::StaticVector<bool, 4UL> status;
+        getEncoderStatus(status); // updates encoders set flag
+        if (true)                 // (status[1] * status[3])                                           // check if linear encoders are set
+        {
+          m_logger->info("Preparing to position wrench");
+          blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
+          blaze::StaticVector<double, 4UL> max_vel = {60.00 * M_PI / 180.00, 10.00 / 1000.00, 60.00 * M_PI / 180.00, 10.00 / 1000.00};   // [deg/s] and [mm/s]
+          blaze::StaticVector<double, 4UL> negative = {200.0, 400.0, 200.0, 400.0};
+          blaze::StaticVector<double, 4UL> positive = {200.0, 400.0, 200.0, 400.0};
+
+          setOperationMode(OpMode::PositionProfile);
+          setProfileParams(max_vel, max_dcc, max_dcc);
+          setMaxTorque(negative, positive);
+          enableOperation(true);
+
+          // set_target_position(m_pos_prewrench);
+          setTargetPos({m_x[0], m_pos_prewrench[1], m_x[2], m_pos_prewrench[3]});
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          m_logger->info("Preparing done - please insert the wrench");
+        }
+      }
+      else if (m_ready_to_proceed)
+      {
+        blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
+        blaze::StaticVector<double, 4UL> max_vel = {60.00 * M_PI / 180.00, 10.00 / 1000.00, 60.00 * M_PI / 180.00, 10.00 / 1000.00};   // [deg/s] and [mm/s]
+        blaze::StaticVector<double, 4UL> negative = {400.0, 250.0, 400.0, 250.0};
+        blaze::StaticVector<double, 4UL> positive = {400.0, 250.0, 400.0, 250.0};
+        blaze::StaticVector<double, 4UL> temp;
+
+        m_logger->info("Positioning wrench");
+        blaze::StaticVector<bool, 4UL> reach;
+        blaze::StaticVector<bool, 4UL> status;
+        getEncoderStatus(status); // updates encoders set flag
+        if (true)                 // (status[1] * status[3])                                           // check if linear encoders are set
+        {
+          setOperationMode(OpMode::PositionProfile);
+          setProfileParams(max_vel, max_dcc, max_dcc);
+          setMaxTorque(negative, positive);
+          enableOperation(true);
+
+          setTargetPos({m_x[0], m_pos_wrench[1] + 0.006, m_x[2], m_pos_wrench[3] - 0.004});
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          getReachedStatus(reach);
+          while (!(reach[1] && reach[3]))
+          {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            getReachedStatus(reach);
+          }
+
+          temp[0] = m_x[0] - 5.0 * M_PI;
+          temp[1] = m_pos_wrench[1];
+          temp[2] = m_x[2] + 5.0 * M_PI;
+          temp[3] = m_pos_wrench[3];
+          int counter = 1;
+
+          setTargetPos(temp);
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          getReachedStatus(reach);
+          while (!(reach[1] && reach[3]))
+          {
+            if (counter == 1)
+            {
+              temp[0] = m_x[0] - 5.0 * M_PI;
+              temp[2] = m_x[2] + 5.0 * M_PI;
+              setTargetPos(temp);
+              std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+            }
+            else
+            {
+              temp[0] = m_x[0] + 5.0 * M_PI;
+              temp[2] = m_x[2] - 5.0 * M_PI;
+              setTargetPos(temp);
+              std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            counter = counter * -1;
+
+            getReachedStatus(reach);
+          }
+          setTargetPos(m_x);
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          m_logger->info("Collet nut is in wrnech socket");
+          m_logger->info("Tightening the nut");
+
+          temp = m_x;
+          temp[0] = temp[0] - 5.0 * M_PI;
+          temp[2] = temp[2] + 5.0 * M_PI;
+          setTargetPos(temp);
+          while (!(m_current[0] < -390 && m_current[2] > 390))
+          {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          }
+          setTargetPos(m_x);
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          m_logger->info("Positioning wrench done");
+        }
+      } });
+  }
+
+  //
+  void lockCollets()
+  {
+    QtConcurrent::run([this]()
+                      {
+    mp_option0->setChecked(true);
+    m_logger->info("Locking collets");
+    blaze::StaticVector<bool, 4UL> reach;
+    if (true) // (status[1] * status[3])                                           // check if linear encoders are set
+    {
+      blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
+      blaze::StaticVector<double, 4UL> max_vel = {100.00 * M_PI / 20.00, 0.50 / 1000.00, 100.00 * M_PI / 20.00, 0.50 / 1000.00};     // [deg/s] and [mm/s]
+      blaze::StaticVector<double, 4UL> negative = {400.0, 300.0, 400.0, 300.0};
+      blaze::StaticVector<double, 4UL> positive = {400.0, 300.0, 400.0, 300.0};
+
+      setOperationMode(OpMode::PositionProfile);
+      setProfileParams(max_vel, max_dcc, max_dcc);
+      setMaxTorque(negative, positive);
+      enableOperation(true);
+
+      // set_target_position(m_pos_prewrench);
+      setTargetPos({m_x[0] - 10 * M_PI, m_x[1] - 0.0015, m_x[2] + 10 * M_PI, m_x[3] + 0.0015}); // *********** the parameters must be adjusted based on screw lead *********
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+      getReachedStatus(reach);
+      while (!(reach[1] && reach[3] && m_current[0] < -390 && m_current[2] > 390))
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        getReachedStatus(reach);
+      }
+      setTargetPos(m_x);
+      m_logger->info("Collets Locked");
+    } });
+  }
+
+  //
+  void unlockCollets()
+  {
+    QtConcurrent::run([this]()
+                      {
+    mp_option0->setChecked(true);
+    m_logger->info("Unlocking collets");
+    blaze::StaticVector<bool, 4UL> reach;
+    if (true) // (status[1] * status[3])                                           // check if linear encoders are set
+    {
+      blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
+      blaze::StaticVector<double, 4UL> max_vel = {100.00 * M_PI / 20.00, 0.50 / 1000.00, 100.00 * M_PI / 20.00, 0.50 / 1000.00};     // [deg/s] and [mm/s]
+      blaze::StaticVector<double, 4UL> negative = {1000.0, 220.0, 1000.0, 220.0};
+      blaze::StaticVector<double, 4UL> positive = {1000.0, 220.0, 1000.0, 220.0};
+
+      setOperationMode(OpMode::PositionProfile);
+      setProfileParams(max_vel, max_dcc, max_dcc);
+      setMaxTorque(negative, positive);
+      enableOperation(true);
+
+      // set_target_position(m_pos_prewrench);
+      setTargetPos({m_x[0] + 4 * M_PI, m_x[1] + 0.0015, m_x[2] - 4 * M_PI, m_x[3] - 0.0015}); // *********** the parameters must be adjusted based on screw lead *********
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+      getReachedStatus(reach);
+      while (!(reach[0] && reach[1] && reach[2] && reach[3]))
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        getReachedStatus(reach);
+      }
+      m_logger->info("Collets unlocked");
+    } });
+  }
+
+  //
+  void onCtrlModeSelected()
+  {
+    QRadioButton *selectedButton = qobject_cast<QRadioButton *>(sender());
+    if (selectedButton && selectedButton->isChecked())
+    {
+      QString selectedText = selectedButton->text();
+      if (selectedText == "Config")
+      {
+        m_mode = CtrlMode::Config;
+        RCLCPP_INFO(this->get_logger(), "Selected Mode: Config");
+      }
+      else if (selectedText == "Manual")
+      {
+        setOperationMode(OpMode::VelocityProfile);
+        // setProfileParams(max_vel, max_dcc, max_dcc);
+        // setMaxTorque(negative, positive);
+        m_mode = CtrlMode::Manual;
+        RCLCPP_INFO(this->get_logger(), "Selected Mode: Manual");
+      }
+      else if (selectedText == "Position")
+      {
+        setOperationMode(OpMode::PositionProfile);
+        m_mode = CtrlMode::Position;
+        RCLCPP_INFO(this->get_logger(), "Selected Mode: Position");
+      }
+      else if (selectedText == "Velocity")
+      {
+        setOperationMode(OpMode::VelocityProfile);
+        m_mode = CtrlMode::Velocity;
+        RCLCPP_INFO(this->get_logger(), "Selected Mode: Velocity");
+      }
+    }
   }
 
 private:
   // Declare ROS parameters
+
   void declare_parameters()
   {
     declare_parameter<double>("Kp", 4.60);
@@ -46,72 +341,41 @@ private:
     m_ki = get_parameter("Ki").as_double();
   }
 
-  // Setup and initialize the robot
-  void setup_and_initialize_robot()
-  {
-    OpMode operation_mode = OpMode::VelocityProfile;
-    bool position_limit = false;
-    int sample_time = 50; //[ms]
-
-    m_robot = std::make_unique<CTRobot>(sample_time, operation_mode, position_limit);
-    m_robot->startFiber();
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    if (m_robot->getSwitchStatus())
-    {
-      // m_robot->Enable_Operation(true);
-    }
-    // m_robot->Set_Target_Position({0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
-    // std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-    // if (m_robot->Get_Controller_Switch_Status())
-    // {
-    //   m_robot->Enable_Operation(true);
-    // }
-
-    // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    // m_robot->set_target_position({0.0, 0.0, 0.0, 0.0});
-    // std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    // m_robot->Wait_until_reach();
-    // std::this_thread::sleep_for(std::chrono::milliseconds(500));
-  }
-
   // Setup ROS interfaces including publishers, subscribers, services, and timers
-  void setup_ros_interfaces()
+  void initRosInterfaces()
   {
     // Create callback groups to ensure mutually exclusive callbacks
-    m_callback_group_pub1 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    m_callback_group_sub1 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    m_callback_group_homing = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    m_callback_group_read = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    m_callback_group_read_2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    m_callback_group_watchdog_2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    m_cbGroup1 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    m_cbGroup2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    m_cbGroup3 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    m_cbGroup4 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    m_cbGroup5 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    m_cbGroup7 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    m_cbGroup8 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     // Subscriber to receive target joint configurations
     auto subs_options_1 = rclcpp::SubscriptionOptions();
-    subs_options_1.callback_group = m_callback_group_sub1;
-    m_subscription_target = create_subscription<interfaces::msg::Jointspace>("joints_space/target", 10, std::bind(&RobotNode::target_callback, this, _1), subs_options_1);
+    subs_options_1.callback_group = m_cbGroup2;
+    m_subscription_target = create_subscription<interfaces::msg::Jointspace>("joints_space/target", 10, std::bind(&RobotNode::jointSpaceTarget_callback, this, _1), subs_options_1);
 
     // Publisher to broadcast the robot status
     m_publisher_status = create_publisher<interfaces::msg::Status>("robot_status", 10);
     // Publisher to broadcast the current joint configurations
     m_publisher_joints = create_publisher<interfaces::msg::Jointspace>("/joint_space/feedback", 10);
-    // configing service 
-    m_homing_service = this->create_service<interfaces::srv::Config>("config", std::bind(&RobotNode::manual_callback, this, _1, _2));
-    //
-    m_target_service = this->create_service<interfaces::srv::Jointstarget>("joints_space/target", std::bind(&RobotNode::handle_service_request, this, std::placeholders::_1, std::placeholders::_2));
+    // configing service
+    m_homing_service = this->create_service<interfaces::srv::Config>("config", std::bind(&RobotNode::configService_callback, this, _1, _2));
 
     // Low-level control loop timer
-    auto control_sample_time = std::chrono::microseconds(static_cast<int>(m_control_sample_time * 1.00E6));
-    m_control_loop_timer = create_wall_timer(control_sample_time, std::bind(&RobotNode::velocity_command_loop, this), m_callback_group_pub1);
+    auto control_sample_time = std::chrono::milliseconds(static_cast<int>(50));
+    m_control_loop_timer = create_wall_timer(control_sample_time, std::bind(&RobotNode::targetCommand_timerCallback, this), m_cbGroup1);
     // Timer to read joint configurations periodically
-    m_joints_config_timer = create_wall_timer(50ms, std::bind(&RobotNode::joints_config_callback, this), m_callback_group_read);
+    m_joints_config_timer = create_wall_timer(20ms, std::bind(&RobotNode::jointsConfig_timerCallback, this), m_cbGroup4);
     // Timer to read robot status periodically
-    m_read_robot_timer = create_wall_timer(100ms, std::bind(&RobotNode::robot_status_callback, this), m_callback_group_read_2);
+    m_read_robot_timer = create_wall_timer(100ms, std::bind(&RobotNode::robotStatus_timerCallback, this), m_cbGroup5);
     // Initialize the watchdog timer
-    m_watchdog_timer_target = this->create_wall_timer(2000ms, std::bind(&RobotNode::check_target_publisher_alive, this), m_callback_group_watchdog_2);
+    m_watchdog_timer_target = this->create_wall_timer(2000ms, std::bind(&RobotNode::check_target_publisher_alive, this), m_cbGroup7);
+
+    m_read_key_timer = this->create_wall_timer(10ms, std::bind(&RobotNode::keyboardRead_timerCallback, this), m_cbGroup8);
 
     // // Action Server Setup
     // m_action_server = rclcpp_action::create_server<interfaces::action::Jointstarget>(
@@ -121,8 +385,8 @@ private:
     //     std::bind(&RobotNode::handle_accepted, this, _1));
   }
 
-  // Setup ROS parameter callback function to handle dynamic parameter (Kp, Ki) updates
-  void setup_parameter_callback()
+  // Setup ROS parameter callback function to handle dynamic parameter (Kp, Ki) updates - ** TEMP ** - needs to be further developed
+  void rosParameterUpdate_callback()
   {
     auto param_callback = [this](const std::vector<rclcpp::Parameter> &parameters) -> rcl_interfaces::msg::SetParametersResult
     {
@@ -155,22 +419,119 @@ private:
     m_param_callback_handle = add_on_set_parameters_callback(param_callback);
   }
 
+  //
+  void initGui()
+  {
+    setWindowTitle("Handheld CTR");
+    setGeometry(200, 200, 400, 300);
+    setFocusPolicy(Qt::StrongFocus); // Ensure QT captures arrow keys
+
+    // Create Layout
+    QVBoxLayout *layout = new QVBoxLayout(this);
+
+    // Create Label
+    mp_label = new QLabel("Waiting for data...", this);
+    mp_label->setAlignment(Qt::AlignLeft);
+    layout->addWidget(mp_label);
+
+    // radio button group
+    mp_bulletSelectorGroup = new QGroupBox("Control Mode", this);
+    mp_bulletLayout = new QVBoxLayout();
+    mp_option0 = new QRadioButton("Config", this);
+    mp_option1 = new QRadioButton("Manual", this);
+    mp_option2 = new QRadioButton("Velocity", this);
+    mp_option3 = new QRadioButton("Position", this);
+    mp_option0->setChecked(true);
+
+    mp_bulletLayout->addWidget(mp_option0);
+    mp_bulletLayout->addWidget(mp_option1);
+    mp_bulletLayout->addWidget(mp_option2);
+    mp_bulletLayout->addWidget(mp_option3);
+    mp_bulletSelectorGroup->setLayout(mp_bulletLayout);
+    layout->addWidget(mp_bulletSelectorGroup);
+
+    // Create Buttons
+    QPushButton *enable_button = new QPushButton("Disable", this);
+    QPushButton *find_button = new QPushButton("Find", this);
+    QPushButton *wrench_pos_button = new QPushButton("Prepare to Position Wrench", this);
+    QPushButton *unlock_button = new QPushButton("Unlock", this);
+    QPushButton *lock_button = new QPushButton("Lock", this);
+
+    // Arrange Unlock & Lock buttons side by side
+    QHBoxLayout *buttonRow = new QHBoxLayout();
+    buttonRow->addWidget(unlock_button);
+    buttonRow->addWidget(lock_button);
+
+    // Add buttons to layout
+    layout->addWidget(enable_button);
+    layout->addWidget(find_button);
+    layout->addWidget(wrench_pos_button);
+    layout->addLayout(buttonRow);
+
+    setLayout(layout); // Apply layout to the window
+
+    // Connect buttons to ROS2 services
+    connect(enable_button, &QPushButton::clicked, this, &RobotNode::toggleEnable);
+    connect(find_button, &QPushButton::clicked, this, &RobotNode::findEncoders);
+    connect(wrench_pos_button, &QPushButton::clicked, this, &RobotNode::positionColletsToWrench);
+    connect(lock_button, &QPushButton::clicked, this, &RobotNode::lockCollets);
+    connect(unlock_button, &QPushButton::clicked, this, &RobotNode::unlockCollets);
+
+    // Signal connections for updating GUI elements based on ROS2 data
+    connect(this, &RobotNode::update_enable_button_Text, enable_button, &QPushButton::setText);
+    connect(this, &RobotNode::update_wrench_pos_button_Text, wrench_pos_button, &QPushButton::setText);
+    connect(this, &RobotNode::dataReceived, this, &RobotNode::updateLabel);
+
+    connect(mp_option0, &QRadioButton::toggled, this, &RobotNode::onCtrlModeSelected);
+    connect(mp_option1, &QRadioButton::toggled, this, &RobotNode::onCtrlModeSelected);
+    connect(mp_option2, &QRadioButton::toggled, this, &RobotNode::onCtrlModeSelected);
+    connect(mp_option3, &QRadioButton::toggled, this, &RobotNode::onCtrlModeSelected);
+  }
+
+  //
+  void keyboardRead_timerCallback()
+  {
+    // Reset velocity vector
+    m_xdot_manual = {0.0, 0.0, 0.0, 0.0};
+
+    // Check for active keys and update movement values
+    if (m_keysPressed.contains(Qt::Key_Right))
+      m_xdot_manual[0] = 1.0;
+    if (m_keysPressed.contains(Qt::Key_Left))
+      m_xdot_manual[0] = -1.0;
+    if (m_keysPressed.contains(Qt::Key_Up))
+      m_xdot_manual[1] = 0.01;
+    if (m_keysPressed.contains(Qt::Key_Down))
+      m_xdot_manual[1] = -0.01;
+    if (m_keysPressed.contains(Qt::Key_D))
+      m_xdot_manual[2] = 1.0;
+    if (m_keysPressed.contains(Qt::Key_A))
+      m_xdot_manual[2] = -1.0;
+    if (m_keysPressed.contains(Qt::Key_W))
+      m_xdot_manual[3] = 0.01;
+    if (m_keysPressed.contains(Qt::Key_S))
+      m_xdot_manual[3] = -0.01;
+
+    // Send updated movement command
+    // std::cout << "vel: " << m_xdot_manual[0] << " ," << m_xdot_manual[1] << " ," << m_xdot_manual[2] << " ," << m_xdot_manual[3] << std::endl;
+  }
+
   // Timer callback function to read the current joint configurations and publish them
-  void robot_status_callback()
+  void robotStatus_timerCallback()
   {
     auto msg = interfaces::msg::Status();
     blaze::StaticVector<bool, 4UL> status;
-    m_robot->getEnableStatus(status);
+    m_flag_enabled = getEnableStatus(status);
     msg.enable[0] = status[0];
     msg.enable[1] = status[1];
     msg.enable[2] = status[2];
     msg.enable[3] = status[3];
-    m_robot->getEncoderStatus(status);
+    getEncoderStatus(status);
     msg.encoder[0] = status[0];
     msg.encoder[1] = status[1];
     msg.encoder[2] = status[2];
     msg.encoder[3] = status[3];
-    m_robot->getReachedStatus(status);
+    getReachedStatus(status);
     msg.reached[0] = status[0];
     msg.reached[1] = status[1];
     msg.reached[2] = status[2];
@@ -188,123 +549,113 @@ private:
     msg.unlocked = m_unlocked;
     msg.locked = m_locked;
     m_publisher_status->publish(msg);
+
+    // update GUI button texts
+    emit update_enable_button_Text(m_flag_enabled ? "Disable" : "Enable");
+    emit update_wrench_pos_button_Text(m_ready_to_proceed ? "Position Wrench" : "Prepare to Position Wrench");
+    emit update_lock_button_Text(m_unlocked ? "lock" : "unlock");
   }
 
   // Timer callback function to read the current joint configurations and publish them
-  void joints_config_callback()
+  void jointsConfig_timerCallback()
   {
     auto msg = interfaces::msg::Jointspace();
-    m_robot->getPosVelCur(m_x, m_x_dot, m_c);
+    getPos(m_x);
+    getVel(m_xdot);
+    getCurrent(m_current);
+
     msg.position[0UL] = m_x[0UL];
     msg.position[1UL] = m_x[1UL];
     msg.position[2UL] = m_x[2UL];
     msg.position[3UL] = m_x[3UL];
-    msg.velocity[0UL] = m_x_dot[0UL];
-    msg.velocity[1UL] = m_x_dot[1UL];
-    msg.velocity[2UL] = m_x_dot[2UL];
-    msg.velocity[3UL] = m_x_dot[3UL];
-    msg.current[0UL] = m_c[0UL];
-    msg.current[1UL] = m_c[1UL];
-    msg.current[2UL] = m_c[2UL];
-    msg.current[3UL] = m_c[3UL];
+    msg.velocity[0UL] = m_xdot[0UL];
+    msg.velocity[1UL] = m_xdot[1UL];
+    msg.velocity[2UL] = m_xdot[2UL];
+    msg.velocity[3UL] = m_xdot[3UL];
+    msg.current[0UL] = m_current[0UL];
+    msg.current[1UL] = m_current[1UL];
+    msg.current[2UL] = m_current[2UL];
+    msg.current[3UL] = m_current[3UL];
     m_publisher_joints->publish(msg);
+
+    emit dataReceived(QString::number(m_x[0], 'f', 4), QString::number(m_xdot[0], 'f', 4), QString::number(m_current[0], 'f', 1),
+                      QString::number(m_x[1], 'f', 4), QString::number(m_xdot[1], 'f', 4), QString::number(m_current[1], 'f', 1),
+                      QString::number(m_x[2], 'f', 4), QString::number(m_xdot[2], 'f', 4), QString::number(m_current[2], 'f', 1),
+                      QString::number(m_x[3], 'f', 4), QString::number(m_xdot[3], 'f', 4), QString::number(m_current[3], 'f', 1));
   }
 
   // Timer callback function for joint space control loop
-  void joint_space_control_callback()
+  void jointSpaceControl_callback()
   {
     blaze::StaticVector<double, 4L> q_dot_command, x_des, x_dot_des;
 
     if (!m_flag_manual)
     {
       x_des = m_x_des;
-      x_dot_des = m_x_dot_des;
-      joint_space_control_step(x_des, x_dot_des, q_dot_command);
-      // m_robot->Set_Target_Velocity(q_dot_command);
+      x_dot_des = m_xdot_des;
+
+      // joint_space_control_step
+      m_x_error = x_des - m_x;
+      m_x_error_int = m_x_error_int + m_x_error * m_sample_time * 1e-3;
+      q_dot_command = m_x_error * m_kp + m_x_error_int * m_ki + x_dot_des;
+
+      // joint_space_control_step(x_des, x_dot_des, q_dot_command);
+      // Set_Target_Velocity(q_dot_command);
     }
   }
 
-  // Perform a control step in joint space
-  void joint_space_control_step(const blaze::StaticVector<double, 4UL> x_des, const blaze::StaticVector<double, 4UL> x_dot_des, blaze::StaticVector<double, 4UL> &q_dot_command)
+  // Set the target position/velocity in the robot - Depreciated
+  void targetCommand_timerCallback()
   {
-    m_x_error = x_des - m_x;
-    m_x_error_int = m_x_error_int + m_x_error * m_control_sample_time;
-    q_dot_command = m_x_error * m_kp + m_x_error_int * m_ki + x_dot_des;
+    switch (m_mode)
+    {
+    case CtrlMode::Manual:
+      setTargetVel(m_xdot_manual);
+      break;
+    case CtrlMode::Velocity:
+      setTargetVel(m_xdot_des);
+      break;
+    case CtrlMode::Position:
+      setTargetPos(m_x_des);
+      break;
+    }
   }
-
-  // Set the target position in the robot - Depreciated
-  void position_command_loop()
-  {
-    m_robot->setTargetPos(m_x_des);
-  }
-
-  // Set the target position in the robot - Depreciated
-  void velocity_command_loop()
-  {
-    // m_robot->set_target_velocity(m_x_dot_des);
-  }
-
-  // // Perform system identification - Depreciated
-  // void system_identification_loop()
-  // {
-  //   m_robot->set_target_velocity(m_x_dot_des);
-  //   std::cout << "\r" << std::dec << std::fixed << std::setprecision(3) << "q2_dot:" << m_x_dot_des[2UL] << std::endl;
-  // }
 
   // Subscription callback function to updates the target joint positions and velocities
-  void target_callback(const interfaces::msg::Jointspace::ConstSharedPtr msg)
+  void jointSpaceTarget_callback(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
     if (!m_flag_manual && !m_flag_use_target_action)
     {
       m_targpublisher_alive_tmep = true;
       m_x_des = blaze::StaticVector<double, 4UL>(0.00);
 
-      m_x_des[0UL] = msg->position[0UL];
-      m_x_des[1UL] = msg->position[1UL];
-      m_x_des[2UL] = msg->position[2UL];
-      m_x_des[3UL] = msg->position[3UL];
+      switch (m_mode)
+      {
+      case CtrlMode::Velocity:
+        m_xdot_des[0UL] = msg->velocity[0UL];
+        m_xdot_des[1UL] = msg->velocity[1UL];
+        m_xdot_des[2UL] = msg->velocity[2UL];
+        m_xdot_des[3UL] = msg->velocity[3UL];
+        break;
+      case CtrlMode::Position:
+        m_x_des[0UL] = msg->position[0UL];
+        m_x_des[1UL] = msg->position[1UL];
+        m_x_des[2UL] = msg->position[2UL];
+        m_x_des[3UL] = msg->position[3UL];
+        break;
+      }
     }
-
-    // RCLCPP_INFO(this->get_logger(), "New Target");
-  }
-
-  //
-  void handle_service_request(
-      const std::shared_ptr<interfaces::srv::Jointstarget::Request> request,
-      std::shared_ptr<interfaces::srv::Jointstarget::Response> response)
-  {
-    if (!m_flag_manual && m_flag_use_target_action)
-    {
-      m_x_des[0UL] = request->position[0UL];
-      m_x_des[1UL] = request->position[1UL];
-      m_x_des[2UL] = request->position[2UL];
-      m_x_des[3UL] = request->position[3UL];
-    }
-    else
-    {
-      RCLCPP_INFO(this->get_logger(), "Target is not accepted in manual mode");
-    }
-
-    RCLCPP_INFO(this->get_logger(), "Joints target received: R1: %0.1f [deg]  T1: %0.1f [mm]  R2: %0.1f [deg]  T2: %0.1f [mm]",
-                m_x_des[0UL] * 360 / M_PI, m_x_des[1UL] * 1e3, m_x_des[2UL] * 360 / M_PI, m_x_des[3UL] * 1e3);
-
-    RCLCPP_INFO(this->get_logger(), "Waiting");
-    rclcpp::sleep_for(200ms);
-    m_robot->waitUntilReach();
-    RCLCPP_INFO(this->get_logger(), "Joints target reached");
-    response->success = true;
-    response->message = "Joints target reached!";
   }
 
   // Subscription callback function updates the current catheter tip status using EMTracker topic
   void current_tool_callback(const interfaces::msg::Taskspace::ConstSharedPtr msg)
   {
-    m_x_catheter = {msg->p[1UL] * 1.00E3, -msg->p[0UL] * 1.00E3, msg->p[2UL] * 1.00E3};
+    m_x_tip = {msg->p[1UL] * 1.00E3, -msg->p[0UL] * 1.00E3, msg->p[2UL] * 1.00E3};
     m_emtracker_alive_tmep = true;
   }
 
   // Service callback to perform the homing procedure
-  void manual_callback(const std::shared_ptr<interfaces::srv::Config::Request> request, std::shared_ptr<interfaces::srv::Config::Response> response)
+  void configService_callback(const std::shared_ptr<interfaces::srv::Config::Request> request, std::shared_ptr<interfaces::srv::Config::Response> response)
   {
     if (request->command == "ON")
     {
@@ -325,238 +676,34 @@ private:
       RCLCPP_INFO(this->get_logger(), "Manual mode deactivated");
     }
 
-    else if (request->command == "enable")
-    {
-      m_robot->enableOperation(true);
-      // m_robot->Set_Zero_Position(blaze::StaticVector<double, 4UL>(0.00));
-      response->success = true;
-      response->message = "enabled";
-      RCLCPP_INFO(this->get_logger(), "enabled");
-    }
+    // else if (request->command == "enable")
+    // {
+    //   enableOperation(true);
+    //   // Set_Zero_Position(blaze::StaticVector<double, 4UL>(0.00));
+    //   response->success = true;
+    //   response->message = "enabled";
+    //   RCLCPP_INFO(this->get_logger(), "enabled");
+    // }
 
-    else if (request->command == "disable")
-    {
-      m_robot->enableOperation(false);
-      m_flag_manual = false;
-      response->success = true;
-      response->message = "disabled";
-      RCLCPP_INFO(this->get_logger(), "disabled");
-    }
-
-    else if (request->command == "find")
-    {
-      RCLCPP_INFO(this->get_logger(), "finding encoders");
-      m_robot->findTransEncoders();
-
-      response->success = true;
-      response->message = "encoders found";
-      RCLCPP_INFO(this->get_logger(), "encoders found");
-    }
-
-    else if (request->command == "prepare_position_wrench")
-    {
-      RCLCPP_INFO(this->get_logger(), "preparing to position_wrench");
-
-      blaze::StaticVector<bool, 4UL> status;
-      m_robot->getEncoderStatus(status); // updates encoders set flag
-      if (true)                          // (status[1] * status[3])                                           // check if linear encoders are set
-      {
-        blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
-        blaze::StaticVector<double, 4UL> max_vel = {60.00 * M_PI / 180.00, 10.00 / 1000.00, 60.00 * M_PI / 180.00, 10.00 / 1000.00};   // [deg/s] and [mm/s]
-        blaze::StaticVector<double, 4UL> negative = {200.0, 400.0, 200.0, 400.0};
-        blaze::StaticVector<double, 4UL> positive = {200.0, 400.0, 200.0, 400.0};
-
-        m_robot->setOperationMode(OpMode::PositionProfile);
-        m_robot->setProfileParams(max_vel, max_dcc, max_dcc);
-        m_robot->setMaxTorque(negative, positive);
-        m_robot->enableOperation(true);
-
-        // m_robot->set_target_position(m_pos_prewrench);
-        m_robot->setTargetPos({m_x[0], m_pos_prewrench[1], m_x[2], m_pos_prewrench[3]});
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-        response->success = true;
-        response->message = "ready to position wrench";
-      }
-      else
-      {
-        response->success = false;
-        response->message = "encoder must be found before positioning wrench";
-      }
-    }
-
-    else if (request->command == "position_wrench")
-    {
-      blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
-      blaze::StaticVector<double, 4UL> max_vel = {60.00 * M_PI / 180.00, 10.00 / 1000.00, 60.00 * M_PI / 180.00, 10.00 / 1000.00};   // [deg/s] and [mm/s]
-      blaze::StaticVector<double, 4UL> negative = {400.0, 250.0, 400.0, 250.0};
-      blaze::StaticVector<double, 4UL> positive = {400.0, 250.0, 400.0, 250.0};
-      blaze::StaticVector<double, 4UL> temp;
-
-      RCLCPP_INFO(this->get_logger(), "positioning wrench");
-      blaze::StaticVector<bool, 4UL> reach;
-      blaze::StaticVector<bool, 4UL> status;
-      m_robot->getEncoderStatus(status); // updates encoders set flag
-      if (true)                          // (status[1] * status[3])                                           // check if linear encoders are set
-      {
-        m_robot->setOperationMode(OpMode::PositionProfile);
-        m_robot->setProfileParams(max_vel, max_dcc, max_dcc);
-        m_robot->setMaxTorque(negative, positive);
-        m_robot->enableOperation(true);
-
-        m_robot->setTargetPos({m_x[0], m_pos_wrench[1] + 0.006, m_x[2], m_pos_wrench[3] - 0.004});
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        m_robot->getReachedStatus(reach);
-        while (!(reach[1] && reach[3]))
-        {
-          std::this_thread::sleep_for(std::chrono::milliseconds(50));
-          m_robot->getReachedStatus(reach);
-        }
-        RCLCPP_INFO(this->get_logger(), "[Master] wrench position step one done");
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-        temp[0] = m_x[0] - 5.0 * M_PI;
-        temp[1] = m_pos_wrench[1];
-        temp[2] = m_x[2] + 5.0 * M_PI;
-        temp[3] = m_pos_wrench[3];
-        int counter = 1;
-
-        m_robot->setTargetPos(temp);
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        m_robot->getReachedStatus(reach);
-        while (!(reach[1] && reach[3]))
-        {
-          if (counter == 1)
-          {
-            temp[0] = m_x[0] - 5.0 * M_PI;
-            temp[2] = m_x[2] + 5.0 * M_PI;
-            m_robot->setTargetPos(temp);
-            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-          }
-          else
-          {
-            temp[0] = m_x[0] + 5.0 * M_PI;
-            temp[2] = m_x[2] - 5.0 * M_PI;
-            m_robot->setTargetPos(temp);
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-          }
-          counter = counter * -1;
-
-          m_robot->getReachedStatus(reach);
-        }
-        m_robot->setTargetPos(m_x);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        RCLCPP_INFO(this->get_logger(), "[Master] wrench position step two done");
-
-        temp = m_x;
-        temp[0] = temp[0] - 5.0 * M_PI;
-        temp[2] = temp[2] + 5.0 * M_PI;
-        m_robot->setTargetPos(temp);
-        while (!(m_c[0] < -390 && m_c[2] > 390))
-        {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        m_robot->setTargetPos(m_x);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        RCLCPP_INFO(this->get_logger(), "[Master] wrench position step three done");
-
-        response->success = true;
-        response->message = "wrench positioned";
-      }
-      else
-      {
-        response->success = false;
-        response->message = "wrench positioning error";
-      }
-    }
-
-    else if (request->command == "unlock")
-    {
-      RCLCPP_INFO(this->get_logger(), "unlocking");
-      blaze::StaticVector<bool, 4UL> reach;
-      if (true) // (status[1] * status[3])                                           // check if linear encoders are set
-      {
-        blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
-        blaze::StaticVector<double, 4UL> max_vel = {100.00 * M_PI / 20.00, 0.50 / 1000.00, 100.00 * M_PI / 20.00, 0.50 / 1000.00};     // [deg/s] and [mm/s]
-        blaze::StaticVector<double, 4UL> negative = {1000.0, 220.0, 1000.0, 220.0};
-        blaze::StaticVector<double, 4UL> positive = {1000.0, 220.0, 1000.0, 220.0};
-
-        m_robot->setOperationMode(OpMode::PositionProfile);
-        m_robot->setProfileParams(max_vel, max_dcc, max_dcc);
-        m_robot->setMaxTorque(negative, positive);
-        m_robot->enableOperation(true);
-
-        // m_robot->set_target_position(m_pos_prewrench);
-        m_robot->setTargetPos({m_x[0] + 4 * M_PI, m_x[1] + 0.0015, m_x[2] - 4 * M_PI, m_x[3] - 0.0015}); // *********** the parameters must be adjusted based on screw lead *********
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-        m_robot->getReachedStatus(reach);
-        while (!(reach[0] && reach[1] && reach[2] && reach[3]))
-        {
-          std::this_thread::sleep_for(std::chrono::milliseconds(50));
-          m_robot->getReachedStatus(reach);
-        }
-        m_unlocked = true;
-        response->success = true;
-        response->message = "unlocked";
-      }
-      else
-      {
-        response->success = false;
-        response->message = "unlocking error";
-      }
-    }
-
-    else if (request->command == "lock")
-    {
-      RCLCPP_INFO(this->get_logger(), "locking");
-      blaze::StaticVector<bool, 4UL> reach;
-      if (true) // (status[1] * status[3])                                           // check if linear encoders are set
-      {
-        blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
-        blaze::StaticVector<double, 4UL> max_vel = {100.00 * M_PI / 20.00, 0.50 / 1000.00, 100.00 * M_PI / 20.00, 0.50 / 1000.00};     // [deg/s] and [mm/s]
-        blaze::StaticVector<double, 4UL> negative = {400.0, 300.0, 400.0, 300.0};
-        blaze::StaticVector<double, 4UL> positive = {400.0, 300.0, 400.0, 300.0};
-
-        m_robot->setOperationMode(OpMode::PositionProfile);
-        m_robot->setProfileParams(max_vel, max_dcc, max_dcc);
-        m_robot->setMaxTorque(negative, positive);
-        m_robot->enableOperation(true);
-
-        // m_robot->set_target_position(m_pos_prewrench);
-        m_robot->setTargetPos({m_x[0] - 10 * M_PI, m_x[1] - 0.0015, m_x[2] + 10 * M_PI, m_x[3] + 0.0015}); // *********** the parameters must be adjusted based on screw lead *********
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-        m_robot->getReachedStatus(reach);
-        while (!(reach[1] && reach[3] && m_c[0] < -390 && m_c[2] > 390))
-        {
-          std::this_thread::sleep_for(std::chrono::milliseconds(50));
-          m_robot->getReachedStatus(reach);
-        }
-        m_robot->setTargetPos(m_x);
-
-        m_unlocked = false;
-        m_locked = true;
-        response->success = true;
-        response->message = "locked";
-      }
-      else
-      {
-        response->success = false;
-        response->message = "locking error";
-      }
-    }
+    // else if (request->command == "disable")
+    // {
+    //   enableOperation(false);
+    //   m_flag_manual = false;
+    //   response->success = true;
+    //   response->message = "disabled";
+    //   RCLCPP_INFO(this->get_logger(), "disabled");
+    // }
 
     else if (request->command == "move")
     {
       if (m_flag_manual)
       {
-        m_x_dot_des[0UL] = request->target[0UL];
-        m_x_dot_des[1UL] = request->target[1UL];
-        m_x_dot_des[2UL] = request->target[2UL];
-        m_x_dot_des[3UL] = request->target[3UL];
+        m_xdot_des[0UL] = request->target[0UL];
+        m_xdot_des[1UL] = request->target[1UL];
+        m_xdot_des[2UL] = request->target[2UL];
+        m_xdot_des[3UL] = request->target[3UL];
         response->success = true;
-        if (m_x_dot_des[0] == 0 && m_x_dot_des[1] == 0 && m_x_dot_des[2] == 0 && m_x_dot_des[3] == 0)
+        if (m_xdot_des[0] == 0 && m_xdot_des[1] == 0 && m_xdot_des[2] == 0 && m_xdot_des[3] == 0)
         {
           response->message = "Stopped";
         }
@@ -576,7 +723,7 @@ private:
     {
       if (m_flag_manual)
       {
-        // m_robot->Set_Zero_Position(blaze::StaticVector<double, 4UL>(0.00));
+        // Set_Zero_Position(blaze::StaticVector<double, 4UL>(0.00));
         m_x_des = blaze::StaticVector<double, 4UL>(0.00);
         response->success = true;
         response->message = "Home is set";
@@ -597,6 +744,22 @@ private:
       RCLCPP_WARN(this->get_logger(), "Invalid command: ", request->command);
       response->success = false;
       response->message = "Invalid command";
+    }
+  }
+
+  //
+  void handle_service_response(const rclcpp::Client<interfaces::srv::Config>::SharedFuture future)
+  {
+    // Get the result of the future object
+    auto response = future.get();
+
+    if (response->success)
+    {
+      RCLCPP_INFO(this->get_logger(), "Response: %s", response->message.c_str());
+    }
+    else
+    {
+      RCLCPP_ERROR(this->get_logger(), "Error: %s", response->message.c_str());
     }
   }
 
@@ -632,17 +795,22 @@ private:
     rate.sleep();
   }
 
-  size_t m_count;
-  // const double m_control_sample_time = 0.0025; //[s]
-  const double m_control_sample_time = 0.050; //[s]
-  double m_kp, m_ki = 0.00;
-  bool m_flag_manual, m_flag_use_target_action = false;
+  static constexpr int m_sample_time = 20; //[ms]
+  static constexpr blaze::StaticVector<double, 4> m_pos_prewrench = {0.0, 0.085, 0.0, 0.128};
+  static constexpr blaze::StaticVector<double, 4> m_pos_wrench = {0.0, 0.0750, 0.0, 0.1330};
+  bool m_flag_manual, m_flag_use_target_action, m_flag_enabled = false;
   bool m_emtracker_alive, m_emtracker_alive_tmep, m_targpublisher_alive, m_targpublisher_alive_tmep = false;
   bool m_ready_to_proceed, m_ready_to_unlock, m_unlocked, m_locked = false;
-  std::unique_ptr<CTRobot> m_robot;
+  double m_kp, m_ki = 0.00;
 
-  const blaze::StaticVector<double, 4> m_pos_prewrench = {0.0, 0.085, 0.0, 0.128};
-  const blaze::StaticVector<double, 4> m_pos_wrench = {0.0, 0.0750, 0.0, 0.1335};
+  // Qt related variables
+  QSet<int> m_keysPressed;
+  QLabel *mp_label;
+  QGroupBox *mp_bulletSelectorGroup;
+  QVBoxLayout *mp_bulletLayout;
+  QRadioButton *mp_option0, *mp_option1, *mp_option2, *mp_option3;
+
+  CtrlMode m_mode; // controller mode (manual, velocity, position)
 
   rclcpp::TimerBase::SharedPtr m_watchdog_timer_target;
   rclcpp::TimerBase::SharedPtr m_read_robot_timer;
@@ -650,126 +818,45 @@ private:
   rclcpp::TimerBase::SharedPtr m_control_loop_timer;
   rclcpp::TimerBase::SharedPtr m_position_control_timer;
   rclcpp::TimerBase::SharedPtr m_system_identification_timer;
+  rclcpp::TimerBase::SharedPtr m_read_key_timer;
   rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_joints;
   rclcpp::Publisher<interfaces::msg::Status>::SharedPtr m_publisher_status;
   rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subscription_target;
   rclcpp::Service<interfaces::srv::Config>::SharedPtr m_homing_service;
   // rclcpp_action::Server<interfaces::action::Jointstarget>::SharedPtr m_action_server;
-  rclcpp::Service<interfaces::srv::Jointstarget>::SharedPtr m_target_service;
 
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_pub1;
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_sub1;
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_homing;
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_read;
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_read_2;
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_watchdog_1;
-  rclcpp::CallbackGroup::SharedPtr m_callback_group_watchdog_2;
+  rclcpp::CallbackGroup::SharedPtr m_cbGroup1, m_cbGroup2, m_cbGroup3, m_cbGroup4, m_cbGroup5, m_cbGroup6, m_cbGroup7, m_cbGroup8;
+
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr m_param_callback_handle;
 
-  blaze::StaticVector<double, 4UL> m_x_abs;
-  blaze::StaticVector<double, 4UL> m_x;
-  blaze::StaticVector<double, 4UL> m_x_dot;
-  blaze::StaticVector<double, 4UL> m_c;
-  blaze::StaticVector<double, 4UL> m_x_des; // in SI units
-  blaze::StaticVector<double, 4UL> m_x_error;
-  blaze::StaticVector<double, 4UL> m_x_error_int;
-  blaze::StaticVector<double, 4UL> m_x_error_dot;
-  blaze::StaticVector<double, 4UL> m_x_dot_forward;
-  blaze::StaticVector<double, 4UL> m_x_dot_des;
-  blaze::StaticVector<double, 4UL> m_x_des_home;
-  blaze::StaticVector<double, 3UL> m_x_catheter;
+  blaze::StaticVector<double, 4UL> m_x, m_x_des, m_x_error, m_x_abs;                                // in SI units
+  blaze::StaticVector<double, 4UL> m_xdot, m_xdot_manual, m_xdot_des, m_xdot_error, m_xdot_forward; // in SI units
+  blaze::StaticVector<double, 4UL> m_x_error_int;                                                   // in SI units
+  blaze::StaticVector<double, 4UL> m_current;
+  blaze::StaticVector<double, 3UL> m_x_tip;
 };
+
+#include "robot_node.moc"
 
 int main(int argc, char *argv[])
 {
   rclcpp::init(argc, argv);
+  QApplication app(argc, argv);
+
   auto node = std::make_shared<RobotNode>();
-  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 3);
-  executor.add_node(node);
-  executor.spin();
+  node->show();     // Display the GUI
+  node->setFocus(); // Force focus on startup to capture arrow keys
+
+  // Use MultiThreadedExecutor with multiple threads
+  std::thread ros_spin_thread([&]()
+                              {
+       rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 10);
+       executor.add_node(node);
+       executor.spin(); 
+       rclcpp::shutdown(); });
+
+  int result = app.exec();
   rclcpp::shutdown();
-  return 0;
+  ros_spin_thread.join();
+  return result;
 }
-
-void print_robot_status(double t, const blaze::StaticVector<double, 6UL> &position, const blaze::StaticVector<double, 6UL> &velocity, const blaze::StaticVector<double, 6UL> &current)
-{
-  auto print_with_space_if_positive = [](double value) -> void
-  {
-    if (value >= 0)
-    {
-      std::cout << " " << value;
-    }
-    else
-    {
-      std::cout << value;
-    }
-  };
-
-  std::cout << "\r" << std::dec << std::fixed << std::setprecision(3) << "Robot => Time: " << t << "[s]" << std::endl;
-  std::cout << "Units: [mm], [rad], [mm/s], [rad/s], [A]" << std::endl;
-  for (size_t i = 0; i < 6; i++)
-  {
-    std::cout << "Node " << i + 1 << " =>  ";
-    std::cout << "Pos: ";
-    std::cout << std::fixed << std::setprecision(5);
-    print_with_space_if_positive(position[i] * 1.00E3);
-    std::cout << "     Vel: ";
-    print_with_space_if_positive(velocity[i] * 1.00E3);
-    std::cout << "     Current: ";
-    print_with_space_if_positive(current[i]);
-    std::cout << " \n";
-  }
-  std::cout << std::endl;
-}
-
-// //
-// rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const interfaces::action::Jointstarget::Goal> goal)
-// {
-//   // RCLCPP_INFO(this->get_logger(), "Target request received ");
-//   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-// }
-
-// //
-// rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> goal_handle)
-// {
-//   RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
-//   return rclcpp_action::CancelResponse::ACCEPT;
-// }
-
-// //
-// void handle_accepted(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> goal_handle)
-// {
-//   std::thread{std::bind(&RobotNode::set_action_target_callback, this, std::placeholders::_1), goal_handle}.detach();
-// }
-
-// //
-// void set_action_target_callback(const std::shared_ptr<rclcpp_action::ServerGoalHandle<interfaces::action::Jointstarget>> &goal_handle)
-// {
-//   const auto goal = goal_handle->get_goal();
-
-//   if (!m_flag_manual && m_flag_use_target_action)
-//   {
-//     m_x_des[0UL] = goal->position[0UL];
-//     m_x_des[1UL] = goal->position[1UL];
-//     m_x_des[2UL] = goal->position[2UL];
-//     m_x_des[3UL] = goal->position[3UL];
-//   }
-//   else
-//   {
-//     RCLCPP_INFO(this->get_logger(), "Target is not accepten in manual mode");
-//   }
-
-//   RCLCPP_INFO(this->get_logger(), "Joints target received: R1: %0.1f [deg]  T1: %0.1f [mm]  R2: %0.1f [deg]  T2: %0.1f [mm]",
-//               m_x_des[0UL] * 360 / M_PI, m_x_des[1UL] * 1e3, m_x_des[2UL] * 360 / M_PI, m_x_des[3UL] * 1e3);
-
-//   auto result = std::make_shared<interfaces::action::Jointstarget::Result>();
-
-//   // Call the control loop
-//   rclcpp::sleep_for(200ms);
-//   m_robot->Wait_until_reach();
-//   // rclcpp::sleep_for(2000ms);
-
-//   result->success = true; // Indicate success in the result
-//   goal_handle->succeed(result);
-//   RCLCPP_INFO(this->get_logger(), "Target reached successfully");
-// }

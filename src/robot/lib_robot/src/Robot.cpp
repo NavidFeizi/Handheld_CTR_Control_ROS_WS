@@ -5,14 +5,14 @@ using namespace lely;
 
 std::vector<double> Position_Target_Generator(double t);
 
-CTRobot::CTRobot(int sample_time, OpMode operation_mode, bool position_limit)
+CTRobot::CTRobot(bool position_limit)
 {
   m_maxAcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
   m_maxVel = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
   // m_max_acc = max_acc;             // deg->rev or mm->rev
   // m_max_vel = max_vel;             // deg->rev or mm->rev
-  this->m_sampleTime = sample_time; // commandPeriod [ms], minimum
-  this->operation_mode = operation_mode;
+  // this->m_sampleTime = sample_time; // commandPeriod [ms], minimum
+  this->operation_mode = OpMode::VelocityProfile;
   this->m_lowerBounds = {-2 * M_PI, 0.0, -2 * M_PI, 0.0};
   this->m_upperBounds = {2 * M_PI, 97.0E-3, 2 * M_PI, 52.0E-3};
   this->m_posOffsets = {0.0, -147.0E-3, 0.0, -77.0E-3};
@@ -23,6 +23,10 @@ CTRobot::CTRobot(int sample_time, OpMode operation_mode, bool position_limit)
   m_shared_state = std::make_shared<SharedState>(); // states are shared with the Cia301 nodes
   CTRobot::initLogger();
 }
+
+// default constructor
+CTRobot::CTRobot() 
+    : CTRobot(false) {} // Calls parameterized constructor
 
 /* Copy constructor */
 CTRobot::CTRobot(const CTRobot &rhs) : m_inrTubeRot(rhs.m_inrTubeRot),
@@ -38,7 +42,7 @@ CTRobot::~CTRobot()
 }
 
 /* initilizes the fiber driver for each node and what the status on all nodes */
-void CTRobot::initFiberDriver()
+void CTRobot::startCANopenNodes()
 {
   // Initialize the I/O library. This is required on Windows, but a no-op on
   // Linux (for now).
@@ -231,9 +235,10 @@ void CTRobot::initFiberDriver()
 }
 
 /* starts the Fiber_Loop in a separate thread */
-void CTRobot::startFiber()
+void CTRobot::startRobotCommunication(int sample_time)
 {
-  m_thread = std::thread(&CTRobot::initFiberDriver, this);
+  m_sampleTime = sample_time;
+  m_thread = std::thread(&CTRobot::startCANopenNodes, this);
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   // wait untill all nodes tasks are posted to proceed
   while (!m_inrTubeRot->getFlags(Flags::FlagIndex::TASKS_POSTED) ||
@@ -243,6 +248,7 @@ void CTRobot::startFiber()
   {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
   m_logger->info("[Master] Tasks Posted");
 }
 
@@ -254,7 +260,7 @@ void CTRobot::enableOperation(const bool enable)
   m_inrTubeTrn->enableOperation(enable);
   m_mdlTubeRot->enableOperation(enable);
   m_mdlTubeTrn->enableOperation(enable);
-  std::this_thread::sleep_for(std::chrono::milliseconds(100)); // wait for the command to be executed
+  std::this_thread::sleep_for(std::chrono::milliseconds(200)); // wait for the command to be executed
 }
 
 /* template */
@@ -460,16 +466,6 @@ void CTRobot::getPos(blaze::StaticVector<double, 4> &val) const
   this->m_inrTubeTrn->getPos(val[1]);
   this->m_mdlTubeRot->getPos(val[2]);
   this->m_mdlTubeTrn->getPos(val[3]);
-}
-
-/* get current posistion, velocity, and current */
-void CTRobot::getPosVelCur(blaze::StaticVector<double, 4> &pos,
-                           blaze::StaticVector<double, 4> &vel,
-                           blaze::StaticVector<double, 4> &current) const
-{
-  CTRobot::getPos(pos);
-  CTRobot::getVel(vel);
-  CTRobot::getCurrent(current);
 }
 
 /* Actuatre robot to the targert absolute joint positions in SI unit

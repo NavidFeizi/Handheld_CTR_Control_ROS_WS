@@ -51,7 +51,7 @@ def generate_launch_description():
 
 
     ld.add_action(robot_node)
-    ld.add_action(delay_gui_node)
+    # ld.add_action(delay_gui_node)
     # ld.add_action(delay_keyboard_node)
 
     return ld
