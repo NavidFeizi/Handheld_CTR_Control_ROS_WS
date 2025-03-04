@@ -20,7 +20,7 @@ constexpr uint16_t TARGET_POSITION_IDX = 0x607A;
 constexpr uint16_t TARGET_VELOCITY_IDX = 0x60FF;
 constexpr uint16_t MODE_OF_OPERATION_IDX = 0x6060;
 constexpr uint16_t MODE_OF_OPERATION_DISP_IDX = 0x6061;
-
+constexpr uint16_t POSITION_LIMIT = 0x607d;
 
 struct ControlWord
 {

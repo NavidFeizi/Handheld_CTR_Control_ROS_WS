@@ -82,6 +82,7 @@ public:
   StatusWord getStatusword() const;
   bool getFlags(const Flags::FlagIndex index) const;
   OpMode getOperationMode() const;
+  void setPosLimit(const double min, const double max);
 
   // ============================== Command Methods ==============================
   void setPosAbs(const double val);
@@ -97,6 +98,8 @@ public:
   void getPos(double &actualPosPtr) const;
   void getVel(double &actualVelPtr) const;
   bool isReached() const;
+  void getPosLimit(double &min, double &max) const;
+
 
 private:
   // ============================== CANopen Communication Methods ==============================
@@ -150,28 +153,33 @@ private:
   int m_isConfiguring = 0;         // 1=set zero, 2=find limit
 
   // ======================== Command and feedback variables ========================
-  double m_targetPosSi;               // in SI unit
-  double m_targetVelSi;               // in SI unit
-  double m_currentPosSi;              // in SI unit
-  double m_currentVelSi;              // in SI unit
-  double m_currentSi;                 // in SI unit
-  std::deque<double> m_currentSiHist; // history of current for averating
-  int32_t m_targetPos;                // in motion controller unit (pulse/) not in user defined unit
-  int32_t m_targetPosPrev;            // in motion controller unit (pulse/) not in user defined unit
-  int32_t m_targetVel;                // in motion controller unit (pulse/) not in user defined unit
-  int32_t m_currentPos;               // in motion controller unit (pulse/) not in user defined unit
-  int32_t m_currentVel;               // in motion controller unit (pulse/) not in user defined unit
-  int16_t m_current;                  // current(Maxon) ot torque(Faulhaber)
+  double m_targetPosSi;                                                   // in SI unit
+  double m_targetVelSi;                                                   // in SI unit
+  double m_currentPosSi;                                                  // in SI unit
+  double m_currentVelSi;                                                  // in SI unit
+  double m_currentSi;                                                     // in SI unit
+  std::deque<double> m_currentSiHist;                                     // history of current for averating
+  int32_t m_targetPos;                                                    // in motion controller unit (pulse/) not in user defined unit
+  int32_t m_targetPosPrev;                                                // in motion controller unit (pulse/) not in user defined unit
+  int32_t m_targetVel;                                                    // in motion controller unit (pulse/) not in user defined unit
+  int32_t m_currentPos;                                                   // in motion controller unit (pulse/) not in user defined unit
+  int32_t m_currentVel;                                                   // in motion controller unit (pulse/) not in user defined unit
+  int16_t m_current;                                                      // current(Maxon) ot torque(Faulhaber)
+  blaze::StaticVector<int32_t, 2> m_PosLimit = {-2147483648, 2147483647}; // position limit
+  blaze::StaticVector<double, 2> m_PosLimitSi;                            // position limit in SI unit
+  blaze::StaticVector<int32_t, 2> m_currentPosLimit;                      // actual position limit
+  blaze::StaticVector<double, 2> m_currentPosLimitSi;                     // actual position limit in SI unit
 
   // ======================== Other variables ========================
+  bool m_flag_target_task_processing;
   Flags m_flags;
-  std::shared_ptr<SharedState> robot_states;       // Shared all node states set by the master (Robot)
-  std::shared_ptr<spdlog::logger> logger;          // Shared logger instance
-  ControlWord m_controlWord;                       // Control words updates automatically on RPDO1 write
-  StatusWord m_statusWord;                         // Status words updates automatically on RPDO1 write
-  std::ofstream m_encoderMemFile;                  // File to read from / write on encoder memory to keep track of positoin for future start ups
-  double m_encoderMem;                             // Loaded previous encoder value from memory file
-  bool m_printPdos = false;                        // for tracing debug
+  std::shared_ptr<SharedState> robot_states; // Shared all node states set by the master (Robot)
+  std::shared_ptr<spdlog::logger> logger;    // Shared logger instance
+  ControlWord m_controlWord;                 // Control words updates automatically on RPDO1 write
+  StatusWord m_statusWord;                   // Status words updates automatically on RPDO1 write
+  std::ofstream m_encoderMemFile;            // File to read from / write on encoder memory to keep track of positoin for future start ups
+  double m_encoderMem;                       // Loaded previous encoder value from memory file
+  bool m_printPdos = false;                  // for tracing debug
   bool m_bit12Prev = false;
   std::string m_commandMsg = "";
   blaze::StaticVector<double, 2> m_set_max_torque = blaze::StaticVector<double, 2>(0.0);

@@ -88,6 +88,8 @@ public:
     void getCurrent(blaze::StaticVector<double, 4UL> &val) const;
     void getVel(blaze::StaticVector<double, 4UL> &val) const;
     void getPos(blaze::StaticVector<double, 4UL> &val) const;
+    void getPosLimit(blaze::StaticVector<double, 4> &min, blaze::StaticVector<double, 4> &max) const;
+
 
     // ============================== Configuration Methods ==============================
     void setMaxTorque(const blaze::StaticVector<double, 4UL> negative,
@@ -96,6 +98,7 @@ public:
                           const blaze::StaticVector<double, 4UL> max_acc,
                           const blaze::StaticVector<double, 4UL> max_dcc);
     void setOperationMode(const OpMode mode);
+    void setLinearEncoders(const double inner, const double middle);
     bool getSwitchStatus(blaze::StaticVector<bool, 4> &status) const;
     bool getSwitchStatus() const;
     bool getEnableStatus(blaze::StaticVector<bool, 4> &status) const;
@@ -106,18 +109,26 @@ public:
     bool getDisabledStatus() const;
     bool getReachedStatus(blaze::StaticVector<bool, 4> &status) const;
     bool getReachedStatus() const;
+    void setPosLimit(const blaze::StaticVector<double, 4> &min, const blaze::StaticVector<double, 4> &max);
+
 
     // ============================== Utility Methods ==============================
     void waitUntilReach();
     void findTransEncoders();
 
-    bool m_boot_success = false;
-    bool m_flag_robot_switched_on = false;
-    bool m_flag_operation_enabled = false;
-    bool m_encoders_set;
+    // bool m_boot_success = false;
+    // bool m_flag_robot_switched_on = false;
+    // bool m_flag_operation_enabled = false;
+    // bool m_encoders_set;
 
 protected:
     std::shared_ptr<spdlog::logger> m_logger;
+    std::shared_ptr<SharedState> m_shared_state;
+
+    std::shared_ptr<Cia301Node> m_inrTubeRot;
+    std::shared_ptr<Cia301Node> m_inrTubeTrn;
+    std::shared_ptr<Cia301Node> m_mdlTubeRot;
+    std::shared_ptr<Cia301Node> m_mdlTubeTrn;
 
 private:
     void startCANopenNodes();
@@ -135,11 +146,7 @@ private:
     static constexpr blaze::StaticVector<double, 4UL> m_gearRatios = {1, 1, 1, 1}; 
 
     std::thread m_thread;
-    std::shared_ptr<SharedState> m_shared_state;
-    std::shared_ptr<Cia301Node> m_inrTubeRot;
-    std::shared_ptr<Cia301Node> m_inrTubeTrn;
-    std::shared_ptr<Cia301Node> m_mdlTubeRot;
-    std::shared_ptr<Cia301Node> m_mdlTubeTrn;
+    
     
     unsigned int m_sampleTime; // commandPeriod [ms]
     OpMode operation_mode;
@@ -155,5 +162,4 @@ private:
 
     // std::ofstream logFile;
 
-protected:
 };

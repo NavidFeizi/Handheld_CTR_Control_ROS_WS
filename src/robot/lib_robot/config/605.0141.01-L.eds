@@ -860,7 +860,7 @@ ParameterName=RxPDO4 mapping entry 1
 ObjectType=7
 DataType=0x0007
 AccessType=RW
-DefaultValue=0x60400010
+DefaultValue=0x607D0120
 PDOMapping=0
 
 [1603sub2]
@@ -868,7 +868,7 @@ ParameterName=RxPDO4 mapping entry 2
 ObjectType=7
 DataType=0x0007
 AccessType=RW
-DefaultValue=0x60710010
+DefaultValue=0x607D0220
 PDOMapping=0
 
 [1603sub3]
@@ -1196,7 +1196,7 @@ ParameterName=TxPDO4 mapping entry 1
 ObjectType=7
 DataType=0x0007
 AccessType=RW
-DefaultValue=0x60410010
+DefaultValue=0x607D0120
 PDOMapping=0
 
 [1A03sub2]
@@ -1204,7 +1204,7 @@ ParameterName=TxPDO4 mapping entry 2
 ObjectType=7
 DataType=0x0007
 AccessType=RW
-DefaultValue=0x60770010
+DefaultValue=0x607D0220
 PDOMapping=0
 
 [1A03sub3]

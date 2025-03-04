@@ -6,7 +6,7 @@ def generate_launch_description():
 
     robot_node = ExecuteProcess(
         cmd=[
-            'taskset', '-c', '3',  # This sets the affinity to CPU core 1
+            'taskset', '-c', '4',  # This sets the affinity to CPU core 1
             'ros2', 'run', 'robot', 'ctr_robot',
             # '--ros-args',
             '-p', 'Kp:=30.0',  # Correct syntax for setting parameter
@@ -16,42 +16,6 @@ def generate_launch_description():
         output='screen',
     )
 
-    keyboard_node = ExecuteProcess(
-        cmd=[
-            'taskset', '-c', '2',  # This sets the affinity to CPU core 1
-            'ros2', 'run', 'robot', 'key_input',
-            '--ros-args',
-            # '-p', 'sample_time:=0.001',  # Correct syntax for setting parameter
-            '--remap', '__node:=keyboard_node'
-        ],
-        output='screen',
-    )
-
-    gui_node = ExecuteProcess(
-        cmd=[
-            'taskset', '-c', '3',  # This sets the affinity to CPU core 1
-            'ros2', 'run', 'robot', 'qt_gui',
-            # '--ros-args',
-            '--remap', '__node:=gui_node'
-        ],
-        output='screen',
-    )
-
-    # Delay the start of the observer_node by 5 seconds
-    delay_keyboard_node = TimerAction(
-        period=5.0,  # Delay in seconds
-        actions=[keyboard_node],
-    )
-
-    # Delay the start of the observer_node by 5 seconds
-    delay_gui_node = TimerAction(
-        period=5.0,  # Delay in seconds
-        actions=[gui_node],
-    )
-
-
     ld.add_action(robot_node)
-    # ld.add_action(delay_gui_node)
-    # ld.add_action(delay_keyboard_node)
 
     return ld

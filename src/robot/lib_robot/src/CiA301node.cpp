@@ -148,6 +148,8 @@ void Cia301Node::OnBoot(canopen::NmtState /*st*/, char es, const std::string &wh
         Wait(AsyncWait(duration(std::chrono::milliseconds(50)))); // wait for for a clean log file
         Cia301Node::SetTpdoTranstype_(2, 1);                      // set tPDO2 transmission type to trigger with SYNC
         Wait(AsyncWait(duration(std::chrono::milliseconds(50)))); // wait for for a clean log file
+        Cia301Node::SetTpdoTranstype_(4, 1);                      // set tPDO4 transmission type to trigger with SYNC
+        Wait(AsyncWait(duration(std::chrono::milliseconds(50)))); // wait for for a clean log file
 
         if (m_useEncoderMemory)
             this->ReadEncoderMemFile(EnoderStoreFiles_directory, m_encoderMem, m_encoderMemFile); // read or create the memory file
@@ -163,8 +165,8 @@ void Cia301Node::OnBoot(canopen::NmtState /*st*/, char es, const std::string &wh
         // m_flags.set(Flags::FlagIndex::NEW_TARG_READY, true);
 
         Post(&Cia301Node::TaskTarget, this);
-        Post(&Cia301Node::TaskConfig, this);
-        Post(&Cia301Node::TaskOperation, this);
+        // Post(&Cia301Node::TaskConfig, this);
+        // Post(&Cia301Node::TaskOperation, this);
         m_flags.set(Flags::FlagIndex::TASKS_POSTED, true);
         logger->debug("[Node " + m_nodeId + "] Task posted");
     }
@@ -291,9 +293,21 @@ void Cia301Node::OnRpdoWrite(uint16_t idx, uint8_t subidx) noexcept
         }
     }
 
+    // if RxPDO 4 received
+    if (idx == POSITION_LIMIT && subidx == 0x01) // if RxPDO 2 received ---- info in RxPDO4 -> [1] min positon limit
+    {
+        m_currentPosLimit[0] = rpdo_mapped[POSITION_LIMIT][0x01];              // Update current min position limit
+        m_currentPosLimitSi[0] = double(m_currentPosLimit[0]) / double(m_ppu); // convert to SI unit
+    }
+    if (idx == POSITION_LIMIT && subidx == 0x02) // if RxPDO 2 received ---- info in RxPDO4 -> [1] max position
+    {
+        m_currentPosLimit[1] = rpdo_mapped[POSITION_LIMIT][0x02];              // Update current max position limit
+        m_currentPosLimitSi[1] = double(m_currentPosLimit[1]) / double(m_ppu); // convert to SI unit
+    }
+
     // you can add more PDOs here to be recognized
     // if Received unknown PDO
-    if (!((idx == ACTUAL_TORQUE_FAULHABER_IDX) || (idx == ACTUAL_CURRENT_MAXON_IDX) || (idx == ACTUAL_VELOCITY_FAULHABER_IDX) || (idx == ACTUAL_VELOCITY_MAXON_IDX) || (idx == STATUS_WORD_IDX) || (idx == ACTUAL_POSITION_IDX)))
+    if (!((idx == ACTUAL_TORQUE_FAULHABER_IDX) || (idx == ACTUAL_CURRENT_MAXON_IDX) || (idx == ACTUAL_VELOCITY_FAULHABER_IDX) || (idx == ACTUAL_VELOCITY_MAXON_IDX) || (idx == STATUS_WORD_IDX) || (idx == ACTUAL_POSITION_IDX) || (idx == POSITION_LIMIT)))
     {
         std::stringstream ss;
         ss << "[Node " + m_nodeId << ": unknown PDO - idx: 0x" << std::hex << idx << " subidx: 0x" << std::hex << subidx; // Convert to hex, uppercase letters
@@ -377,6 +391,8 @@ void Cia301Node::SwitchOn()
     @param enable: true = enable, false = disable*/
 void Cia301Node::EnableOp_(const bool enable)
 {
+    logger->debug("[Node " + m_nodeId + "] " + "requested to switch operation to : " + std::to_string(enable));
+
     int max_attempts = 10;
     int attempt_count = 0;
 
@@ -393,7 +409,6 @@ void Cia301Node::EnableOp_(const bool enable)
                 throw std::runtime_error("Error: Operation not enabled after 10 attempts");
             }
             Wait(AsyncWrite<uint16_t>(CONTROL_WORD_IDX, 0, 0x000F));                 // set the state macine to enabled operation
-            Wait(AsyncWait(duration(std::chrono::milliseconds(10))));                // wait for safety
             m_statusWord.update(Wait(AsyncRead<uint16_t>(STATUS_WORD_IDX, 0x0000))); // get status word on SDO
             attempt_count++;
         }
@@ -409,19 +424,22 @@ void Cia301Node::EnableOp_(const bool enable)
                 logger->critical("[Node " + m_nodeId + "] Operation not disabled after " + std::to_string(max_attempts) + " attempts - current status: " + m_statusWord.getCiA402StatusMessage());
             }
             Wait(AsyncWrite<uint16_t>(CONTROL_WORD_IDX, 0, 0x0007));                 // set the state macine to switched on
-            Wait(AsyncWait(duration(std::chrono::milliseconds(10))));                // wait for safety
             m_statusWord.update(Wait(AsyncRead<uint16_t>(STATUS_WORD_IDX, 0x0000))); // get status word on SDO
             attempt_count++;
         }
         logger->debug("[Node " + m_nodeId + "] " + m_statusWord.getCiA402StatusMessage());
+        double temp = 0.0;
+        setVel(temp);
+        getPos(temp);
+        setPos(temp);
     }
     else if (enable && m_statusWord.operation_enabled)
     {
-        logger->warn("[Node " + m_nodeId + "] request to enable - alraedy enbaled");
+        logger->debug("[Node " + m_nodeId + "] request to enable - alraedy enbaled");
     }
     else
     {
-        logger->warn("[Node " + m_nodeId + "] request to disable - alraedy disabled");
+        logger->debug("[Node " + m_nodeId + "] request to disable - alraedy disabled");
     }
 }
 
@@ -474,8 +492,10 @@ void Cia301Node::TaskTarget() noexcept
 {
     while (true)
     {
+        // send position/velocity target
         if (robot_states->m_flag_operation_enabled & !m_isConfiguring)
         {
+            m_flag_target_task_processing = true;
             if (m_current_operation_mode == OpMode::PositionProfile) // Position Profile mode
             {
                 m_controlWord.bit4 = 1; // set new target bit (bit 4)
@@ -500,7 +520,7 @@ void Cia301Node::TaskTarget() noexcept
                 }
                 else
                 {
-                    logger->error("[Node " + m_nodeId + "] Motion controller is not ready to receive a new position target! (PDO is sending too fast - please wait!)");
+                    // logger->error("[Node " + m_nodeId + "] Motion controller is not ready to receive a new position target! (PDO is sending too fast - please wait!)");
                 }
             }
             // velocity profile mode is not verified - may need some improvement
@@ -533,18 +553,59 @@ void Cia301Node::TaskTarget() noexcept
             //                                                              //     std::cout << "         [" << node_id << "]:[" << std::hex << 0x6040 << "][" << static_cast<int>(0) << "]: 0b " << ToBinaryString(ctrl) << std::hex << "   (0x" << ctrl << ")" << std::endl;
             //                                                              // }
             // }
+            m_flag_target_task_processing = false;
         }
+
+        else if (m_isConfiguring)
+        {
+            while (m_flag_target_task_processing)
+                Wait(AsyncWait(duration(std::chrono::microseconds(5))));
+            if (m_commandMsg == "enable")
+            {
+                Cia301Node::EnableOp_(true);
+            }
+            else if (m_commandMsg == "disable")
+            {
+                Cia301Node::EnableOp_(false);
+            }
+            else if (m_commandMsg == "set_max_torque")
+            {
+                Cia301Node::SetMaxTorque_(m_set_max_torque[0], m_set_max_torque[1]);
+            }
+            else if (m_commandMsg == "set_profile_params")
+            {
+                Cia301Node::SetProfileParams_(m_set_profile_acc, m_set_profile_dcc, m_set_profile_vel); // set profile parameters
+            }
+            else if (m_commandMsg == "set_encoder")
+            {
+                Cia301Node::SetEncoder_(m_set_encoder);
+            }
+            else if (m_commandMsg == "set_operation_mode")
+            {
+                Cia301Node::SetOperationMode_(m_set_operation_mode);
+            }
+            m_commandMsg = "";
+
+            // Wait(AsyncWait(duration(std::chrono::microseconds(m_sampleTime))));
+            m_isConfiguring = false;
+        }
+
         else
         {
             // logger->debug("[Node " + m_node_id + "] Robot is not operational");
         }
 
-        Wait(AsyncWait(duration(std::chrono::milliseconds(m_sampleTime))));
+        // PDO4
+        tpdo_mapped[POSITION_LIMIT][0x01] = m_PosLimit[0]; // min position limit
+        tpdo_mapped[POSITION_LIMIT][0x02] = m_PosLimit[1]; // max position limit
+        tpdo_mapped[POSITION_LIMIT][0x01].WriteEvent();    // Trigger write events for PDO4.
+
+        Wait(AsyncWait(duration(std::chrono::milliseconds(m_sampleTime - 2))));
     }
 }
 
 /*  This task is reponsible for changing controller configuration.
-    "TaskTarget" should be halted using flag_config when this task is actioning*/
+    "Task Target" should be halted using flag_config when this task is actioning*/
 void Cia301Node::TaskConfig() noexcept
 {
     while (true)
@@ -586,6 +647,8 @@ void Cia301Node::TaskOperation() noexcept
     {
         if (m_isConfiguring)
         {
+            while (m_flag_target_task_processing)
+                Wait(AsyncWait(duration(std::chrono::microseconds(1))));
             if (m_commandMsg == "enable")
             {
                 Cia301Node::EnableOp_(true);
@@ -841,7 +904,7 @@ void Cia301Node::setHomeOffsetValue(const double val)
 }
 
 // The member functions below trigger an associated function inside "taskOperation" or "taskConfig"
-// to comply with asynchronous commanding through SDO while "taskTarget" is posted.
+// to comply with asynchronous commanding through SDO while "Task Target" is posted.
 // Since the actual function is executed on another thread (fiber), the task execution may take some time.
 // Therefore, a wait should be used after calling the functions below.
 
@@ -849,14 +912,10 @@ void Cia301Node::setHomeOffsetValue(const double val)
 void Cia301Node::enableOperation(const bool enable)
 {
     m_isConfiguring = true;
-    if (enable && !m_statusWord.operation_enabled)
-    {
+    if (enable)
         m_commandMsg = "enable";
-    }
-    else if (!enable && m_statusWord.operation_enabled)
-    {
+    else
         m_commandMsg = "disable";
-    }
 }
 
 /**/
@@ -893,6 +952,16 @@ void Cia301Node::setOperationMode(const OpMode mode)
     m_set_operation_mode = mode;
     m_isConfiguring = true;
     m_commandMsg = "set_operation_mode";
+}
+
+/* Sets position limit SI unit and converts to motion controller unit
+    and updates the associates variable to be send to motion controller*/
+void Cia301Node::setPosLimit(const double min, const double max)
+{
+    m_PosLimitSi[0] = min;
+    m_PosLimitSi[1] = max;
+    m_PosLimit[0] = static_cast<int32_t>(min * m_ppu);  // min
+    m_PosLimit[1] = static_cast<int32_t>(max * m_ppu);  // max
 }
 
 // ============================== Command Methods ==============================
@@ -1004,6 +1073,13 @@ void Cia301Node::getPosAbs(double &actualPosPtr) const
 void Cia301Node::getPos(double &actualPosPtr) const
 {
     actualPosPtr = m_currentPosSi - m_pos_offset_SI;
+}
+
+/* accessor toactual motor positon [m] or [rad]*/
+void Cia301Node::getPosLimit(double &min, double &max) const
+{
+    min = m_currentPosLimitSi[0];
+    max = m_currentPosLimitSi[1];
 }
 
 /* accessor to actual motor velocity [m/s] or [rad/s]*/

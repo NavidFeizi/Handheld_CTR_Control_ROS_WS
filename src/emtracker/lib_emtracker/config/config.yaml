@@ -35,11 +35,19 @@ sensor_config:
 
   - sensor:
       name: robot
-      serial_number: 3B2A8800       # Handheld CTR robot reference
+      serial_number: 3B910800       # Handheld CTR robot reference
       srom_filename: None
       load_srom: false
       tran_filename: 610094_robot2base.csv
       load_tran: true              # if false, identity tranformation is used
+
+#   - sensor:
+#       name: robot
+#       serial_number: 3B2A8800       # Handheld CTR robot reference
+#       srom_filename: None
+#       load_srom: false
+#       tran_filename: 610094_robot2base.csv
+#       load_tran: true              # if false, identity tranformation is used
 
   - sensor:
       name: phantom

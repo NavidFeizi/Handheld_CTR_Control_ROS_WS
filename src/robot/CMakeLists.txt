@@ -40,28 +40,8 @@ add_executable(ctr_robot src/robot_node.cpp)
 target_link_libraries(ctr_robot ROBOTlib Qt5::Widgets Qt5::Core Qt5::Concurrent)
 ament_target_dependencies(ctr_robot rclcpp std_msgs std_srvs rclcpp_action interfaces)
 
-add_executable(key_input src/keyboard_node.cpp)
-ament_target_dependencies(key_input rclcpp std_msgs interfaces ament_index_cpp)
-
-add_executable(qt_gui src/qt_node.cpp)
-target_link_libraries(qt_gui Qt5::Widgets)
-ament_target_dependencies(qt_gui rclcpp interfaces)
-
-
-# Add SDL2
-find_package(SDL2 REQUIRED)
-if (SDL2_FOUND)
-    message(STATUS ">>> SDL2 has been found!")
-    include_directories(${SDL2_INCLUDE_DIRS})
-    target_link_libraries(key_input ${SDL2_LIBRARIES})
-else (NOT SDL2_FOUND)
-    error(STATUS ">>> SDL2 has not been found")
-endif()
-
 install(TARGETS
   ctr_robot
-  key_input
-  qt_gui
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY
