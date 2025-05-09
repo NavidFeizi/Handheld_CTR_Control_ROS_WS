@@ -15,7 +15,7 @@
 
 #include "RigidTransformation.hpp"
 
-// Function to multiply two quaternions
+
 StaticVector<double, 4UL> quaternionMultiply(const StaticVector<double, 4> &q1, const StaticVector<double, 4> &q2)
 {
   return {
@@ -76,7 +76,7 @@ void Combine_Quat_Transformation(const quatTransformation &transformation01,
 
 /* Function to calculate the transformation that transfers the landmarks_measured frame
     to the landmarks_truth frame */
-void Calculate_Transformation(const std::vector<StaticVector<double, 3UL>> &landmarks_measured,
+void Calculate_Registration_Transformation(const std::vector<StaticVector<double, 3UL>> &landmarks_measured,
                               const std::vector<StaticVector<double, 3UL>> &landmarks_truth,
                               quatTransformation &transformation)
 {

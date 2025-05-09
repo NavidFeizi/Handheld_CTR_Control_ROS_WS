@@ -28,6 +28,10 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(interfaces REQUIRED) 
 
+find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+
 # EM tracker libraries
 add_subdirectory(lib_emtracker)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_emtracker/include)
@@ -39,7 +43,7 @@ include(${OpenIGTLink_USE_FILE})
 
 add_executable(track src/EMtracker_node.cpp)
 target_link_libraries(track EMTlib)
-ament_target_dependencies(track rclcpp std_msgs std_srvs interfaces OpenIGTLink)
+ament_target_dependencies(track rclcpp std_msgs std_srvs interfaces OpenIGTLink geometry_msgs tf2 tf2_ros)
 
 install(TARGETS
   track

@@ -66,7 +66,7 @@ EMTracker::EMTracker(const std::string &hostname, double filter_sample_time, dou
   initializeAndEnableSensors();
 
   // Load sensor configuration if available, otherwise match sensors manually
-  if (!EMTracker::read_sensor_config_from_yaml(m_config_Dir + "config.yaml", sensorConfigMap))
+  if (!EMTracker::read_sensor_config_from_yaml(m_config_Dir + "config.yaml", m_sensorConfigMap))
   {
     matchSensors();
   }
@@ -124,17 +124,6 @@ std::string EMTracker::getToolInfo(std::string toolHandle)
   return outputString;
 }
 
-/**
- * @brief Prints a debug message if a method call fails.
- *
- * @details To use, pass the method name and the error code returned by the method.
- *          Example: onErrorPrintDebugmessage("capi.initialize()", capi.initialize());
- *          If the call succeeds, this method does nothing.
- *          If the call fails, this method prints an error message to stdout.
- *
- * @param methodName The name of the method that was called.
- * @param errorCode The error code returned by the method.
- */
 void EMTracker::onErrorPrintDebugmessage(const std::string &methodName, int errorCode)
 {
   if (errorCode < 0)
@@ -143,10 +132,6 @@ void EMTracker::onErrorPrintDebugmessage(const std::string &methodName, int erro
   }
 }
 
-/**
- * @brief Initialize and enable loaded sensors.
- * @details This is the same regardless of sensor type.
- */
 void EMTracker::initializeAndEnableSensors()
 {
   // Retrieve port handles of non-initialized ports (sensors)
@@ -167,14 +152,14 @@ void EMTracker::initializeAndEnableSensors()
   {
     std::vector<PortHandleInfo> enabledPortHandles = m_combinedAPI->portHandleSearchRequest(PortHandleSearchRequestOption::Enabled);
     auto portHandleInfo = m_combinedAPI->portHandleInfo(enabledPortHandles[i].getPortHandle());
-    std::cout << "Port handle #" << i << "   -   S/N: " << portHandleInfo.getSerialNumber() << std::endl;
+    std::cout << "Port handle #: " << i << std::endl;
+    std::cout << "  Port handle: " << portHandleInfo.getPortHandle() << std::endl;
+    std::cout << "  Serial number: " << portHandleInfo.getSerialNumber() << std::endl;
+    std::cout << "  Revision number: " << portHandleInfo.getRevision() << std::endl;
+    std::cout << "  Tool ID: " << portHandleInfo.getToolId() << std::endl;
   }
 }
 
-/**
- * @brief Matches the serial number of the sensors (from soldered SROM) with the serial numbers
- *        in "config.yaml" to name the sensors based on the "config.yaml" file.
- */
 void EMTracker::matchSensors()
 {
   // Retrieve port handles of the enabled ports (sensors)
@@ -190,31 +175,41 @@ void EMTracker::matchSensors()
     std::string portSerialNumber = portHandleInfo.getSerialNumber();
 
     // Iterate through the sensor configuration map to find the matching serial number
-    for (auto &entry : sensorConfigMap)
+    bool detected = false;
+    for (auto &entry : m_sensorConfigMap)
     {
       if (entry.second.serial_number == portSerialNumber)
       {
-        std::cout << "Sensor name: \"" << entry.first << "\" found\n"
-                  << "S/N: " << portSerialNumber << "\n"
-                  << "PortHandle #" << i << "\n"
+        std::cout << "Sensor name: \"" << entry.first << "\" detected\n"
+                  << "  Port handle: " << portHandleInfo.getPortHandle() << "\n"
+                  << "  Port Handle #" << i << "\n"
+                  << "  S/N: " << portSerialNumber << "\n"
+                  << "  Tool ID: " << portHandleInfo.getToolId() << "\n"
                   << "--------------------------------------------------"
                   << std::endl;
         entry.second.probe_handle_num = i; // Set probeHandle_num to i
+        entry.second.probe_handle = portHandleInfo.getPortHandle();
         entry.second.active = true;
-
         m_sec_transforms.push_back(QuatTransformationStruct()); // initialize with identity transformation
+        detected = true;
+        break;
       }
+    }
+    if (!detected)
+    {
+      std::cout << "Unknown sensor: \n"
+                << "  Port handle: " << portHandleInfo.getPortHandle() << "\n"
+                << "  S/N: " << portHandleInfo.getSerialNumber() << "\n"
+                << "  Tool ID: " << portHandleInfo.getToolId() << "\n"
+                << "--------------------------------------------------"
+                << std::endl;
+      port_handle_unknown_sensors.push_back(portHandleInfo.getPortHandle());
     }
   }
 
   std::cout << "Sensors serial number matching process finished." << std::endl;
 }
 
-/**
- * @brief Loads the SROM to the sensors with serial numbers mentioned in the "config.yaml" file.
- *
- * @details EM tracker must be reinitialized and tracking must be started again after calling this function.
- */
 void EMTracker::LoadToolDefinitions2Ports(bool load_all)
 {
   std::cout << "---------# Loading tool definition (.rom) #-------\n"
@@ -235,7 +230,7 @@ void EMTracker::LoadToolDefinitions2Ports(bool load_all)
 
   // Iterate through the sensor configuration map to find the matching serial number
   m_config_Dir = CONFIG_DIRECTORY;
-  for (auto &entry : sensorConfigMap)
+  for (auto &entry : m_sensorConfigMap)
   {
     quatTransformation transform;
     if (entry.second.active)
@@ -273,34 +268,12 @@ void EMTracker::LoadToolDefinitions2Ports(bool load_all)
   }
 }
 
-/**
- * @brief Monitors and captures the probe tip position to determine measured landmarks and calculates a rigid transformation
- *        from the reference sensor frame to the system frame.
- *
- * @details
- * 1. Save the true values of the landmarks (in system frame) in "conf/Landmarks_Truth.csv" with the header X, Y, Z.
- * 2. The reference sensor should be connected to channel 1, and the probe should be connected to channel 2.
- * 3. Ensure the motor section of the robot is not in the EM field to avoid non-uniform DC offset in the EM readings,
- *    which significantly reduces registration error.
- * 4. The code compensates for the motion of the robot frame, but it's better to keep the robot stationary due to potential
- *    interference of the motors with the EM frame during movement.
- * 5. Based on the number of landmarks saved in "conf/Landmarks_Truth.csv," touch each landmark in order with the probe tip
- *    and remain stationary. When 200 consecutive samples are captured within a 1 mm radius sphere, the function saves the
- *    measured landmark value in "conf/Landmark_X.csv" and guides you to move to the next landmark. There is a 5-second wait
- *    between each landmark. Only when 200 stationary consecutive samples are captured does the function proceed to the next
- *    landmark.
- * 6. After all landmarks are saved, the average of each landmark is calculated and saved in "conf/Landmarks_Measured.csv."
- * 7. The rigid transformation from the reference sensor frame to the system frame is saved in "conf/Reference2CTR_Transformation.csv."
- * 8. You can manually copy the transformation to NDI Cygna6D software to save the equivalent .rom format for future applications.
- *
- * @param landmarks_file_name The name of the CSV file that includes the true landmarks' location. This file must be in the config folder.
- */
 void EMTracker::landmark_registration(const std::string &landmarks_file_name, std::string ref_sensor_name)
 {
   std::cout << "-----------# Landmarks capturing mode #-----------" << std::endl;
 
   // Check if any probe is connected
-  if (!(sensorConfigMap["probe_1"].active || sensorConfigMap["probe_2"].active || sensorConfigMap["probe_3"].active))
+  if (!(m_sensorConfigMap["probe_1"].active || m_sensorConfigMap["probe_2"].active || m_sensorConfigMap["probe_3"].active))
   {
     std::cerr << "ERROR: Probe is not connected" << std::endl;
     std::cout << "Calibration bypassed" << std::endl;
@@ -308,7 +281,7 @@ void EMTracker::landmark_registration(const std::string &landmarks_file_name, st
   }
 
   // Check if reference sensor is connected
-  if (!sensorConfigMap[ref_sensor_name].active)
+  if (!m_sensorConfigMap[ref_sensor_name].active)
   {
     std::cerr << "ERROR: Reference sensor is not connected" << std::endl;
     std::cout << "Calibration bypassed" << std::endl;
@@ -343,26 +316,28 @@ void EMTracker::landmark_registration(const std::string &landmarks_file_name, st
   unsigned int i = 0;               // counter for the number of landmarks
 
   // Monitor the probe tip for stationary instances to record landmark positions
+  std::string command = "aplay \"" + m_config_Dir + "beep-02.wav" + "\""; // Construct the command
+  system(command.c_str());
   quatTransformation temp;
   while (true)
   {
     sensors_data = m_combinedAPI->getTrackingDataBX();
-    ToolData2QuatTransform(sensors_data[sensorConfigMap[ref_sensor_name].probe_handle_num], transform_0_1);
+    ToolData2QuatTransform(sensors_data[m_sensorConfigMap[ref_sensor_name].probe_handle_num], transform_0_1);
 
-    if (sensorConfigMap["probe_1"].active)
+    if (m_sensorConfigMap["probe_1"].active)
     {
-      ToolData2QuatTransform(sensors_data[sensorConfigMap["probe_1"].probe_handle_num], temp);
-      Combine_Quat_Transformation(temp, m_sec_transforms[sensorConfigMap["probe_1"].probe_handle_num], transform_0_6);
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["probe_1"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["probe_1"].probe_handle_num], transform_0_6);
     }
-    else if (sensorConfigMap["probe_2"].active)
+    else if (m_sensorConfigMap["probe_2"].active)
     {
-      ToolData2QuatTransform(sensors_data[sensorConfigMap["probe_2"].probe_handle_num], temp);
-      Combine_Quat_Transformation(temp, m_sec_transforms[sensorConfigMap["probe_2"].probe_handle_num], transform_0_6);
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["probe_2"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["probe_2"].probe_handle_num], transform_0_6);
     }
-    else if (sensorConfigMap["probe_3"].active)
+    else if (m_sensorConfigMap["probe_3"].active)
     {
-      ToolData2QuatTransform(sensors_data[sensorConfigMap["probe_3"].probe_handle_num], temp);
-      Combine_Quat_Transformation(temp, m_sec_transforms[sensorConfigMap["probe_3"].probe_handle_num], transform_0_6);
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["probe_3"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["probe_3"].probe_handle_num], transform_0_6);
     }
     else
     {
@@ -388,9 +363,14 @@ void EMTracker::landmark_registration(const std::string &landmarks_file_name, st
       EMTracker::column_average(pointBuffer, landmarks_measured[i]);
       pointBuffer.clear();
       std::cout << "Landmark " << i + 1 << "/" << num_landmark << " saved" << std::endl;
+      command = "aplay \"" + m_config_Dir + "beep-07a.wav" + "\""; // Construct the command
+      system(command.c_str());                                     // Play the sound file
+
       i++;
       if (i >= num_landmark)
       {
+        command = "aplay \"" + m_config_Dir + "beep-02.wav" + "\""; // Construct the command
+        system(command.c_str());                                    // Play the sound file
         std::cout << "---------# All landmarks captured #---------" << std::endl;
         m_combinedAPI->stopTracking();
         std::cout << "------------# Capturing stopped #-----------" << std::endl;
@@ -422,29 +402,17 @@ void EMTracker::landmark_registration(const std::string &landmarks_file_name, st
 
   // Calculate the transformation from the reference sensor to the system frame
   std::cout << "Calculating the transformation" << std::endl;
-  Calculate_Transformation(landmarks_measured, landmarks_truth, transform_1_2);
+  Calculate_Registration_Transformation(landmarks_measured, landmarks_truth, transform_1_2);
   // Save the calculated quaternion transformation in CSV format
   EMTracker::save_transformation_to_csv(transform_1_2, m_config_Dir + "registration_results.csv");
   std::cout << "Transformation saved to 'registration_results.csv'" << std::endl;
 }
 
-/**
- * @brief Starts the read loop in a separate thread to avoid blocking the program.
- *
- * @details This method creates a new thread that runs the EMTracker::Read_Loop() function,
- *          allowing the main program to continue running without being blocked by the read operations.
- */
 void EMTracker::start_read_thread()
 {
   m_emThread = std::thread(&EMTracker::Read_Loop, this);
 }
 
-/**
- * @brief Stops the read loop thread safely.
- *
- * @details This method sets a stop flag to true, signaling the read loop to terminate.
- *          If the read loop thread is joinable, it waits for the thread to finish before proceeding.
- */
 void EMTracker::stop_read_thread()
 {
   stopFlag.store(true); // Set the flag to true to signal the read loop to stop
@@ -455,39 +423,32 @@ void EMTracker::stop_read_thread()
   std::cout << "Read loop stopped!" << std::endl;
 }
 
-/**
- * @brief Loads tool definition files and reads data from the tip sensor and the reference sensor to calculate the transformation
- *        of the tip in the robot's frame.
- *
- * @details This function converts the rotations to Euler angles and updates the values in tipRelTran_ptr.
- *          It is recommended to call this function from a separate thread to avoid blocking the main code.
- */
 void EMTracker::Read_Loop()
 {
   // Check if sensors are connected
-  if (!sensorConfigMap["robot"].active)
+  if (!m_sensorConfigMap["robot"].active)
   {
     std::cerr << "ERROR: Robot sensor is not connected" << std::endl;
     std::cout << "Read loop bypassed" << std::endl;
     return;
   }
-  if (!sensorConfigMap["tool"].active)
+  if (!m_sensorConfigMap["tool"].active)
   {
     std::cerr << "ERROR: Tool sensor is not connected" << std::endl;
     std::cout << "Read loop bypassed" << std::endl;
     return;
   }
-  if (!sensorConfigMap["phantom"].active)
-  {
-    std::cerr << "ERROR: Phantom sensor is not connected" << std::endl;
-    std::cout << "Read loop bypassed" << std::endl;
-    return;
-  }
+  // if (!sensorConfigMap["phantom"].active)
+  // {
+  //   std::cerr << "ERROR: Phantom sensor is not connected" << std::endl;
+  //   std::cout << "Read loop bypassed" << std::endl;
+  //   return;
+  // }
 
   std::vector<ToolData> sensors_data;
   std::vector<blaze::StaticVector<double, 3UL>> pointBuffer(100); // Buffer to store the past 200 samples
 
-  quatTransformation temp_1, temp_2, temp_3, temp_4;
+  quatTransformation temp;
 
   // Load tool definition files and initialize sensors
   EMTracker::LoadToolDefinitions2Ports(true);
@@ -504,31 +465,38 @@ void EMTracker::Read_Loop()
 
     sensors_data = m_combinedAPI->getTrackingDataBX();
 
-    ToolData2QuatTransform(sensors_data[sensorConfigMap["robot"].probe_handle_num], temp_1);
-    Combine_Quat_Transformation(temp_1, m_sec_transforms[sensorConfigMap["robot"].probe_handle_num], m_transform_0_1);
-    ToolData2QuatTransform(sensors_data[sensorConfigMap["tool"].probe_handle_num], temp_2);
-    Combine_Quat_Transformation(temp_2, m_sec_transforms[sensorConfigMap["tool"].probe_handle_num], m_transform_0_2);
-    
-    if (!m_flag_freeze_phantom)
+    ToolData2QuatTransform(sensors_data[m_sensorConfigMap["robot"].probe_handle_num], temp);
+    Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["robot"].probe_handle_num], m_transform_0_1);
+
+    ToolData2QuatTransform(sensors_data[m_sensorConfigMap["tool"].probe_handle_num], temp);
+    Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["tool"].probe_handle_num], m_transform_0_2);
+
+    if (m_sensorConfigMap["phantom"].active && !m_flag_freeze_phantom)
     {
-      ToolData2QuatTransform(sensors_data[sensorConfigMap["phantom"].probe_handle_num], temp_3);
-      Combine_Quat_Transformation(temp_3, m_sec_transforms[sensorConfigMap["phantom"].probe_handle_num], m_transform_0_3);
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["phantom"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["phantom"].probe_handle_num], m_transform_0_3);
     }
 
-        if (sensorConfigMap["probe_1"].active)
+    if (m_sensorConfigMap["us_probe"].active)
     {
-      ToolData2QuatTransform(sensors_data[sensorConfigMap["probe_1"].probe_handle_num], temp_4);
-      Combine_Quat_Transformation(temp_4, m_sec_transforms[sensorConfigMap["probe_1"].probe_handle_num], m_transform_0_6);
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["us_probe"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["us_probe"].probe_handle_num], m_transform_0_4);
     }
-    else if (sensorConfigMap["probe_2"].active)
+
+    if (m_sensorConfigMap["probe_1"].active)
     {
-      ToolData2QuatTransform(sensors_data[sensorConfigMap["probe_2"].probe_handle_num], temp_4);
-      Combine_Quat_Transformation(temp_4, m_sec_transforms[sensorConfigMap["probe_2"].probe_handle_num], m_transform_0_6);
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["probe_1"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["probe_1"].probe_handle_num], m_transform_0_6);
     }
-    else if (sensorConfigMap["probe_3"].active)
+    else if (m_sensorConfigMap["probe_2"].active)
     {
-      ToolData2QuatTransform(sensors_data[sensorConfigMap["probe_3"].probe_handle_num], temp_4);
-      Combine_Quat_Transformation(temp_4, m_sec_transforms[sensorConfigMap["probe_3"].probe_handle_num], m_transform_0_6);
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["probe_2"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["probe_2"].probe_handle_num], m_transform_0_6);
+    }
+    else if (m_sensorConfigMap["probe_3"].active)
+    {
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["probe_3"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["probe_3"].probe_handle_num], m_transform_0_6);
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -546,12 +514,12 @@ void EMTracker::Read_Loop()
       m_transform_0_3.rotation = m_filter_rot_phantom->add_data_point(m_transform_0_3.rotation);
     }
 
-    // Calculate the transformation of the probe in the reference frame
+    /// Calculate the transformations
     Combine_Quat_Transformation(m_transform_0_1.inv(), m_transform_0_2, m_transform_1_2);
     Combine_Quat_Transformation(m_transform_0_3.inv(), m_transform_0_2, m_transform_3_2);
     Combine_Quat_Transformation(m_transform_0_3.inv(), m_transform_0_1, m_transform_3_1);
 
-    if (sensorConfigMap["probe_1"].active || sensorConfigMap["probe_2"].active || sensorConfigMap["probe_3"].active)
+    if (m_sensorConfigMap["probe_1"].active || m_sensorConfigMap["probe_2"].active || m_sensorConfigMap["probe_3"].active)
     {
       if (m_flag_filter)
       {
@@ -593,15 +561,6 @@ void EMTracker::freeze_phantom(bool status)
   m_flag_freeze_phantom = status;
 }
 
-/**
- * @brief Sets the filter parameters for the reference and tools filters.
- *
- * @details This function updates the filter coefficients for both translation and rotation filters
- *          based on the provided cutoff frequencies for the reference and tools.
- *
- * @param fc_ref The cutoff frequency for the reference filter in Hz.
- * @param fc_tools The cutoff frequency for the tools filter in Hz.
- */
 void EMTracker::set_filter_params(double fc_ref, double fc_tools)
 {
   m_filter_tran_robot->update_coeffs(fc_ref);
@@ -618,135 +577,97 @@ void EMTracker::set_filter_params(double fc_ref, double fc_tools)
             << std::endl;
 }
 
-/**
- * @brief Retrieves the tool transformation in the system (CTR or catheter robot) frame.
- *
- * @details The transformation includes translation and rotation, with the rotation represented in quaternion format.
- *          The translation is converted from millimeters to meters.
- *
- * @param transform Reference to a quatTransformation object to store the tool transformation.
- */
+int EMTracker::get_robot_transform_in_em(quatTransformation &transform)
+{
+  if (!m_sensorConfigMap["robot"].active)
+    return 1;
+  transform.translation = m_transform_0_1.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = m_transform_0_1.rotation;
+  return 0;
+}
+
+int EMTracker::get_tool_transform_in_em(quatTransformation &transform)
+{
+  if (!m_sensorConfigMap["tool"].active)
+    return 1;
+  transform.translation = m_transform_0_2.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = m_transform_0_2.rotation;
+  return 0;
+}
+
+int EMTracker::get_phantom_transform_in_em(quatTransformation &transform)
+{
+  if (!m_sensorConfigMap["phantom"].active)
+    return 1;
+  transform.translation = m_transform_0_3.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = m_transform_0_3.rotation;
+  return 0;
+}
+
+int EMTracker::get_usprobe_transform_in_em(quatTransformation &transform)
+{
+  if (!m_sensorConfigMap["us_probe"].active)
+    return 1;
+  transform.translation = m_transform_0_4.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = m_transform_0_4.rotation;
+  return 0;
+}
+
+int EMTracker::get_probe_transform_in_em(quatTransformation &transform)
+{
+  if (m_sensorConfigMap["probe_1"].active || m_sensorConfigMap["probe_2"].active || m_sensorConfigMap["probe_3"].active)
+  {
+    transform.translation = m_transform_0_6.translation * 1.00E-3; // Convert from mm to meters
+    transform.rotation = m_transform_0_6.rotation;
+    return 0;
+  }
+  else
+  {
+    return 0;
+  }
+}
+
 void EMTracker::get_tool_transform_in_robot(quatTransformation &transform)
 {
   transform.translation = m_transform_1_2.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_1_2.rotation;
 }
 
-/**
- * @brief Retrieves the tool transformation in the phantom frame.
- *
- * @details The transformation includes translation and rotation, with the rotation represented in quaternion format.
- *          The translation is converted from millimeters to meters.
- *
- * @param transform Reference to a quatTransformation object to store the tool transformation.
- */
 void EMTracker::get_tool_transform_in_phantom(quatTransformation &transform)
 {
   transform.translation = m_transform_3_2.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_3_2.rotation;
 }
 
-/**
- * @brief Retrieves the derivative of the tool transformation in the system (CTR or catheter robot) frame.
- *
- * @details The transformation includes translation and rotation, with the rotation represented in quaternion format.
- *          The translation is converted from millimeters to meters.
- *
- * @param transform_dot Reference to a quatTransformation object to store the tool transformation derivative.
- */
 void EMTracker::get_tool_transform_in_robot_dot(quatTransformation &transform_dot)
 {
   transform_dot.translation = m_transform_dot_1_2.translation * 1.00E-3; // Convert from mm to meters
   transform_dot.rotation = m_transform_dot_1_2.rotation;
 }
 
-/**
- * @brief Retrieves the tool sensor transformation in the EM tracker frame.
- *
- * @details The transformation includes translation and rotation, with the rotation represented in quaternion format.
- *          The translation is converted from millimeters to meters.
- *
- * @param transform Reference to a quatTransformation object to store the tool sensor transformation.
- */
-void EMTracker::get_tool_transform_in_em(quatTransformation &transform)
-{
-  transform.translation = m_transform_0_2.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_0_2.rotation;
-}
-
-/**
- * @brief Retrieves the transformation from the system frame to the EM frame (EM frame in systems frame).
- *
- * @details The transformation includes translation and rotation, with the rotation represented in quaternion format.
- *          The translation is converted from millimeters to meters.
- *
- * @param transform Reference to a quatTransformation object to store the system to EM frame transformation.
- */
-void EMTracker::get_robot_transform_in_em(quatTransformation &transform)
-{
-  transform.translation = m_transform_0_1.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_0_1.rotation;
-}
-
-/**
- * @brief Retrieves the transformation from the system base frame to the phantom frame.
- *
- * @details The transformation includes translation and rotation, with the rotation represented in quaternion format.
- *          The translation is converted from millimeters to meters.
- *
- * @param transform Reference to a quatTransformation object to store the system to EM frame transformation.
- */
 void EMTracker::get_robot_transform_in_phantom(quatTransformation &transform)
 {
   transform.translation = m_transform_3_1.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_3_1.rotation;
 }
 
-/**
- * @brief Retrieves the probe position in the system base frame.
- *
- * @details The transformation includes translation and rotation, with the rotation represented in quaternion format.
- *          The translation is converted from millimeters to meters.
- *
- * @param transform Reference to a quatTransformation object to store the probe transformation.
- */
 void EMTracker::get_probe_transform_in_robot(quatTransformation &transform)
 {
   transform.translation = m_transform_1_6.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_1_6.rotation;
 }
 
-/**
- * @brief Retrieves the probe position in the phantom frame.
- *
- * @details The transformation includes translation and rotation, with the rotation represented in quaternion format.
- *          The translation is converted from millimeters to meters.
- *
- * @param transform Reference to a quatTransformation object to store the probe transformation.
- */
 void EMTracker::get_probe_transform_in_phantom(quatTransformation &transform)
 {
   transform.translation = m_transform_3_6.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_3_6.rotation;
 }
 
-/** @brief get sample time */
 void EMTracker::get_sample_time(double &sample_time)
 {
   sample_time = m_measured_sample_time;
 }
 
-/**
- * @brief Converts sensor position and orientation from ToolData type to a std::vector of translation
- *        and rotation quaternion types.
- *
- * @details This function checks if the tool data transform is missing and sets the corresponding
- *          values in the vector to 0.0 if it is missing. Otherwise, it extracts the translation and
- *          rotation values from the tool data and stores them in the vector.
- *
- * @param toolData The ToolData object containing the sensor position and orientation data.
- * @param toolCoord Reference to a std::vector<double> to store the converted translation and rotation values.
- */
 void EMTracker::ToolData2Vector(const ToolData &toolData, std::vector<double> &toolCoord)
 {
   toolCoord = {
@@ -760,17 +681,6 @@ void EMTracker::ToolData2Vector(const ToolData &toolData, std::vector<double> &t
       toolData.transform.isMissing() ? 0.00 : toolData.transform.error};
 }
 
-/**
- * @brief Converts sensor position and orientation from ToolData type to QuatTransformation type.
- *
- * @details This function checks if the tool data transform is not missing and if its status is enabled.
- *          If so, it extracts the rotation (quaternion) and translation values from the tool data and
- *          stores them in the output QuatTransformation object. If the transform is missing or not enabled,
- *          the rotation and translation are set to NaN.
- *
- * @param input The ToolData object containing the sensor position and orientation data.
- * @param output Reference to a quatTransformation object to store the converted transformation values.
- */
 void EMTracker::ToolData2QuatTransform(const ToolData &input, quatTransformation &output)
 {
   if (!input.transform.isMissing() && input.transform.status == TransformStatus::Enabled)
@@ -793,7 +703,6 @@ void EMTracker::ToolData2QuatTransform(const ToolData &input, quatTransformation
   }
 }
 
-//
 void EMTracker::log_tansformation(const int number, const blaze::StaticVector<double, 3UL> &translation, const blaze::StaticVector<double, 4UL> &rotation, const double sample_time) const
 {
   std::ostringstream oss;
@@ -825,14 +734,6 @@ void EMTracker::log_tansformation(const int number, const blaze::StaticVector<do
   std::cout << number << "  " << oss.str().c_str() << std::endl;
 }
 
-/**
- * @brief Checks if all distances are less than a threshold.
- * *
- * @param points_list A vector of 3D points to check.
- * @param radius The radius of the sphere.
- *
- * @return true if all points are within the sphere with the given radius.
- */
 bool EMTracker::points_in_sphere(const std::vector<blaze::StaticVector<double, 3UL>> &points_list, const double &radius)
 {
   const blaze::StaticVector<double, 3UL> referenceSample = points_list[0UL];
@@ -853,12 +754,6 @@ bool EMTracker::points_in_sphere(const std::vector<blaze::StaticVector<double, 3
   return true;
 }
 
-/**
- * @brief Saves collected landmarks to a CSV file with X, Y, Z headers.
- *
- * @param data A vector of 3D points representing the collected landmarks.
- * @param filepath The path to the CSV file where the data will be saved.
- */
 void EMTracker::save_landmarks_to_csv(const std::vector<blaze::StaticVector<double, 3UL>> &data, const std::string &filepath)
 {
   std::filesystem::path filePath(filepath);
@@ -890,12 +785,6 @@ void EMTracker::save_landmarks_to_csv(const std::vector<blaze::StaticVector<doub
   // The file will be automatically closed when the ofstream object goes out of scope
 }
 
-/**
- * @brief Loads landmarks from a CSV file with X, Y, Z headers.
- *
- * @param filepath The path to the CSV file to be read.
- * @param data A pointer to a vector of 3D points to store the loaded landmarks.
- */
 void EMTracker::load_landmarks_from_csv(const std::string &filepath, std::vector<blaze::StaticVector<double, 3UL>> *data)
 {
   // Clear the output vector to start fresh
@@ -960,12 +849,6 @@ void EMTracker::load_landmarks_from_csv(const std::string &filepath, std::vector
   file.close(); // Close the file
 }
 
-/**
- * @brief Saves QuatTransformation data to a CSV file with headers.
- *
- * @param data The QuatTransformation object containing the transformation data.
- * @param filename The path to the CSV file where the data will be saved.
- */
 void EMTracker::save_transformation_to_csv(const quatTransformation &data, const std::string &filename)
 {
   // Open the CSV file for writing
@@ -998,7 +881,6 @@ void EMTracker::save_transformation_to_csv(const quatTransformation &data, const
   file.close();
 }
 
-/* Load QuatTransformation data from a CSV file */
 bool EMTracker::load_transformation_from_csv(const std::string &filename, quatTransformation &data)
 {
   // Open the CSV file for reading
@@ -1091,12 +973,6 @@ bool EMTracker::load_transformation_from_csv(const std::string &filename, quatTr
   return true;
 }
 
-/**
- * @brief Calculates the average of each column in a vector of 3D points.
- *
- * @param data A vector of 3D points from which to calculate the column averages.
- * @param columnAverages Reference to a blaze::StaticVector<double, 3> to store the calculated averages.
- */
 void EMTracker::column_average(const std::vector<blaze::StaticVector<double, 3UL>> &data, blaze::StaticVector<double, 3UL> &columnAverages)
 {
   if (data.empty())
@@ -1120,14 +996,6 @@ void EMTracker::column_average(const std::vector<blaze::StaticVector<double, 3UL
   columnAverages /= numRows;
 }
 
-/**
- * @brief Reads sensor configuration from a YAML file and populates a map with the configuration data.
- *
- * @param file_path The path to the YAML file containing the sensor configuration.
- * @param sensorConfig_map Pointer to a map to store the sensor configuration data.
- *
- * @return 0 on success, -1 on failure.
- */
 int EMTracker::read_sensor_config_from_yaml(const std::string &file_path, std::map<std::string, SensorConfig> &sensorConfig_map)
 {
   try
@@ -1162,9 +1030,6 @@ int EMTracker::read_sensor_config_from_yaml(const std::string &file_path, std::m
   }
 }
 
-/**
- * @brief Pauses the execution of the program for a specified number of seconds.
- */
 void SleepSeconds(const unsigned numSeconds)
 {
   sleep(numSeconds); // sleep(sec)

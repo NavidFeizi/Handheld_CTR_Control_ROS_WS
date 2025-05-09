@@ -117,7 +117,7 @@ private:
     }
 
     // Joint space target SRV client
-    m_target_service = this->create_client<interfaces::srv::Jointstarget>("joints_space/target");
+    m_target_service = this->create_client<interfaces::srv::Jointstarget>("joint_space/target");
 
     // Tool position subscriptions
     m_callback_group_1 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

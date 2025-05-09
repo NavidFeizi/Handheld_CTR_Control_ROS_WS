@@ -39,6 +39,7 @@
 #include <filesystem>
 #include <sstream>
 #include <memory>
+#include <bitset>
 #include "spdlog/spdlog.h"
 
 #include "CiA301node.hpp"
@@ -100,6 +101,10 @@ public:
   bool isReached() const;
   void getPosLimit(double &min, double &max) const;
 
+  // ============================== Status Methods ==============================
+  int32_t getCpuTemp() const;
+  int32_t getDriverTemp() const;
+  std::bitset<32> getDigitalIn() const;
 
 private:
   // ============================== CANopen Communication Methods ==============================
@@ -169,6 +174,10 @@ private:
   blaze::StaticVector<double, 2> m_PosLimitSi;                            // position limit in SI unit
   blaze::StaticVector<int32_t, 2> m_currentPosLimit;                      // actual position limit
   blaze::StaticVector<double, 2> m_currentPosLimitSi;                     // actual position limit in SI unit
+  int32_t m_temp_cpu;
+  int32_t m_temp_power;
+  std::bitset<32> m_digital_in;
+  // int32_t m_digital_in;
 
   // ======================== Other variables ========================
   bool m_flag_target_task_processing;

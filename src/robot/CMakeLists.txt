@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(robot VERSION 1.0 LANGUAGES CXX)
+project(robot VERSION 2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
@@ -31,17 +31,42 @@ find_package(interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Widgets Concurrent)
 
+# Find necessary planner packages
+find_package(OpenMP REQUIRED)
+find_package(Boost REQUIRED COMPONENTS serialization filesystem system)
+find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
+find_package(Blaze REQUIRED)
+find_package(TBB REQUIRED)
+find_package(NLopt REQUIRED)      # For CTRlib
+
 set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
 add_subdirectory(lib_robot)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_robot/include)
 
+# Adding the CTR static Library to the project
+add_subdirectory(ctr_library)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ctr_library/include)
+
+
 add_executable(ctr_robot src/robot_node.cpp)
 target_link_libraries(ctr_robot ROBOTlib Qt5::Widgets Qt5::Core Qt5::Concurrent)
 ament_target_dependencies(ctr_robot rclcpp std_msgs std_srvs rclcpp_action interfaces)
 
+add_executable(qt_gui src/qt_node.cpp)
+target_link_libraries(qt_gui Qt5::Widgets Qt5::Core Qt5::Concurrent)
+ament_target_dependencies(qt_gui rclcpp std_msgs std_srvs rclcpp_action interfaces)
+
+add_executable(forward_kin src/fk_node.cpp)
+target_link_libraries(forward_kin CTRlib)
+ament_target_dependencies(forward_kin rclcpp std_msgs std_srvs interfaces)
+ament_target_dependencies(forward_kin OpenMP Boost BLAS LAPACK Blaze TBB NLopt)
+
 install(TARGETS
   ctr_robot
+  qt_gui
+  forward_kin
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY

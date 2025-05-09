@@ -72,3 +72,9 @@ To set up the CANopen connection, follow these steps:
    ```
    Replace `*` with the number of the connected USB port, usually `0`.
 
+
+
+
+ros2 run tf2_tools view_frames
+
+

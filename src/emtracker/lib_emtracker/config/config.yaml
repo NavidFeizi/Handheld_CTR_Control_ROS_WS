@@ -27,27 +27,21 @@ sensor_config:
   - sensor:
       name: tool
     #   serial_number: 3CD50C00        # Handheld ctr tip sensor
-      serial_number: 3CD50C08           # Handheld ctr tip sensor - new
+    #   serial_number: 3CD50C08           # Handheld ctr tip sensor - new
+    #   serial_number: 3C88DC01           # Handheld ctr tip sensor J-bar
+      serial_number: 37911000           # Handheld ctr tip sensor - new
       srom_filename: 610158_ctrtip.rom
-      load_srom: true
+      load_srom: false
       tran_filename: None
       load_tran: false              # if false, identity tranformation is used
 
   - sensor:
       name: robot
-      serial_number: 3B910800       # Handheld CTR robot reference
-      srom_filename: None
-      load_srom: false
+      serial_number: 3B2A8800       # Handheld CTR robot reference
+      srom_filename: 610029_20150724_EOL.rom
+      load_srom: true
       tran_filename: 610094_robot2base.csv
       load_tran: true              # if false, identity tranformation is used
-
-#   - sensor:
-#       name: robot
-#       serial_number: 3B2A8800       # Handheld CTR robot reference
-#       srom_filename: None
-#       load_srom: false
-#       tran_filename: 610094_robot2base.csv
-#       load_tran: true              # if false, identity tranformation is used
 
   - sensor:
       name: phantom
@@ -56,5 +50,13 @@ sensor_config:
       load_srom: false
       tran_filename: 610029_phantom2ct.csv
       load_tran: true
+
+  - sensor:
+      name: us_probe
+      serial_number: 3B910800       # Abdominal phantom reference
+      srom_filename: None
+      load_srom: false
+      tran_filename: None
+      load_tran: false
 
 

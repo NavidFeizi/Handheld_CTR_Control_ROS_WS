@@ -148,6 +148,8 @@ void Cia301Node::OnBoot(canopen::NmtState /*st*/, char es, const std::string &wh
         Wait(AsyncWait(duration(std::chrono::milliseconds(50)))); // wait for for a clean log file
         Cia301Node::SetTpdoTranstype_(2, 1);                      // set tPDO2 transmission type to trigger with SYNC
         Wait(AsyncWait(duration(std::chrono::milliseconds(50)))); // wait for for a clean log file
+        // Cia301Node::SetTpdoTranstype_(3, 1);                      // set tPDO3 transmission type to trigger with SYNC
+        // Wait(AsyncWait(duration(std::chrono::milliseconds(50)))); // wait for for a clean log file
         Cia301Node::SetTpdoTranstype_(4, 1);                      // set tPDO4 transmission type to trigger with SYNC
         Wait(AsyncWait(duration(std::chrono::milliseconds(50)))); // wait for for a clean log file
 
@@ -293,13 +295,25 @@ void Cia301Node::OnRpdoWrite(uint16_t idx, uint8_t subidx) noexcept
         }
     }
 
+    // if RxPDO 3 received
+    if (idx == DIGITAL_INPUTS) // if RxPDO 3 received ---- info in RxPDO4 -> [1] min positon limit
+    {
+        int32_t digital_in = rpdo_mapped[DIGITAL_INPUTS][0x00];              // Update current min position limit
+        m_digital_in = digital_in;
+    }
+    // if (idx == DEVICE_TEMPERATURE && subidx == 0x01) // if RxPDO 3 received ---- info in RxPDO4 -> [1] max position
+    // {
+    //     m_temp_cpu = rpdo_mapped[DEVICE_TEMPERATURE][0x01];              // Update current max position limit
+    //     // m_temp_power = rpdo_mapped[DEVICE_TEMPERATURE][0x02];              // Update current max position limit
+    // }
+
     // if RxPDO 4 received
-    if (idx == POSITION_LIMIT && subidx == 0x01) // if RxPDO 2 received ---- info in RxPDO4 -> [1] min positon limit
+    if (idx == POSITION_LIMIT && subidx == 0x01) // if RxPDO 4 received ---- info in RxPDO4 -> [1] min positon limit
     {
         m_currentPosLimit[0] = rpdo_mapped[POSITION_LIMIT][0x01];              // Update current min position limit
         m_currentPosLimitSi[0] = double(m_currentPosLimit[0]) / double(m_ppu); // convert to SI unit
     }
-    if (idx == POSITION_LIMIT && subidx == 0x02) // if RxPDO 2 received ---- info in RxPDO4 -> [1] max position
+    if (idx == POSITION_LIMIT && subidx == 0x02) // if RxPDO 4 received ---- info in RxPDO4 -> [1] max position
     {
         m_currentPosLimit[1] = rpdo_mapped[POSITION_LIMIT][0x02];              // Update current max position limit
         m_currentPosLimitSi[1] = double(m_currentPosLimit[1]) / double(m_ppu); // convert to SI unit
@@ -307,7 +321,9 @@ void Cia301Node::OnRpdoWrite(uint16_t idx, uint8_t subidx) noexcept
 
     // you can add more PDOs here to be recognized
     // if Received unknown PDO
-    if (!((idx == ACTUAL_TORQUE_FAULHABER_IDX) || (idx == ACTUAL_CURRENT_MAXON_IDX) || (idx == ACTUAL_VELOCITY_FAULHABER_IDX) || (idx == ACTUAL_VELOCITY_MAXON_IDX) || (idx == STATUS_WORD_IDX) || (idx == ACTUAL_POSITION_IDX) || (idx == POSITION_LIMIT)))
+    if (!((idx == ACTUAL_TORQUE_FAULHABER_IDX) || (idx == ACTUAL_CURRENT_MAXON_IDX) || (idx == ACTUAL_VELOCITY_FAULHABER_IDX) || 
+          (idx == ACTUAL_VELOCITY_MAXON_IDX) || (idx == STATUS_WORD_IDX) || (idx == ACTUAL_POSITION_IDX) || (idx == POSITION_LIMIT) ||
+          (idx == DIGITAL_INPUTS)))
     {
         std::stringstream ss;
         ss << "[Node " + m_nodeId << ": unknown PDO - idx: 0x" << std::hex << idx << " subidx: 0x" << std::hex << subidx; // Convert to hex, uppercase letters
@@ -419,9 +435,9 @@ void Cia301Node::EnableOp_(const bool enable)
     {
         while (m_statusWord.operation_enabled)
         {
-            if (attempt_count >= max_attempts) // If the loop has run 10 times without enabling the operation, return an error
+            if (attempt_count >= max_attempts) // If the loop has run 10 times without disabling the operation, return an error
             {
-                logger->critical("[Node " + m_nodeId + "] Operation not disabled after " + std::to_string(max_attempts) + " attempts - current status: " + m_statusWord.getCiA402StatusMessage());
+                logger->debug("[Node " + m_nodeId + "] Operation not disabled after " + std::to_string(max_attempts) + " attempts - current status: " + m_statusWord.getCiA402StatusMessage());
             }
             Wait(AsyncWrite<uint16_t>(CONTROL_WORD_IDX, 0, 0x0007));                 // set the state macine to switched on
             m_statusWord.update(Wait(AsyncRead<uint16_t>(STATUS_WORD_IDX, 0x0000))); // get status word on SDO
@@ -506,7 +522,7 @@ void Cia301Node::TaskTarget() noexcept
                     {
                         tpdo_mapped[TARGET_POSITION_IDX][0] = m_targetPos; // target position
                         tpdo_mapped[CONTROL_WORD_IDX][0] = m_controlWord.get();
-                        tpdo_mapped[TARGET_POSITION_IDX][0].WriteEvent(); // Trigger write events for PDO1.
+                        tpdo_mapped[TARGET_POSITION_IDX][0].WriteEvent(); // Trigger write events for PDO2.
                         m_targetPosPrev = m_targetPos;
                         m_flags.set(Flags::FlagIndex::NEW_TARG_READY, false);
                         m_statusWord.bit10 = 0;
@@ -529,7 +545,7 @@ void Cia301Node::TaskTarget() noexcept
                 m_controlWord.enable_operation = 1;                     // set immediately bit (bit 5)
                 tpdo_mapped[TARGET_VELOCITY_IDX][0] = m_targetVel;      // target velocity
                 tpdo_mapped[CONTROL_WORD_IDX][0] = m_controlWord.get(); // enable
-                tpdo_mapped[TARGET_VELOCITY_IDX][0].WriteEvent();       // Trigger write events for PDO1.
+                tpdo_mapped[TARGET_VELOCITY_IDX][0].WriteEvent();       // Trigger write events for PDO3.
                                                                         // std::cout << "target vel: " << vel << std::endl;
                                                                         // if (flag_printlog)
                                                                         // {
@@ -1188,4 +1204,19 @@ bool Cia301Node::getFlags(const Flags::FlagIndex index) const
 OpMode Cia301Node::getOperationMode() const
 {
     return m_current_operation_mode;
+}
+
+std::bitset<32> Cia301Node::getDigitalIn() const
+{
+    return m_digital_in;
+}
+
+int32_t Cia301Node::getCpuTemp() const
+{
+    return m_temp_cpu;
+}
+
+int32_t Cia301Node::getDriverTemp() const
+{
+    return m_temp_power;
 }

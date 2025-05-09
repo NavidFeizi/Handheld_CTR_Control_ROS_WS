@@ -184,7 +184,8 @@ void CTRobot::startCANopenNodes()
 
   while (true)
   {
-    if (CTRobot::getEnableStatus())
+    auto en_status = CTRobot::getEnableStatus();
+    if (en_status[0] && en_status[1] && en_status[2] && en_status[3])
     {
       if (!m_shared_state->m_flag_operation_enabled)
       {
@@ -273,7 +274,7 @@ void CTRobot::enableOperation(const bool enable)
   m_inrTubeTrn->enableOperation(enable);
   m_mdlTubeRot->enableOperation(enable);
   m_mdlTubeTrn->enableOperation(enable);
-  std::this_thread::sleep_for(std::chrono::milliseconds(200)); // wait for the command to be executed
+  std::this_thread::sleep_for(std::chrono::milliseconds(300)); // wait for the command to be executed
 }
 
 /* template */
@@ -294,20 +295,14 @@ bool CTRobot::getSwitchStatus() const
 }
 
 /* template */
-bool CTRobot::getEnableStatus(blaze::StaticVector<bool, 4> &status) const
+blaze::StaticVector<bool, 4> CTRobot::getEnableStatus() const
 {
+  blaze::StaticVector<bool, 4> status;
   status[0] = m_inrTubeRot->getStatusword().operation_enabled;
   status[1] = m_inrTubeTrn->getStatusword().operation_enabled;
   status[2] = m_mdlTubeRot->getStatusword().operation_enabled;
   status[3] = m_mdlTubeTrn->getStatusword().operation_enabled;
-  return status[0] && status[1] && status[2] && status[3];
-}
-
-/* overloaded */
-bool CTRobot::getEnableStatus() const
-{
-  blaze::StaticVector<bool, 4> status;
-  return this->getEnableStatus(status);
+  return status;
 }
 
 /* template */
@@ -328,54 +323,38 @@ bool CTRobot::getDisabledStatus() const
 }
 
 /* template */
-bool CTRobot::getEncoderStatus(blaze::StaticVector<bool, 4> &status) const
+blaze::StaticVector<bool, 4> CTRobot::getEncoderStatus() const
 {
+  blaze::StaticVector<bool, 4> status;
   status[0] = m_inrTubeRot->getFlags(Flags::FlagIndex::ENCODER_SET);
   status[1] = m_inrTubeTrn->getFlags(Flags::FlagIndex::ENCODER_SET);
   status[2] = m_mdlTubeRot->getFlags(Flags::FlagIndex::ENCODER_SET);
   status[3] = m_mdlTubeTrn->getFlags(Flags::FlagIndex::ENCODER_SET);
-  return status[0] && status[1] && status[2] && status[3];
-}
-
-/* overloaded */
-bool CTRobot::getEncoderStatus() const
-{
-  blaze::StaticVector<bool, 4> status;
-  return this->getEncoderStatus(status);
+  return status;
 }
 
 /* template */
-bool CTRobot::getReachedStatus(blaze::StaticVector<bool, 4> &status) const
+blaze::StaticVector<bool, 4> CTRobot::getReachedStatus() const
 {
-  bool all_reached = m_inrTubeRot->isReached() &&
-                     m_inrTubeTrn->isReached() &&
-                     m_mdlTubeRot->isReached() &&
-                     m_mdlTubeTrn->isReached();
-
+  blaze::StaticVector<bool, 4> status;
   status[0] = m_inrTubeRot->isReached();
   status[1] = m_inrTubeTrn->isReached();
   status[2] = m_mdlTubeRot->isReached();
   status[3] = m_mdlTubeTrn->isReached();
-
-  return all_reached;
-}
-
-/* overloaded */
-bool CTRobot::getReachedStatus() const
-{
-  blaze::StaticVector<bool, 4> status;
-  return this->getReachedStatus(status);
+  return status;
 }
 
 /* */
-void CTRobot::setLinearEncoders(const double inner, const double middle)
+void CTRobot::setEncoders(const blaze::StaticVector<double, 4> val)
 {
-  m_inrTubeTrn->setEncoder(inner);
-  m_mdlTubeTrn->setEncoder(middle);
+  m_inrTubeRot->setEncoder(val[0]);
+  m_inrTubeTrn->setEncoder(val[1]);
+  m_mdlTubeRot->setEncoder(val[2]);
+  m_mdlTubeTrn->setEncoder(val[3]);
 }
 
 /*  */
-void CTRobot::setPosLimit(const blaze::StaticVector<double, 4> &min, const blaze::StaticVector<double, 4> &max)
+void CTRobot::setPosLimit(const blaze::StaticVector<double, 4> &min, const blaze::StaticVector<double, 4> &max) const
 {
   m_inrTubeRot->setPosLimit(min[0], max[0]);
   m_inrTubeTrn->setPosLimit(min[1], max[1]);
@@ -387,7 +366,6 @@ void CTRobot::setPosLimit(const blaze::StaticVector<double, 4> &min, const blaze
   operation mode must be set to PositionProfile in advance     */
 void CTRobot::setTargetPos(const blaze::StaticVector<double, 4> &target)
 {
-
   // if (this->flag_position_limit)
   // {
   //   if (!(CTRobot::Position_limits_check(target) == 0))
@@ -471,12 +449,14 @@ void CTRobot::setOperationMode(const OpMode mode)
 }
 
 /* Gets the current in [mA] unit */
-void CTRobot::getCurrent(blaze::StaticVector<double, 4> &val) const
+blaze::StaticVector<double, 4> CTRobot::getCurrent() const
 {
+  blaze::StaticVector<double, 4> val;
   this->m_inrTubeRot->getCurrentAvg(val[0]);
   this->m_inrTubeTrn->getCurrentAvg(val[1]);
   this->m_mdlTubeRot->getCurrentAvg(val[2]);
   this->m_mdlTubeTrn->getCurrentAvg(val[3]);
+  return val;
 }
 
 /* Gets the current velocity of all actuators in SI unit */
@@ -506,71 +486,113 @@ void CTRobot::getPosLimit(blaze::StaticVector<double, 4> &min, blaze::StaticVect
   this->m_mdlTubeTrn->getPosLimit(min[3], max[3]);
 }
 
-/* Actuatre robot to the targert absolute joint positions in SI unit
-  (with respect to zero position (distal limit) - positive value is towards proximal end)     */
-void CTRobot::findTransEncoders()
+/* Gets the current absolute position of all actuators in SI unit */
+void CTRobot::getTemperature(blaze::StaticVector<int32_t, 4> &cpu, blaze::StaticVector<int32_t, 4> &driver) const
 {
-  blaze::StaticVector<double, 4UL> negative = {400.0, 220.0, 400.0, 220.0};
-  blaze::StaticVector<double, 4UL> positive = {400.0, 220.0, 400.0, 220.0};
+  cpu[0] = this->m_inrTubeRot->getCpuTemp();
+  cpu[1] = this->m_inrTubeTrn->getCpuTemp();
+  cpu[2] = this->m_mdlTubeRot->getCpuTemp();
+  cpu[3] = this->m_mdlTubeTrn->getCpuTemp();
 
-  blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
-  blaze::StaticVector<double, 4UL> max_vel = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
-  blaze::StaticVector<double, 4UL> max_acc = 0.1 * max_dcc;
-  double current = 0.0;
-  double pos1, pos0, pos2 = 0.0;
-  double collet_minimum_clearance = 0.040; // *********** needs to be adjusted ***********
-
-  CTRobot::setOperationMode(OpMode::VelocityProfile);
-  CTRobot::setMaxTorque(negative, positive);
-  CTRobot::setProfileParams(max_vel, max_acc, max_dcc);
-
-  this->m_inrTubeTrn->getPos(pos1);
-
-  CTRobot::setTargetVel({-0.0, -0.003, -0.0, -0.003});
-
-  this->m_inrTubeTrn->getCurrentAvg(current);
-  CTRobot::enableOperation(true);
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  while (current > -210.0)
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    this->m_inrTubeTrn->getCurrentAvg(current);
-  }
-  m_logger->info("[Master] inner carriage hit back");
-  CTRobot::setTargetVel({0.0, 0.0, 0.0, 0.0});
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-  this->m_inrTubeTrn->getPos(pos0);
-
-  // this->m_inner_tran->set_encoder(0.0);
-  // std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-  // CTRobot::Enable_Operation(true);
-
-  // std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-  CTRobot::setTargetVel({0.0, 0.003, 0.0, 0.0});
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  this->m_inrTubeTrn->getCurrentAvg(current);
-
-  m_logger->info("[Master] checkpoint_3");
-  while (current < 210.0)
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    this->m_inrTubeTrn->getCurrentAvg(current);
-  }
-  m_logger->info("[Master] inner carriage hit middle carriage");
-  CTRobot::setTargetVel({1.0, 0.0, 1.0, 0.0});
-  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-  CTRobot::setTargetVel({0.0, 0.0, 0.0, 0.0});
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  this->m_inrTubeTrn->getPos(pos2);
-  this->m_inrTubeTrn->setEncoder(pos2 - pos0);
-  this->m_mdlTubeTrn->setEncoder(pos2 - pos0 + collet_minimum_clearance);
-  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-  m_logger->info("[Master] encoders found");
-  CTRobot::enableOperation(false);
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  driver[0] = this->m_inrTubeRot->getDriverTemp();
+  driver[1] = this->m_inrTubeTrn->getDriverTemp();
+  driver[2] = this->m_mdlTubeRot->getDriverTemp();
+  driver[3] = this->m_mdlTubeTrn->getDriverTemp();
 }
+
+//
+void CTRobot::getDigitalIn(blaze::StaticVector<std::bitset<32>, 4> &in) const
+{
+  in[0] = this->m_inrTubeRot->getDigitalIn();
+  in[1] = this->m_inrTubeTrn->getDigitalIn();
+  in[2] = this->m_mdlTubeRot->getDigitalIn();
+  in[3] = this->m_mdlTubeTrn->getDigitalIn();
+}
+
+// to be delveloped
+void CTRobot::getInterface() const
+{
+  std::bitset<32> d_in_0 = this->m_inrTubeRot->getDigitalIn();
+  std::bitset<32> d_in_1 = this->m_inrTubeTrn->getDigitalIn();
+  std::bitset<32> d_in_2 = this->m_mdlTubeRot->getDigitalIn();
+  std::bitset<32> d_in_3 = this->m_mdlTubeTrn->getDigitalIn();
+
+  m_input->setKeyUp(d_in_0[17]);
+  m_input->setKeyDown(d_in_0[18]);
+  m_input->setKeyRight(d_in_1[17]);
+  m_input->setKeyLeft(d_in_1[18]);
+  m_input->setKeyForward(d_in_2[17]);
+  m_input->setKeyBackward(d_in_2[18]);
+  m_input->setKeyCenter(d_in_3[17]);
+
+  // m_input->setLED1(true);
+}
+
+// /* Actuatre robot to the targert absolute joint positions in SI unit
+//   (with respect to zero position (distal limit) - positive value is towards proximal end)     */
+// void CTRobot::findTransEncoders()
+// {
+//   blaze::StaticVector<double, 4UL> negative = {400.0, 220.0, 400.0, 220.0};
+//   blaze::StaticVector<double, 4UL> positive = {400.0, 220.0, 400.0, 220.0};
+
+//   blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
+//   blaze::StaticVector<double, 4UL> max_vel = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
+//   blaze::StaticVector<double, 4UL> max_acc = 0.1 * max_dcc;
+//   double current = 0.0;
+//   double pos1, pos0, pos2 = 0.0;
+//   double collet_minimum_clearance = 0.040; // *********** needs to be adjusted ***********
+
+//   CTRobot::setOperationMode(OpMode::VelocityProfile);
+//   CTRobot::setMaxTorque(negative, positive);
+//   CTRobot::setProfileParams(max_vel, max_acc, max_dcc);
+
+//   this->m_inrTubeTrn->getPos(pos1);
+
+//   CTRobot::setTargetVel({-0.0, -0.003, -0.0, -0.003});
+
+//   this->m_inrTubeTrn->getCurrentAvg(current);
+//   CTRobot::enableOperation(true);
+//   std::this_thread::sleep_for(std::chrono::milliseconds(10));
+//   while (current > -210.0)
+//   {
+//     std::this_thread::sleep_for(std::chrono::milliseconds(5));
+//     this->m_inrTubeTrn->getCurrentAvg(current);
+//   }
+//   m_logger->info("[Master] inner carriage hit back");
+//   CTRobot::setTargetVel({0.0, 0.0, 0.0, 0.0});
+//   std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+//   this->m_inrTubeTrn->getPos(pos0);
+
+//   // this->m_inner_tran->set_encoder(0.0);
+//   // std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+//   // CTRobot::Enable_Operation(true);
+
+//   // std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+//   CTRobot::setTargetVel({0.0, 0.003, 0.0, 0.0});
+//   std::this_thread::sleep_for(std::chrono::milliseconds(50));
+//   this->m_inrTubeTrn->getCurrentAvg(current);
+
+//   m_logger->info("[Master] checkpoint_3");
+//   while (current < 210.0)
+//   {
+//     std::this_thread::sleep_for(std::chrono::milliseconds(5));
+//     this->m_inrTubeTrn->getCurrentAvg(current);
+//   }
+//   m_logger->info("[Master] inner carriage hit middle carriage");
+//   CTRobot::setTargetVel({1.0, 0.0, 1.0, 0.0});
+//   std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+//   CTRobot::setTargetVel({0.0, 0.0, 0.0, 0.0});
+//   std::this_thread::sleep_for(std::chrono::milliseconds(100));
+//   this->m_inrTubeTrn->getPos(pos2);
+//   this->m_inrTubeTrn->setEncoder(pos2 - pos0);
+//   this->m_mdlTubeTrn->setEncoder(pos2 - pos0 + collet_minimum_clearance);
+//   std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+//   m_logger->info("[Master] encoders found");
+//   CTRobot::enableOperation(false);
+//   std::this_thread::sleep_for(std::chrono::milliseconds(100));
+// }
 
 /* Gets the current absolute position (with respect to zero position) of all actuators in [mm] or [deg] unit */
 void CTRobot::convPosToRobotFrame(const blaze::StaticVector<double, 4> &posCurrent,
@@ -615,13 +637,47 @@ int CTRobot::checkPosLimits(const blaze::StaticVector<double, 4> &posTarget) con
 }
 
 /* variable wait untill current position is reached to target position */
-void CTRobot::waitUntilReach()
+void CTRobot::waitUntilReach(const std::atomic<bool> &cancel_flag) const
 {
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  while (!this->getReachedStatus())
+  blaze::StaticVector<bool, 4> status = getReachedStatus();
+  while (!status[0] || !status[1] || !status[2] || !status[3])
   {
+    if (cancel_flag.load())
+    {
+      return;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    status = getReachedStatus();
   }
+}
+
+/* variable wait untill current position is reached to target position */
+void CTRobot::waitUntilReach() const
+{
+  std::atomic<bool> cancel_flag = false;
+  waitUntilReach(cancel_flag);
+}
+
+/* variable wait untill current position is reached to target position */
+void CTRobot::waitUntilTransReach(const std::atomic<bool> &cancel_flag) const
+{
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  while (!m_inrTubeTrn->isReached() || !m_mdlTubeTrn->isReached())
+  {
+    if (cancel_flag.load())
+    {
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+}
+
+/* variable wait untill current position is reached to target position */
+void CTRobot::waitUntilTransReach() const
+{
+  std::atomic<bool> cancel_flag = false;
+  waitUntilTransReach(cancel_flag);
 }
 
 /* Get the current date and time and format the filename using the date and time  */

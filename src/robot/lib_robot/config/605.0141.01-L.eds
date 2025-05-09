@@ -1054,7 +1054,7 @@ DefaultValue=2
 PDOMapping=0
 
 [1A00sub1]
-ParameterName=TPDO1 mapping entry 1
+ParameterName=TxPDO1 mapping entry 1
 ObjectType=7
 DataType=0x0007
 AccessType=RW
@@ -1062,7 +1062,7 @@ DefaultValue=0x60410010
 PDOMapping=0
 
 [1A00sub2]
-ParameterName=TPDO1 mapping entry 2
+ParameterName=TxPDO1 mapping entry 2
 ObjectType=7
 DataType=0x0007
 AccessType=RW
@@ -1100,7 +1100,7 @@ DefaultValue=2
 PDOMapping=0
 
 [1A01sub1]
-ParameterName=TxPDO1 mapping entry 1
+ParameterName=TxPDO2 mapping entry 1
 ObjectType=7
 DataType=0x0007
 AccessType=RW
@@ -1116,7 +1116,7 @@ DefaultValue=0x606C0020
 PDOMapping=0
 
 [1A01sub3]
-ParameterName=TxPDO3 mapping entry 3
+ParameterName=TxPDO2 mapping entry 3
 ObjectType=7
 DataType=0x0007
 AccessType=RW
@@ -1124,7 +1124,7 @@ DefaultValue=0x0
 PDOMapping=0
 
 [1A01sub4]
-ParameterName=TxPDO4 mapping entry 4
+ParameterName=TxPDO2 mapping entry 4
 ObjectType=7
 DataType=0x0007
 AccessType=RW
@@ -1142,7 +1142,7 @@ ObjectType=0x7
 DataType=0x0005
 AccessType=RW
 HighLimit=4
-DefaultValue=2
+DefaultValue=1
 PDOMapping=0
 
 [1A02sub1]
@@ -1150,7 +1150,7 @@ ParameterName=TxPDO3 mapping entry 1
 ObjectType=7
 DataType=0x0007
 AccessType=RW
-DefaultValue=0x60410010
+DefaultValue=0x60fd0020
 PDOMapping=0
 
 [1A02sub2]
@@ -1158,7 +1158,7 @@ ParameterName=TxPDO3 mapping entry 2
 ObjectType=7
 DataType=0x0007
 AccessType=RW
-DefaultValue=0x606C0020
+DefaultValue=0x0 
 PDOMapping=0
 
 [1A02sub3]

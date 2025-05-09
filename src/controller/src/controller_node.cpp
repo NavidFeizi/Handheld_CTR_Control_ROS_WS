@@ -119,7 +119,7 @@ public:
     this->m_initGuess = 0.00;
 
     // instantiating the CTR object for control
-    this->m_robot = std::make_shared<CTR>(Tb,
+    this->m_CTR_robot = std::make_shared<CTR>(Tb,
                                           this->m_q,
                                           Tol,
                                           mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON,
@@ -137,10 +137,10 @@ public:
 
     std::cout << "m_H: \n"
               << m_H << std::endl;
-    this->m_robot->setHomogeneousTransformation(m_H);
+    this->m_CTR_robot->setHomogeneousTransformation(m_H);
 
     constexpr blaze::StaticVector<double, 6UL> init_conf = {-0.083473,-0.0516,0,-0.647814,-1.49396,0};   // need to be corrected and grab it from the manager
-    this->m_robot->actuate_CTR(this->m_initGuess, init_conf);     
+    this->m_CTR_robot->actuate_CTR(this->m_initGuess, init_conf);     
 
     // // updating the EM alignment of the CTR, as it won't be identical to the surgical plan
     // rclcpp::sleep_for(2s);
@@ -210,7 +210,7 @@ public:
     auto subs_options_1 = rclcpp::SubscriptionOptions();
     subs_options_1.callback_group = m_callback_group_sub_1;
     m_subscription_base_tool = this->create_subscription<interfaces::msg::Taskspace>(
-        "emt_base_tool", rclcpp::QoS(10), std::bind(&Controller::update_current_tip_in_base_callback, this, _1), subs_options_1);
+        "emt_base_tool", rclcpp::QoS(10), std::bind(&Controller::update_end_effector, this, _1), subs_options_1);
 
     // Subscriber to receive ModelOutput feedback
     auto subs_options_2 = rclcpp::SubscriptionOptions();
@@ -235,7 +235,7 @@ public:
         std::bind(&Controller::handle_accepted, this, _1));
 
     // Joint space target Action client
-    m_target_service = this->create_client<interfaces::srv::Jointstarget>("joints_space/target");
+    m_target_service = this->create_client<interfaces::srv::Jointstarget>("joint_space/target");
 
     // Publisher to publish control signal - depreciated and updated to Joins space target Action
     m_publisher_control = this->create_publisher<interfaces::msg::Jointspace>("JointsActuation", 10);
@@ -250,7 +250,7 @@ public:
   }
 
   // Update current tool (tip) position in the base frame.
-  void update_current_tip_in_base_callback(const interfaces::msg::Taskspace::ConstSharedPtr &msg)
+  void update_end_effector(const interfaces::msg::Taskspace::ConstSharedPtr &msg)
   {
     m_tran_base_endEffector = {msg->p[0UL],
                                msg->p[1UL],
@@ -389,15 +389,15 @@ public:
 
     const auto t0 = std::chrono::high_resolution_clock::now();
 
-    this->m_robot->broadcastTargetToSlicer(m_target_position_slicer);
-    this->m_robot->broadcastCalyxToSlicer(m_calyx_position_slicer);
+    this->m_CTR_robot->broadcastTargetToSlicer(m_target_position_slicer);
+    this->m_CTR_robot->broadcastCalyxToSlicer(m_calyx_position_slicer);
 
-    this->m_robot->posCTRL(this->m_initGuess, blaze::subvector<0UL, 3UL>(convertedTarget), this->m_pos_tol, m_tran_base_endEffector);
-    this->m_robot->broadcastShapeToSlicer();
+    this->m_CTR_robot->posCTRL(this->m_initGuess, blaze::subvector<0UL, 3UL>(convertedTarget), this->m_pos_tol, m_tran_base_endEffector);
+    this->m_CTR_robot->broadcastShapeToSlicer();
 
 
 
-    this->m_q = this->m_robot->getConfiguration();
+    this->m_q = this->m_CTR_robot->getConfiguration();
     RCLCPP_INFO(this->get_logger(), "m_q: q[0]:%0.6f  q[1]:%0.6f  q[2]:%0.6f  q[3]: %0.6f  q[4]: %0.6f  q[5]: %0.6f",
                m_q[0UL], m_q[1UL], m_q[2UL], m_q[3UL], m_q[4UL], m_q[5UL]);
 
@@ -430,7 +430,7 @@ public:
     blaze::StaticVector<double, 3UL> pos_error = blaze::subvector<0UL, 3UL>(convertedTarget) - m_tran_base_endEffector;
     RCLCPP_INFO(this->get_logger(), "EMTtip: x: %0.5f   y: %0.5f  z: %0.5f [mm]", m_tran_base_endEffector[0] * 1e3, m_tran_base_endEffector[1] * 1e3, m_tran_base_endEffector[2] * 1e3);
     RCLCPP_INFO(this->get_logger(), "Target: x: %0.5f   y: %0.5f  z: %0.5f [mm]", convertedTarget[0] * 1e3, convertedTarget[1] * 1e3, convertedTarget[2] * 1e3);
-    RCLCPP_INFO(this->get_logger(), "TipPos: x: %0.5f   y: %0.5f  z: %0.5f [mm]", m_robot->getTipPos()[0] * 1e3, m_robot->getTipPos()[1] * 1e3, m_robot->getTipPos()[2] * 1e3);
+    RCLCPP_INFO(this->get_logger(), "TipPos: x: %0.5f   y: %0.5f  z: %0.5f [mm]", m_CTR_robot->getTipPos()[0] * 1e3, m_CTR_robot->getTipPos()[1] * 1e3, m_CTR_robot->getTipPos()[2] * 1e3);
     RCLCPP_INFO(this->get_logger(), "Error:  x: %0.5f   y: %0.5f  z: %0.5f [mm]", pos_error[0] * 1e3, pos_error[1] * 1e3, pos_error[2] * 1e3);
     RCLCPP_INFO(this->get_logger(), "Error: %0.5f [mm]", blaze::norm(pos_error) * 1e3);
     RCLCPP_INFO(this->get_logger(), "-------------------------------------------------------");
@@ -522,7 +522,7 @@ private:
      =========================== Setting the CTR object as data member ===========================
      =============================================================================================
   */
-  std::shared_ptr<CTR> m_robot;
+  std::shared_ptr<CTR> m_CTR_robot;
   blaze::StaticVector<double, 5UL> m_initGuess;      // initial guess for the solution of the BVP
   blaze::StaticVector<double, 6UL> m_q;              // joint values of the CTR
   const double m_linearActuatorThickness = 30.00E-3; // thickness of the linear actuator stages --> collision avoidance

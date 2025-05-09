@@ -21,6 +21,9 @@ constexpr uint16_t TARGET_VELOCITY_IDX = 0x60FF;
 constexpr uint16_t MODE_OF_OPERATION_IDX = 0x6060;
 constexpr uint16_t MODE_OF_OPERATION_DISP_IDX = 0x6061;
 constexpr uint16_t POSITION_LIMIT = 0x607d;
+constexpr uint16_t DIGITAL_INPUTS = 0x60fd;   // Subindex: 0x00 (4 bytes)
+constexpr uint16_t DIGITAL_OUTPUTS = 0x2311;   // Subindex: 0x04 (2 bytes) 
+constexpr uint16_t DEVICE_TEMPERATURE = 0x2326;   // Subindex: 0x01 (CPU), 0x02 (POWER STAGE). 2 bytes each
 
 struct ControlWord
 {

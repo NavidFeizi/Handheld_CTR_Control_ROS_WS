@@ -70,6 +70,55 @@
 
 class Cia301Node;
 
+class Interface {
+  public:
+  Interface() : value(0) {}
+
+      // Individual key setters
+  void setKeyUp(bool pressed)       { bits.key_up = pressed; }
+  void setKeyDown(bool pressed)     { bits.key_down = pressed; }
+  void setKeyRight(bool pressed)    { bits.key_right = pressed; }
+  void setKeyLeft(bool pressed)     { bits.key_left = pressed; }
+  void setKeyForward(bool pressed)  { bits.key_forward = pressed; }
+  void setKeyBackward(bool pressed) { bits.key_backward = pressed; }
+  void setKeyCenter(bool pressed)   { bits.key_center = pressed; }
+
+  // LED control
+  void setLED1(bool on) { bits.led_1 = on; }
+  void setLED2(bool on) { bits.led_2 = on; }
+
+  // Individual key getters
+  bool isKeyUp() const       { return bits.key_up; }
+  bool isKeyDown() const     { return bits.key_down; }
+  bool isKeyRight() const    { return bits.key_right; }
+  bool isKeyLeft() const     { return bits.key_left; }
+  bool isKeyForward() const  { return bits.key_forward; }
+  bool isKeyBackward() const { return bits.key_backward; }
+  bool isKeyCenter() const   { return bits.key_center; }
+
+  // LED state
+  bool isLED1On() const { return bits.led_1; }
+  bool isLED2On() const { return bits.led_2; }
+
+  private:
+  union {
+    struct {
+      uint16_t key_up       : 1; // bit 0
+      uint16_t key_down     : 1; // bit 1
+      uint16_t key_right    : 1; // bit 2
+      uint16_t key_left     : 1; // bit 3
+      uint16_t key_forward  : 1; // bit 4
+      uint16_t key_backward : 1; // bit 5
+      uint16_t key_center   : 1; // bit 6
+      uint16_t led_1        : 1; // bit 7
+      uint16_t led_2        : 1; // bit 8
+      uint16_t reserved     : 7; // bits 9–15 (reserved for future use)
+    } bits;
+    uint16_t value; // packed representation
+  };
+
+};
+
 class CTRobot
 {
 public:
@@ -85,7 +134,7 @@ public:
     // ========================== Command and Feedback Methods ===========================
     void setTargetPos(const blaze::StaticVector<double, 4UL> &target);
     void setTargetVel(const blaze::StaticVector<double, 4UL> &target);
-    void getCurrent(blaze::StaticVector<double, 4UL> &val) const;
+    blaze::StaticVector<double, 4> getCurrent() const;
     void getVel(blaze::StaticVector<double, 4UL> &val) const;
     void getPos(blaze::StaticVector<double, 4UL> &val) const;
     void getPosLimit(blaze::StaticVector<double, 4> &min, blaze::StaticVector<double, 4> &max) const;
@@ -98,22 +147,26 @@ public:
                           const blaze::StaticVector<double, 4UL> max_acc,
                           const blaze::StaticVector<double, 4UL> max_dcc);
     void setOperationMode(const OpMode mode);
-    void setLinearEncoders(const double inner, const double middle);
+    void setEncoders(const blaze::StaticVector<double, 4> val);
     bool getSwitchStatus(blaze::StaticVector<bool, 4> &status) const;
     bool getSwitchStatus() const;
-    bool getEnableStatus(blaze::StaticVector<bool, 4> &status) const;
-    bool getEnableStatus() const;
-    bool getEncoderStatus(blaze::StaticVector<bool, 4> &status) const;
-    bool getEncoderStatus() const;
+    blaze::StaticVector<bool, 4> getEnableStatus() const;
+    blaze::StaticVector<bool, 4> getEncoderStatus() const;
     bool getDisabledStatus(blaze::StaticVector<bool, 4> &status) const;
     bool getDisabledStatus() const;
-    bool getReachedStatus(blaze::StaticVector<bool, 4> &status) const;
-    bool getReachedStatus() const;
-    void setPosLimit(const blaze::StaticVector<double, 4> &min, const blaze::StaticVector<double, 4> &max);
+    blaze::StaticVector<bool, 4> getReachedStatus() const;
+    void setPosLimit(const blaze::StaticVector<double, 4> &min, const blaze::StaticVector<double, 4> &max) const;
 
+    void getTemperature(blaze::StaticVector<int32_t, 4> &cpu, blaze::StaticVector<int32_t, 4> &driver) const;
+    void getDigitalIn(blaze::StaticVector<std::bitset<32>, 4> &in) const;
+
+    void getInterface() const;
 
     // ============================== Utility Methods ==============================
-    void waitUntilReach();
+    void waitUntilReach(const std::atomic<bool>& cancel_flag) const;
+    void waitUntilReach() const;
+    void waitUntilTransReach(const std::atomic<bool>& cancel_flag) const;
+    void waitUntilTransReach() const;
     void findTransEncoders();
 
     // bool m_boot_success = false;
@@ -136,6 +189,10 @@ private:
                              blaze::StaticVector<double, 4UL> &posInCTRFrame) const;
     int checkPosLimits(const blaze::StaticVector<double, 4UL> &posTarget) const;
     void initLogger();
+
+    std::shared_ptr<Interface> m_input = std::make_shared<Interface>();
+
+    bool m_flagHeadAttached;
 
     // the real encoder count and gear ratio are integrated into
     // motion controller factors. these are just a factor

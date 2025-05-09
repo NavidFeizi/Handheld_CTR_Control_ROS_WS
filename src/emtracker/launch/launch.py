@@ -7,12 +7,12 @@ def generate_launch_description():
 
     tracker_node = ExecuteProcess(
         cmd=[
-            'taskset', '-c', '2',  # This sets the affinity to CPU core 0
+            'taskset', '-c', '4',  # This sets the affinity to CPU core 0
             # 'gnome-terminal', '--',
             'ros2', 'run', 'emtracker', 'track',
             '--ros-args',
             '-p', 'cutoff_freq:=6.6',
-            '-p', 'send_on_igtl:=true',
+            '-p', 'send_on_igtl:=false',
             '--remap', '__node:=emtracker_node'
         ],
         output='screen',
