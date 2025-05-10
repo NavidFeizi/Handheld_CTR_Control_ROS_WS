@@ -8,10 +8,9 @@ def generate_launch_description():
         cmd=[
             'taskset', '-c', '5',  # This sets the affinity to CPU core 1
             'ros2', 'run', 'robot', 'ctr_robot',
-            # '--ros-args',
             '-p', 'Kp:=30.0',  # Correct syntax for setting parameter
             '-p', 'Ki:=5.0',  # Correct syntax for setting parameter
-            '--remap', '__node:=robot_node'
+            '--ros-args --remap __node:=robot_node'
         ],
         output='screen',
     )
@@ -20,7 +19,7 @@ def generate_launch_description():
         cmd=[
             'taskset', '-c', '6',  # This sets the affinity to CPU core 1
             'ros2', 'run', 'robot', 'qt_gui',
-            '--remap', '__node:=gui_node'
+            '--ros-args --remap __node:=gui_node'
         ],
         output='screen',
     )
@@ -29,7 +28,7 @@ def generate_launch_description():
         cmd=[
             'taskset', '-c', '7',  # This sets the affinity to CPU core 1
             'ros2', 'run', 'robot', 'forward_kin',
-            '--remap', '__node:=gui_node'
+            '--ros-args --remap __node:=fk_node'
         ],
         output='screen',
     )

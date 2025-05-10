@@ -195,7 +195,7 @@ void Planner::plan(double runTime, optimalPlanner plannerType, planningObjective
 
 	case optimalPlanner::PLANNER_RRT:
 		// range represents the maximum length of a motion to be added in the tree of motions
-		this->m_optimizingPlanner->params()["range"] = 0.001;
+		this->m_optimizingPlanner->params()["range"] = 0.0025;
 		this->m_optimizingPlanner->params()["goal_bias"] = 0.015;
 		this->m_optimizingPlanner->params()["intermediate_states"] = true;
 		break;

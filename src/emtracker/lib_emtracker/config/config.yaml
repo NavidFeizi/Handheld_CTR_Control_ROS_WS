@@ -29,8 +29,9 @@ sensor_config:
     #   serial_number: 3CD50C00        # Handheld ctr tip sensor
     #   serial_number: 3CD50C08           # Handheld ctr tip sensor - new
     #   serial_number: 3C88DC01           # Handheld ctr tip sensor J-bar
-      serial_number: 37911000           # Handheld ctr tip sensor - new
-      srom_filename: 610158_ctrtip.rom
+    #   serial_number: 37911000           # Handheld ctr tip sensor - new
+      serial_number: 3CD50C04           # Handheld ctr tip sensor - NavSci
+      srom_filename: None
       load_srom: false
       tran_filename: None
       load_tran: false              # if false, identity tranformation is used

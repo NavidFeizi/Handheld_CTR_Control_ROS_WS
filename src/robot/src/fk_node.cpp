@@ -49,6 +49,7 @@ public:
     ForwardKinNode::declare_parameters();
     ForwardKinNode::setup_ros_interfaces();
     ForwardKinNode::init_robot();
+    RCLCPP_INFO(this->get_logger(), "Forward Kinenamtics Node Initialized"); 
   }
 
   // class destructor
@@ -125,8 +126,8 @@ public:
     std::shared_ptr<Tube> T2 = std::make_shared<Tube>(OD[1UL], ID[1UL], E2, G2, ls[1UL], lc[1UL], u2); // intermediate tube
     std::shared_ptr<Tube> T3 = std::make_shared<Tube>(OD[2UL], ID[2UL], E3, G3, ls[2UL], lc[2UL], u3); // outermost tube
 
-    std::cout << "k1: " << T1->getK(0) << std::endl
-              << "k2: " << T2->getK(0) << std::endl;
+    // std::cout << "k1: " << T1->getK(0) << std::endl
+    //           << "k2: " << T2->getK(0) << std::endl;
 
     // instantiating an array of smart pointers to CTR component tubes
     std::array<std::shared_ptr<Tube>, 3UL> Tb = {T1, T2, T3};

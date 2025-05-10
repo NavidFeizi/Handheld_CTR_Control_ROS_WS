@@ -38,7 +38,7 @@ class RobotNode : public rclcpp::Node, public CTRobot
 public:
   RobotNode() : rclcpp::Node("ctr_robot")
   {
-    m_flag_use_target_action = true;
+    m_flag_use_target_action = false;
     m_trans_limit = true;
     m_encoders_set = {1, 1, 1, 1}; /// temoporarly for development
     // declare_parameters();
@@ -113,8 +113,8 @@ private:
     m_enable_service = create_service<interfaces::srv::Config>("robot_enable", std::bind(&RobotNode::enableService_callback, this, _1, _2));
 
     // Low-level control loop timer
-    auto control_sample_time = std::chrono::milliseconds(static_cast<int>(50));
-    m_control_loop_timer = create_wall_timer(control_sample_time, std::bind(&RobotNode::targetCommand_timerCallback, this), m_cbGroup1);
+    auto command_sample_time = std::chrono::milliseconds(static_cast<int>(50));
+    m_control_loop_timer = create_wall_timer(command_sample_time, std::bind(&RobotNode::targetCommand_timerCallback, this), m_cbGroup1);
     // Timer to read joint configurations periodically
     m_joints_config_timer = create_wall_timer(10ms, std::bind(&RobotNode::jointsConfig_timerCallback, this), m_cbGroup3);
     // Timer to read robot status periodically
@@ -231,10 +231,10 @@ private:
     getTemperature(m_cpu_temp, m_driver_temp);
     getDigitalIn(m_digital_input);
 
-    minDynamicPosLimit[1] = std::max(s_minStaticLimitAll[1], m_x[3] - s_linear_stage_max_gap);
-    maxDynamicPosLimit[1] = std::min(s_maxStaticLimitAll[1], m_x[3] - s_linear_stage_min_gap);
-    minDynamicPosLimit[3] = std::max(s_minStaticLimitAll[3], m_x[1] + s_linear_stage_min_gap);
-    maxDynamicPosLimit[3] = std::min(s_minStaticLimitAll[3], m_x[1] + s_linear_stage_max_gap);
+    minDynamicPosLimit[1] = std::max(s_minStaticLimitAll[1], m_x[3] - s_linear_stage_max_clearance);
+    maxDynamicPosLimit[1] = std::min(s_maxStaticLimitAll[1], m_x[3] - s_linear_stage_min_clearance);
+    minDynamicPosLimit[3] = std::max(s_minStaticLimitAll[3], m_x[1] + s_linear_stage_min_clearance);
+    maxDynamicPosLimit[3] = std::min(s_maxStaticLimitAll[3], m_x[1] + s_linear_stage_max_clearance);
 
     msg.position[0UL] = m_x[0UL];
     msg.position[1UL] = m_x[1UL];
@@ -284,6 +284,7 @@ private:
       break;
     case CtrlMode::Position:
       setTargetPos(m_x_des);
+      std::cout << "m_x_des sent: " << blaze::trans(m_x_des) << std::endl;
       break;
     }
     if (m_trans_limit)
@@ -299,9 +300,10 @@ private:
   // Subscription callback function to updates the target joint positions and velocities
   void jointSpaceTarget_callback(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
+    
     if (!m_flag_manual && !m_flag_use_target_action)
     {
-      m_targpublisher_alive_tmep = true;
+      // m_targpublisher_alive_tmep = true;
       m_x_des = blaze::StaticVector<double, 4UL>(0.00);
 
       switch (m_mode)
@@ -311,15 +313,21 @@ private:
         m_xdot_des[1UL] = msg->velocity[1UL];
         m_xdot_des[2UL] = msg->velocity[2UL];
         m_xdot_des[3UL] = msg->velocity[3UL];
+        std::cout << "Vel target received:" << blaze::trans(m_xdot_des) << std::endl;
         break;
       case CtrlMode::Position:
         m_x_des[0UL] = msg->position[0UL];
         m_x_des[1UL] = msg->position[1UL];
         m_x_des[2UL] = msg->position[2UL];
         m_x_des[3UL] = msg->position[3UL];
+        std::cout << "Pos target received:" << blaze::trans(m_x_des) << std::endl;
         break;
       }
+
     }
+
+    
+    // std::cout << "CtrlMode:" << m_mode << std::endl;
   }
 
   // Subscription callback function updates the current catheter tip status using EMTracker topic
@@ -589,6 +597,7 @@ private:
     else if (mode == CtrlMode::Position)
     {
       setTargetVel({0.0, 0.0, 0.0, 0.0});
+      m_x_des = m_x;
       m_trans_limit = true; // enable translation limits
       setOperationMode(OpMode::PositionProfile);
       m_mode = CtrlMode::Position;
@@ -1289,7 +1298,7 @@ private:
     constexpr blaze::StaticVector<double, 4UL> maxVel = {60.00 * M_PI / 180.00, 10.00 / 1000.00, 60.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
 
     switchToConfigMode();
-    // m_trans_limit = true; // disable translation limits
+    // m_trans_limit = true; // enable translation limits
     setOperationMode(OpMode::PositionProfile);
     setProfileParams(maxVel, maxAcc, maxDcc);
     setMaxTorque(maxTorqueNegative, maxTorquePositive);
@@ -1367,8 +1376,8 @@ private:
   static constexpr blaze::StaticVector<double, 4> s_pos_engage = {0.0, -0.0560, 0.0, -0.0290};
   static constexpr double s_pos_inr_prox_stop = -0.1670; // need to be adjusted based on the robot design
   static constexpr double s_pos_mdl_prox_stop = -0.1230; // need to be adjusted based on the robot design
-  static constexpr double s_linear_stage_min_gap = 0.030;
-  static constexpr double s_linear_stage_max_gap = s_inr_active_length - s_mdl_active_length;
+  static constexpr double s_linear_stage_min_clearance = 0.030;
+  static constexpr double s_linear_stage_max_clearance = s_inr_active_length - s_mdl_active_length;
   static constexpr blaze::StaticVector<double, 4> s_home_pos = {0.0, s_otr_active_length - s_inr_active_length, 0.0, s_otr_active_length - s_mdl_active_length};
   static constexpr blaze::StaticVector<double, 4> s_minStaticLimitAll = {-20 * M_PI, s_home_pos[1], 20 * M_PI, s_home_pos[3]};
   static constexpr blaze::StaticVector<double, 4> s_maxStaticLimitAll = {20 * M_PI, s_pos_preEngage[1], 20 * M_PI, s_pos_preEngage[3]};

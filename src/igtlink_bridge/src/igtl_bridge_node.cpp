@@ -46,9 +46,7 @@ public:
   {
     declare_parameters();
     setup_igtl(m_hostname, m_port);
-    RCLCPP_INFO(get_logger(), "Checkpoint_1");
     setup_ros_interfaces();
-    RCLCPP_INFO(get_logger(), "Checkpoint_2");
   }
 
   ~IGTLinkBridgeNode()
@@ -69,8 +67,11 @@ private:
     m_port = get_parameter("port").as_int();
     declare_parameter<std::string>("hostname", "localhost");
     m_hostname = get_parameter("hostname").as_string();
+    declare_parameter<bool>("convert_to_startrack", false);
+    m_conv_to_ascension = get_parameter("convert_to_startrack").as_bool();
   }
 
+  /// @brief  ros2 interfaces
   void setup_ros_interfaces()
   {
     m_callback_group_read = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -79,7 +80,7 @@ private:
     /// listener to tf2 transormation messages
     m_tf_buffer = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     m_tf2_listener = std::make_shared<tf2_ros::TransformListener>(*m_tf_buffer);
-    // m_tf2_timer = this->create_wall_timer(50ms, std::bind(&IGTLinkBridgeNode::tf2_receive_timer_callback, this), m_callback_group_tf2);
+    m_tf2_timer = this->create_wall_timer(50ms, std::bind(&IGTLinkBridgeNode::tf2_receive_timer_callback, this), m_callback_group_tf2);
 
     // broadcast sensors readings
     m_tf2_broadcast = std::make_shared<tf2_ros::TransformBroadcaster>(this);
@@ -92,7 +93,7 @@ private:
     m_robot_setup_client = create_client<interfaces::srv::Config>("robot_config");
 
     /// robot setup service
-    m_planner_client = create_client<std_srvs::srv::Trigger>("manual_target");
+    m_planner_client = create_client<interfaces::srv::Config>("planner/command");
 
     m_cbGroup1 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     m_cbGroup2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -137,7 +138,7 @@ private:
 
     // Allocate message class for planned path
     m_pointMsg_Path = igtl::PointMessage::New();
-    m_pointMsg_Path->SetDeviceName("IP5");
+    m_pointMsg_Path->SetDeviceName("Traj");
     // stringStream object for naming points in OpenIGTLink
     std::stringstream ss;
     // setting up the points
@@ -234,7 +235,7 @@ private:
       }
       Eigen::Matrix4d eigen_trans = tf2::transformToEigen(tf2_tran).matrix();
 
-      igtl::Matrix4x4 trans, trans_asc;
+      igtl::Matrix4x4 trans;
       for (int i = 0; i < 4; ++i)
       {
         for (int j = 0; j < 4; ++j)
@@ -247,13 +248,13 @@ private:
       trans[1][3] = trans[1][3] * 1e3;
       trans[2][3] = trans[2][3] * 1e3;
 
-      ModifyOrientationFromAuroraToAscension(trans, trans_asc);
-      ModifyOrientationFromAuroraToAscensionInplace(trans);
+      if (m_conv_to_ascension)
+        transfromAuroraToAscension(trans);
 
       auto m_trans_robot = igtl::TransformMessage::New();
       m_trans_robot->SetDeviceName(sourceFrame);
       // m_trans_robot->SetMessageID(5);
-      m_trans_robot->SetMatrix(trans_asc);
+      m_trans_robot->SetMatrix(trans);
       m_trans_robot->Pack();
 
       // Send the message
@@ -275,7 +276,7 @@ private:
           targetFrame.c_str(), sourceFrame.c_str(), ex.what());
       return;
     }
-    Eigen::Matrix4d m_robot_trans = tf2::transformToEigen(tf2_tran).matrix();
+    m_robot_trans = tf2::transformToEigen(tf2_tran).matrix();
   }
 
   /// broadcast tranfromation from Slicer to tf2
@@ -356,9 +357,34 @@ private:
           auto future_result = m_robot_setup_client->async_send_request(request, std::bind(&IGTLinkBridgeNode::handle_service_response, this, std::placeholders::_1));
         }
 
-        else if (commandName == "RobotManualTrajectory")
+        else if (commandName == "RobotAutonomousMotion")
         {
-          auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
+          auto request = std::make_shared<interfaces::srv::Config::Request>();
+
+          // Split commandContent on the first newline
+          std::string::size_type newline_pos = commandContent.find('\n');
+
+          if (newline_pos != std::string::npos)
+          {
+            request->command = commandContent.substr(0, newline_pos);
+            try
+            {
+              std::string value_str = commandContent.substr(newline_pos + 1);
+              request->value = std::stod(value_str); // Convert to double
+            }
+            catch (const std::exception &e)
+            {
+              RCLCPP_WARN(this->get_logger(), "Invalid value in commandContent: %s", e.what());
+              request->value = 0.0; // Or any safe fallback value
+            }
+          }
+          else
+          {
+            // Only command present, no value
+            request->command = commandContent;
+            request->value = 0.0; // Or leave unchanged if optional
+          }
+
           // using ServiceResponseFuture_2 = rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture;
           auto future_result_2 = m_planner_client->async_send_request(request, std::bind(&IGTLinkBridgeNode::handle_service_response_2, this, std::placeholders::_1));
         }
@@ -405,78 +431,82 @@ private:
     }
   }
 
-  /// reads the COMMAND Messages form OpenIGTLink and send them over ROS2 robot setup service
-  void igtl_receive_command_timer_callback()
-  {
-    while (rclcpp::ok())
-    {
-      /// Create a message buffer to receive header
-      igtl::MessageHeader::Pointer header = igtl::MessageHeader::New();
-      igtl::TimeStamp::Pointer ts = igtl::TimeStamp::New();
+  // /// reads the COMMAND Messages form OpenIGTLink and send them over ROS2 robot setup service
+  // void igtl_receive_command_timer_callback()
+  // {
+  //   while (rclcpp::ok())
+  //   {
+  //     /// Create a message buffer to receive header
+  //     igtl::MessageHeader::Pointer header = igtl::MessageHeader::New();
+  //     igtl::TimeStamp::Pointer ts = igtl::TimeStamp::New();
 
-      header->InitPack();
+  //     header->InitPack();
 
-      bool timeout(false);
-      if (m_socket->Receive(header->GetPackPointer(), header->GetPackSize(), timeout) == 0)
-        continue;
+  //     bool timeout(false);
+  //     if (m_socket->Receive(header->GetPackPointer(), header->GetPackSize(), timeout) == 0)
+  //       continue;
 
-      header->Unpack();
-      std::string type = header->GetDeviceType();
+  //     header->Unpack();
+  //     std::string type = header->GetDeviceType();
 
-      if (strcmp(header->GetDeviceType(), "COMMAND") == 0)
-      {
-        /// Create a command message
-        m_cmd_msg = igtl::CommandMessage::New();
-        m_cmd_msg->SetMessageHeader(header);
-        m_cmd_msg->AllocatePack();
+  //     if (strcmp(header->GetDeviceType(), "COMMAND") == 0)
+  //     {
+  //       /// Create a command message
+  //       m_cmd_msg = igtl::CommandMessage::New();
+  //       m_cmd_msg->SetMessageHeader(header);
+  //       m_cmd_msg->AllocatePack();
 
-        m_socket->Receive(m_cmd_msg->GetPackBodyPointer(), m_cmd_msg->GetPackBodySize(), timeout);
-        m_cmd_msg->Unpack();
+  //       m_socket->Receive(m_cmd_msg->GetPackBodyPointer(), m_cmd_msg->GetPackBodySize(), timeout);
+  //       m_cmd_msg->Unpack();
 
-        auto request = std::make_shared<interfaces::srv::Config::Request>();
-        std::string deviceName = m_cmd_msg->GetDeviceName();
-        std::string commandName = m_cmd_msg->GetCommandName();
-        std::string commandContent = m_cmd_msg->GetCommandContent();
+  //       auto request = std::make_shared<interfaces::srv::Config::Request>();
+  //       std::string deviceName = m_cmd_msg->GetDeviceName();
+  //       std::string commandName = m_cmd_msg->GetCommandName();
+  //       std::string commandContent = m_cmd_msg->GetCommandContent();
 
-        RCLCPP_INFO(this->get_logger(), "Received IGTL COMMAND: \n \t\t deviceName: %s \n \t\t commandName: %s \n \t\t commandContent %s", deviceName.c_str(), commandName.c_str(), commandContent.c_str());
+  //       RCLCPP_INFO(this->get_logger(), "Received IGTL COMMAND: \n \t\t deviceName: %s \n \t\t commandName: %s \n \t\t commandContent %s", deviceName.c_str(), commandName.c_str(), commandContent.c_str());
 
-        if (commandName == "RobotSetup")
-        {
-          request->command = commandContent;
-          using ServiceResponseFuture = rclcpp::Client<interfaces::srv::Config>::SharedFuture;
-          auto response_received_callback = std::bind(&IGTLinkBridgeNode::handle_service_response, this, std::placeholders::_1);
-          auto future_result = m_robot_setup_client->async_send_request(request, response_received_callback);
-        }
+  //       if (commandName == "RobotSetup")
+  //       {
+  //         request->command = commandContent;
+  //         using ServiceResponseFuture = rclcpp::Client<interfaces::srv::Config>::SharedFuture;
+  //         auto response_received_callback = std::bind(&IGTLinkBridgeNode::handle_service_response, this, std::placeholders::_1);
+  //         auto future_result = m_robot_setup_client->async_send_request(request, response_received_callback);
+  //       }
 
-        else if (commandName == "RobotManualTrajectory")
-        {
-          auto request_2 = std::make_shared<std_srvs::srv::Trigger::Request>();
-          using ServiceResponseFuture_2 = rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture;
-          auto response_received_callback_planner = std::bind(&IGTLinkBridgeNode::handle_service_response_2, this, std::placeholders::_1);
-          auto future_result_2 = m_planner_client->async_send_request(request_2, response_received_callback_planner);
+  //       else if (commandName == "RobotManualTrajectory")
+  //       {
+  //         request->command = commandContent;
+  //         auto request_2 = std::make_shared<interfaces::srv::Config>();
+  //         using ServiceResponseFuture_2 = rclcpp::Client<interfaces::srv::Config>::SharedFuture;
+  //         auto response_received_callback_planner = std::bind(&IGTLinkBridgeNode::handle_service_response_2, this, std::placeholders::_1);
+  //         auto future_result_2 = m_planner_client->async_send_request(request_2, response_received_callback_planner);
 
-          // auto m_manual_tran = igtl::TransformMessage::New();
-          // if (m_manual_tran->GetDeviceName() == "BaseLinearTransform")
-          // {
-          //   igtl::Matrix4x4 trans;
-          //   m_manual_tran->GetMatrix(trans);
-          //   RCLCPP_INFO(get_logger(), "To be developed");
-          // }
-          // if (m_manual_tran->GetDeviceName() == "To be developed")
-          // {
-          //   igtl::Matrix4x4 trans;
-          //   m_manual_tran->GetMatrix(trans);
-          // }
-        }
-      }
-    }
-  }
+  //         // auto m_manual_tran = igtl::TransformMessage::New();
+  //         // if (m_manual_tran->GetDeviceName() == "BaseLinearTransform")
+  //         // {
+  //         //   igtl::Matrix4x4 trans;
+  //         //   m_manual_tran->GetMatrix(trans);
+  //         //   RCLCPP_INFO(get_logger(), "To be developed");
+  //         // }
+  //         // if (m_manual_tran->GetDeviceName() == "To be developed")
+  //         // {
+  //         //   igtl::Matrix4x4 trans;
+  //         //   m_manual_tran->GetMatrix(trans);
+  //         // }
+  //       }
+  //     }
+  //   }
+  // }
 
   /// publish the planned path
   void publishPath_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
     blaze::HybridMatrix<double, 1000UL, 3UL, blaze::rowMajor> Path = multiArrayMsgToBlaze(msg);
-    // transformPathInpalce(Path, m_robot_trans); // tranform from robot_base from to emframe
+    Eigen::Matrix4d robot_trans = m_robot_trans;
+    if (m_conv_to_ascension)
+      transfromAuroraToAscension(robot_trans);
+    transformPathToEmFrame(Path, robot_trans);
     broadcastVectorOfPoints(m_pointMsg_Path, m_pointersOfPoints_Path, Path);
   }
 
@@ -484,8 +514,10 @@ private:
   void publishShapeT1_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
     blaze::HybridMatrix<double, 1000UL, 3UL, blaze::rowMajor> Shape = multiArrayMsgToBlaze(msg);
-    // transformPathInpalce(Shape, m_robot_trans); // tranform from robot_base from to emframe
-    // std::cout << "Tb1: \n" << Shape * 1E3 << std::endl;
+    Eigen::Matrix4d robot_trans = m_robot_trans;
+    if (m_conv_to_ascension)
+      transfromAuroraToAscension(robot_trans);
+    transformPathToEmFrame(Shape, robot_trans); // tranform from robot_base from to em frame
     broadcastVectorOfPoints(m_pointMsg_Tb1, m_pointersOfPoints_Tb1, Shape);
   }
 
@@ -493,7 +525,10 @@ private:
   void publishShapeT2_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
     blaze::HybridMatrix<double, 1000UL, 3UL, blaze::rowMajor> Shape = multiArrayMsgToBlaze(msg);
-    // transformPathInpalce(Shape, m_robot_trans); // tranform from robot_base from to emframe
+    Eigen::Matrix4d robot_trans = m_robot_trans;
+    if (m_conv_to_ascension)
+      transfromAuroraToAscension(robot_trans);
+    transformPathToEmFrame(Shape, robot_trans); // tranform from robot_base from to emframe
     broadcastVectorOfPoints(m_pointMsg_Tb2, m_pointersOfPoints_Tb2, Shape);
   }
 
@@ -501,7 +536,10 @@ private:
   void publishShapeT3_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
     blaze::HybridMatrix<double, 1000UL, 3UL, blaze::rowMajor> Shape = multiArrayMsgToBlaze(msg);
-    // transformPathInpalce(Shape, m_robot_trans); // tranform from robot_base from to emframe
+    Eigen::Matrix4d robot_trans = m_robot_trans;
+    if (m_conv_to_ascension)
+      transfromAuroraToAscension(robot_trans);
+    transformPathToEmFrame(Shape, robot_trans); // tranform from robot_base from to emframe
     broadcastVectorOfPoints(m_pointMsg_Tb3, m_pointersOfPoints_Tb3, Shape);
   }
 
@@ -525,8 +563,8 @@ private:
     return mat;
   }
 
-  /// Apply rigid trandformation to a matrix of 3D points
-  void transformPathInpalce(blaze::HybridMatrix<double, 1000UL, 3UL, blaze::rowMajor> &path, const Eigen::Matrix4d &trans)
+  /// Apply rigid trandformation to a matrix of 3D points - from robot_base frame to em frame
+  void transformPathToEmFrame(blaze::HybridMatrix<double, 1000UL, 3UL, blaze::rowMajor> &path, const Eigen::Matrix4d &trans)
   {
     // Extract rotation (top-left 3x3) and translation (top-right 3x1)
     Eigen::Matrix3d R = trans.block<3, 3>(0, 0);
@@ -536,10 +574,7 @@ private:
     {
       // Convert Blaze row to Eigen vector
       Eigen::Vector3d p(path(i, 0), path(i, 1), path(i, 2));
-
-      // Apply transformation: p' = R * p + t
       p = R * p + t;
-
       // Store back to Blaze matrix
       path(i, 0) = p(0);
       path(i, 1) = p(1);
@@ -588,7 +623,7 @@ private:
   }
 
   ///
-  void handle_service_response_2(const rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future)
+  void handle_service_response_2(const rclcpp::Client<interfaces::srv::Config>::SharedFuture future)
   {
     // Get the result of the future object
     auto response = future.get();
@@ -627,8 +662,8 @@ private:
     }
   }
 
-  ///
-  void ModifyOrientationFromAuroraToAscensionInplace(igtl::Matrix4x4 &mat)
+  /// Inplace tranformation of rigid transform matrix from Aurora to Ascension
+  void transfromAuroraToAscension(igtl::Matrix4x4 &mat)
   {
     for (int i = 0; i < 3; i++)
     {
@@ -640,7 +675,20 @@ private:
     }
   }
 
-  ///
+  /// Inplace tranformation of rigid transform matrix from Aurora to Ascension
+  void transfromAuroraToAscension(Eigen::Matrix4d &mat)
+  {
+    for (int i = 0; i < 3; i++)
+    {
+      double buffer = mat(i, 0);
+      mat(i, 0) = -mat(i, 2);
+      mat(i, 1) = -mat(i, 1);
+      mat(i, 2) = -buffer;
+      mat(i, 3) = mat(i, 3);
+    }
+  }
+
+  /// log position
   void log_position(blaze::StaticVector<double, 3> position, double sample_time)
   {
     std::ostringstream oss;
@@ -673,6 +721,7 @@ private:
 
   std::thread m_igtl_receiver_thread;
   std::atomic<bool> stop_igtl_receiver_ = false;
+  bool m_conv_to_ascension = false;
 
   // quatTransformation m_tool_transform, m_robot_transform, m_probe_transform;
   rclcpp::TimerBase::SharedPtr m_timer;
@@ -685,7 +734,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr m_callback_group_heartbeat;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr m_freeze_phantom_service;
   rclcpp::Client<interfaces::srv::Config>::SharedPtr m_robot_setup_client;
-  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr m_planner_client;
+  rclcpp::Client<interfaces::srv::Config>::SharedPtr m_planner_client;
   rclcpp::Client<interfaces::srv::Config>::SharedPtr m_robot_enable_client;
   rclcpp::Subscription<interfaces::msg::Status>::SharedPtr m_robot_status_subs;
 

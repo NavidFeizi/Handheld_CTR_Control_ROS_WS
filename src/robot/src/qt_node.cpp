@@ -617,7 +617,7 @@ private:
         }
         else
         {
-            RCLCPP_ERROR(this->get_logger(), "Error: %s", response->message.c_str());
+            // RCLCPP_ERROR(this->get_logger(), "Error: %s", response->message.c_str());
         }
     }
 

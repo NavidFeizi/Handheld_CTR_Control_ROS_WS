@@ -14,6 +14,7 @@
 #include "interfaces/srv/transformation.hpp"
 #include "interfaces/srv/jointstarget.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "interfaces/srv/config.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include "std_msgs/msg/float64_multi_array.hpp"
 
@@ -75,8 +76,6 @@ public:
   // Setup ROS interfaces, including publishers, subscribers, and services.
   void setup_ros_interfaces()
   {
-    // auto control_sample_time = std::chrono::microseconds(static_cast<int>(m_control_sample_time * 1.00E6));
-
     m_callback_group_tf2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     /// listener to tf2 transormation messages
     m_tf_buffer = std::make_unique<tf2_ros::Buffer>(this->get_clock());
@@ -89,15 +88,18 @@ public:
     subs_current_q.callback_group = m_callback_group_sub_1;
     m_subscription_q = create_subscription<interfaces::msg::Jointspace>("joint_space/feedback", 10, std::bind(&PathPlannerNode::updateCurrentQ, this, _1), subs_current_q);
 
-    // configing service
-    m_manual_target_service = create_service<std_srvs::srv::Trigger>("manual_target", std::bind(&PathPlannerNode::manualTarget_callback, this, _1, _2));
+    // // path planning service
+    // m_manual_target_service = create_service<interfaces::srv::Config>("manual_target", std::bind(&PathPlannerNode::planner_callback, this, _1, _2));
+
+    // path planning service
+    /// robot setup service
+    m_command_service = create_service<interfaces::srv::Config>("planner/command", std::bind(&PathPlannerNode::actuateRobot_callback, this, _1, _2));
 
     // publisher to send the path
     m_publisher_path = create_publisher<std_msgs::msg::Float64MultiArray>("task_space/path", 10);
 
-    // // Joint space target Action client
-    // m_target_service = create_client<interfaces::srv::Jointstarget>("joint_space/target");
-
+    // publisher to actuate the robot
+    m_publisher_actuate = create_publisher<interfaces::msg::Jointspace>("joint_space/target", 10);
   }
 
   //
@@ -149,7 +151,7 @@ public:
     std::array<std::shared_ptr<Tube>, 3UL> Tb = {T1, T2, T3};
 
     // initial joint actuation values "home position" - q = [Beta Alpha]
-    blaze::StaticVector<double, 3UL> Beta_0 = {-150.00E-3, -78.00E-3, 0.00}; // +50.00E-3
+    blaze::StaticVector<double, 3UL> Beta_0 = {-150.00E-3, -73.00E-3, 0.00}; // +50.00E-3
     blaze::StaticVector<double, 3UL> Alpha_0 = {mathOp::deg2Rad(0.00), mathOp::deg2Rad(0.00), mathOp::deg2Rad(0.00)};
 
     blaze::StaticVector<double, 6UL> q_0;
@@ -164,7 +166,7 @@ public:
 
     // clearance between linear actuator stages
     double Clr = 30.00E-3;
-    
+
     // Method for solving the BVP Problem
     // 1: Newton-Raphson
     // 2: Levenberg-Marquardt
@@ -179,11 +181,9 @@ public:
     CTR CTR_ObjectiveFunction = CTR(Tb, q_0, Tol, mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON, Clr);
 
     CTR_robot.actuate_CTR(this->m_initGuess, q_0);
-    std::cout << "Checkpoint_5" << std::endl;
-    // instantiating an Planner object for defining a motion plan to deploy the CTR into the anatomy
 
+    // instantiating an Planner object for defining a motion plan to deploy the CTR into the anatomy
     m_motionPlan = std::make_shared<Planner>(CTR_StateValidator, CTR_MotionValidator, CTR_ObjectiveFunction);
-    std::cout << "Checkpoint_6" << std::endl;
 
     // instantiating the CTR object for inverse kinematics
     this->m_CTR_robot_IK = std::make_shared<CTR>(Tb, q_0, Tol, mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON, Clr);
@@ -203,6 +203,7 @@ public:
     m_current_q[3UL] = msg->position[0UL];
     m_current_q[4UL] = msg->position[2UL];
     m_current_q[5UL] = 0.0;
+    // std::cout << "m_current_q" << blaze::trans(m_current_q) << std::endl;
   }
 
   /// listen to ROS2 tf2 message
@@ -238,49 +239,31 @@ public:
   }
 
   // Service callback to triget tasks, enable, and control mode section
-  void manualTarget_callback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-                             std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+  void plan()
   {
     // ToDo: add a timeout
 
     // initial state: initial robot configuration prior to the deployment ==> CTR steered to renal calyx
     blaze::StaticVector<double, 6UL> q_initial, q_final;
-
-    // initial joint actuation values "home position" - q = [Beta Alpha]
-    blaze::StaticVector<double, 3UL> Beta_0 = {-150.00E-3, -73.00E-3, 0.00};
-    blaze::StaticVector<double, 3UL> Alpha_0 = {mathOp::deg2Rad(0.00), mathOp::deg2Rad(0.00), mathOp::deg2Rad(0.00)};
-
-    blaze::StaticVector<double, 6UL> q_0;
-    blaze::subvector<0UL, 3UL>(q_0) = Beta_0;
-    blaze::subvector<3UL, 3UL>(q_0) = Alpha_0;
-
     // initial configuration
-    q_initial = q_0;
+    q_initial = m_current_q;
 
-    std::cout << "q_initial: " << blaze::trans(q_initial) << std::endl;
     // run IK to compute q_final
-    std::cout << "manual_target: x: " << m_manual_target[0] * 1e3 << " |  " << "y: " << m_manual_target[1] * 1e3 << " |  " << "z: " << m_manual_target[2] * 1e3 << std::endl;
-
-    std::cout << "Running IK" << std::endl;
-    constexpr double pos_tol = 1.00E-3;
+    std::cout << "Target: x: " << m_manual_target[0] * 1e3 << " |  " << "y: " << m_manual_target[1] * 1e3 << " |  " << "z: " << m_manual_target[2] * 1e3 << std::endl;
+    std::cout << "Running IK..." << std::endl;
+    constexpr double pos_tol = 2.00E-3;
+    auto start = std::chrono::high_resolution_clock::now();
     m_CTR_robot_IK->posCTRL(m_initGuess_IK, m_manual_target, pos_tol);
     q_final = m_CTR_robot_IK->getConfiguration();
-    // std::cout << "Running IK" << std::endl;
-
-    // // initial joint actuation values "home position" - q = [Beta Alpha]
-    // blaze::StaticVector<double, 3UL> Beta_0 = {-150.00E-3, -73.00E-3, 0.00}; // +50.00E-3
-    // blaze::StaticVector<double, 3UL> Alpha_0 = {mathOp::deg2Rad(0.00), mathOp::deg2Rad(0.00), mathOp::deg2Rad(0.00)};
-
-    // blaze::StaticVector<double, 6UL> q_0;
-    // blaze::subvector<0UL, 3UL>(q_0) = Beta_0;
-    // blaze::subvector<3UL, 3UL>(q_0) = Alpha_0;
-    // q_initial = q_0;
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    std::cout << "IK time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
 
     // final configuration
     // q_final = {-0.0949115, -0.0497543, 0.00, 0.227169, -0.318651, 0.00}; // Lower-Pole Access
     // q_final = {-0.083473, -0.051600, 0.00, -0.647814, -1.493957, 0.00}; // Mid-Pole Access
-    // q_final = {-0.0949115, -0.0497543, 0.00, 0.227169, -0.318651, 0.00}; // Upper-Pole Access
-    q_final = {-0.0629115, -0.0317543, 0.00, 0.227169, -1.6851, 0.00}; // Upper-Pole Access
+    // q_final = {-0.0629115, -0.0317543, 0.00, 0.227169, -1.6851, 0.00}; // Upper-Pole Access
+    // q_final = {-0.06843, -0.031600, 0.00, -1.647814, -2.93957, 0.00};
 
     // setting the initial state: initial configuration of the robot
     m_motionPlan->setStartState(q_initial);
@@ -291,70 +274,68 @@ public:
               << "Goal state: " << blaze::trans(q_final) << std::endl;
 
     // setting up the planning problem and its definitions
-    constexpr double runTime = 20.00; // Planning time in seconds (2 min)
+    constexpr double runTime = 240.00; // Planning time in seconds (2 min)
 
     const std::string plannedPathFile("plannedPath.csv");
 
-    auto start = std::chrono::high_resolution_clock::now();
-    m_motionPlan->plan(runTime, Planner::optimalPlanner::PLANNER_RRT, Planner::planningObjective::OBJECTIVE_BACKBONE_LENGTH, m_tempDir, plannedPathFile);
-    // motionPlan.plan(runTime, Planner::optimalPlanner::PLANNER_PRM, Planner::planningObjective::OBJECTIVE_BACKBONE_LENGTH, plannedPathFile);
-    auto end = std::chrono::high_resolution_clock::now();
-	  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    start = std::chrono::high_resolution_clock::now();
+    // motionPlan.plan(runTime, Planner::optimalPlanner::PLANNER_RRT, Planner::planningObjective::OBJECTIVE_BACKBONE_LENGTH, plannedPathFile);
+    m_motionPlan->plan(runTime, Planner::optimalPlanner::PLANNER_RRT, Planner::planningObjective::OBJECTIVE_REVJOINTSANDPATHLENGTH, m_tempDir, plannedPathFile);
+    end = std::chrono::high_resolution_clock::now();
+    elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
     std::cout << "Finished planning!! - Saving plan in: " << plannedPathFile << std::endl;
     std::cout << "Planning time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
-    // std::cout << "Finished planning!!" << std::endl;
 
-    genTaskTraj();
-
-    response->success = true;
+    start = std::chrono::high_resolution_clock::now();
+    publishTaskTraj();
+    end = std::chrono::high_resolution_clock::now();
+    elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    std::cout << "FK for taskspace plan gen time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
   }
 
-  void genTaskTraj()
+  /// load generated path in joint space and run it through FK to generate path in task space
+  void publishTaskTraj()
   {
     // initial guess for the BVP
     blaze::StaticVector<double, 5UL> initGuess;
-    blaze::HybridMatrix<double, 15000UL, 6UL, blaze::columnMajor> JointValues; // Sequence of actuation values
 
     // reading the planned path from the CSV file
-    readFromCSV(JointValues, m_tempDir, "plannedPath");
+    readFromCSV(m_JointValues, m_tempDir, "plannedPath");
 
     // total number of joint values in the motion plan
-    const size_t totalRows = JointValues.rows();
+    const size_t totalRows = m_JointValues.rows();
     // stores the current joint values to be actuated
     blaze::StaticVector<double, 6UL> q;
     // amount of time in milliseconds elapsed between consecutive CTR configurations
     constexpr size_t milliseconds = 50UL;
 
     bool convergence = false;
+    int counter = 0;
+    int step = 20;
+    int num_decimated_rows = floor(totalRows / step) + 1;
+    // std::cout << "decimated rows: " << num_decimated_rows << std::endl;
 
-    
     std_msgs::msg::Float64MultiArray msg;
     // 3 rows × n cols → flattened into row-major
     msg.layout.dim.resize(2);
     msg.layout.dim[0].label = "rows";
-    msg.layout.dim[0].size = totalRows;
-    msg.layout.dim[0].stride = totalRows * 3;
+    msg.layout.dim[0].size = num_decimated_rows;
+    msg.layout.dim[0].stride = num_decimated_rows * 3;
     msg.layout.dim[1].label = "cols";
     msg.layout.dim[1].size = 3;
     msg.layout.dim[1].stride = 3;
+    msg.data.resize(num_decimated_rows * 3);
 
-    msg.data.resize(totalRows * 3);
-
-    for (size_t row = 0UL; row < totalRows; row += 1)
+    for (size_t row = 0UL; row < totalRows; row += step)
     {
-      std::cout << "iteration " << row + 1 << " of " << totalRows << "\r";
-      // clear the output buffer
-      std::cout.flush();
+      q[0UL] = m_JointValues(row, 0UL);
+      q[1UL] = m_JointValues(row, 1UL);
+      q[2UL] = m_JointValues(row, 2UL);
+      q[3UL] = m_JointValues(row, 3UL);
+      q[4UL] = m_JointValues(row, 4UL);
+      q[5UL] = m_JointValues(row, 5UL);
 
-      q[0UL] = JointValues(row, 0UL);
-      q[1UL] = JointValues(row, 1UL);
-      q[2UL] = JointValues(row, 2UL);
-      q[3UL] = JointValues(row, 3UL);
-      q[4UL] = JointValues(row, 4UL);
-      q[5UL] = JointValues(row, 5UL);
-
-      // initGuess = 0.00;
       convergence = m_CTR_robot_TT->actuate_CTR(initGuess, q);
 
       if (!convergence)
@@ -364,19 +345,74 @@ public:
 
       for (size_t j = 0; j < 3; ++j)
       {
-        msg.data[row * 3 + j] = tipPos[j]; // row-major order
+        msg.data[counter * 3 + j] = tipPos[j]; // row-major order
       }
-
-      // Introduce a delay of 10 milliseconds (10,000 microseconds) using usleep
-      usleep(5000);
-
-      // m_CTR_robot_TT->broadcastShapeToSlicer();
+      counter++;
     }
 
     m_publisher_path->publish(msg);
-    RCLCPP_INFO(this->get_logger(), "Published path matrix");
+    // RCLCPP_INFO(this->get_logger(), "Published Task Trajectory");
+  }
 
-    std::cout << "Task Trajectory Generation Finish!!" << std::endl;
+  // Service callback to trigger commanding the robot
+  void actuateRobot_callback(const std::shared_ptr<interfaces::srv::Config::Request> request,
+                             std::shared_ptr<interfaces::srv::Config::Response> response)
+  {
+    if (request->command == "moveStep")
+    {
+      interfaces::msg::Jointspace msg;
+      if (abs(request->value) > 200)
+      {
+        response->message = "Too large step size";
+        response->success = false;
+        return;
+      }
+
+      m_counter += request->value;
+      std::cout << "m_counter" << m_counter << std::endl;
+
+      if (m_counter < 0)
+      {
+        std::cout << "lower bound" << std::endl;
+        m_counter = 0;
+      }
+      else if (m_counter > static_cast<int>(m_JointValues.rows()) - 1)
+      {
+        std::cout << "upper bound" << std::endl;
+        m_counter = static_cast<int>(m_JointValues.rows()) - 1;
+      }
+
+      auto joint_row = row(m_JointValues, m_counter);
+      msg.position[0] = joint_row[3UL];
+      msg.position[1] = joint_row[0UL];
+      msg.position[2] = joint_row[4UL];
+      msg.position[3] = joint_row[1UL];
+      m_publisher_actuate->publish(msg);
+
+      std::ostringstream oss;
+      oss << "Joints command sent (row " << m_counter << "/" << m_JointValues.rows() << "): [";
+      for (size_t j = 0; j < joint_row.size(); ++j)
+      {
+        oss << joint_row[j];
+        if (j != joint_row.size() - 1)
+          oss << ", ";
+      }
+      oss << "]";
+
+      response->message = oss.str();
+      response->success = true;
+    }
+    else if (request->command == "generateManualTrajectory")
+    {
+      plan();
+      response->success = true;
+      response->message = "Plan generate and published";
+    }
+    else
+    {
+      response->success = false;
+      response->message = "Invalid command";
+    }
   }
 
   // function that reads relevant clinical data from CSV files for each case
@@ -430,6 +466,7 @@ private:
   const std::string m_packageName = "planner";
 
   size_t count_;
+  int m_counter = 0;
   std::string m_tempDir;
   double m_t_init = 0.00;
   double m_sample_time;
@@ -440,10 +477,11 @@ private:
   blaze::StaticVector<double, 4UL> m_rot_phantom_base;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub_1, m_callback_group_sub_2, m_callback_group_sub_3; // Callback group for running subscriber callback function on separate thread
   rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subscription_q;                           // Subscriber object
-  rclcpp::Client<interfaces::srv::Jointstarget>::SharedPtr m_target_service;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr m_manual_target_service;
+  rclcpp::Service<interfaces::srv::Config>::SharedPtr m_manual_target_service;
+  rclcpp::Service<interfaces::srv::Config>::SharedPtr m_command_service;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_tf2;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr m_publisher_path;
+  rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_actuate;
   rclcpp::TimerBase::SharedPtr m_tf2_timer;
 
   std::unique_ptr<tf2_ros::Buffer> m_tf_buffer;
@@ -469,6 +507,8 @@ private:
   blaze::StaticVector<double, 6UL> m_q;              // joint values of the CTR
   const double m_linearActuatorThickness = 30.00E-3; // thickness of the linear actuator stages --> collision avoidance
   const double m_pos_tol = 1.00E-3;
+
+  blaze::HybridMatrix<double, 15000UL, 6UL, blaze::columnMajor> m_JointValues; // Sequence of actuation values
 };
 
 int main(int argc, char *argv[])
