@@ -2,29 +2,23 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <blaze/Blaze.h>
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <blaze/Blaze.h>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/srv/transformation.hpp"
-
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
-
-#include "EMTracker.hpp"
-// #include "butterworth.hpp"
-
 #include "igtlOSUtil.h"
 #include "igtlPointMessage.h"
 #include "igtlTransformMessage.h"
 #include "igtlClientSocket.h"
-
-#include "interfaces/msg/taskspace.hpp"
+#include "EMTracker.hpp"
 
 using namespace std::chrono_literals;
 
@@ -38,21 +32,28 @@ public:
     // Set default parameteres and allow it to be overridden by a launch file or command line parameter
     this->declare_parameter<double>("sample_time", 25E-3);
     m_sample_time = this->get_parameter("sample_time").as_double();
+
     this->declare_parameter<double>("cutoff_freq", 6.6);
     m_cutoff_freq = this->get_parameter("cutoff_freq").as_double();
+
     this->declare_parameter<bool>("send_on_igtl", false);
     m_flag_igtl = this->get_parameter("send_on_igtl").as_bool();
 
+    this->declare_parameter<bool>("enable_position_logging", true);
+    m_flag_log_position = this->get_parameter("enable_position_logging").as_bool();
+
+    this->declare_parameter<std::string>("host_name", "/dev/ttyUSB0");
+    std::string host_name = this->get_parameter("host_name").as_string();
+
     m_filter = std::make_unique<ButterworthFilter<3UL>>(m_sample_time);
     m_filter->update_coeffs(m_cutoff_freq);
-
-    std::string hostname = "/dev/ttyUSB0";
-    EMTrackerNode::setup_emtracker(hostname);
+    
+    EMTrackerNode::setup_emtracker(host_name);
     if (m_flag_igtl)
     {
-      std::string hostname = "localhost";
+      std::string host_name = "localhost";
       int port = 18944;
-      EMTrackerNode::setup_igtl(hostname, port);
+      EMTrackerNode::setup_igtl(host_name, port);
     }
     EMTrackerNode::setup_ros_interfaces();
     EMTrackerNode::setup_parameters_callback();
@@ -64,19 +65,20 @@ public:
   }
 
 private:
+
+  /// @brief Function to set up ROS interfaces including subscriptions, services, and timers
   void setup_ros_interfaces()
   {
-    m_callback_group_read = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-
+    // Publishers for broadcasting the sensor readings
     m_publisher_base = this->create_publisher<interfaces::msg::Taskspace>("task_space/feedback/base_tool", 10);
     m_publisher_phantom = this->create_publisher<interfaces::msg::Taskspace>("task_space/feedback/phantom_tool", 10);
     m_publisher_phantom_base = this->create_publisher<interfaces::msg::Taskspace>("task_space/feedback/phantom_base", 10);
 
-    // broadcast sensors readings
+    // Broadcast all sensors readings usign tf2
     m_tf2_broadcast = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
-    // m_publisher_em_base = this->create_publisher<interfaces::msg::Taskspace>("task_space/feedback/phantom_base", 10);
-
+    // Timer to read emtracker data periodically
+    m_callback_group_read = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     auto sample_time = std::chrono::microseconds(static_cast<int>(m_sample_time * 1e6));
     m_timer = this->create_wall_timer(
         sample_time, std::bind(&EMTrackerNode::read_callback, this), m_callback_group_read);
@@ -86,14 +88,21 @@ private:
         "freeze_phantom",
         std::bind(&EMTrackerNode::handle_freeze_phantom, this, std::placeholders::_1, std::placeholders::_2));
 
+    // Service server for freeze_robot using std_srvs/SetBool
+    m_freeze_robot_service = this->create_service<std_srvs::srv::SetBool>(
+        "freeze_robot",
+        std::bind(&EMTrackerNode::handle_freeze_robot, this, std::placeholders::_1, std::placeholders::_2));
+
     // Service server for geting the CT-SCAN -> CTR tranformation using tranformation.hpp
     m_ctr_tranform_service = this->create_service<interfaces::srv::Transformation>(
         "get_transformation",
         std::bind(&EMTrackerNode::handle_tranformation_service_request, this, std::placeholders::_1, std::placeholders::_2));
   }
 
+  // Function to set up parameter callback for parameters dynamic configurations
   void setup_parameters_callback()
   {
+    // may need to be updated
     // Set up parameter callback
     auto param_callback =
         [this](const std::vector<rclcpp::Parameter> &parameters) -> rcl_interfaces::msg::SetParametersResult
@@ -120,16 +129,17 @@ private:
     param_callback_handle = this->add_on_set_parameters_callback(param_callback);
   }
 
-  void setup_emtracker(std::string hostname)
+  // setup emtracker and start the reading thread
+  void setup_emtracker(std::string host_name)
   {
     /** initialize emtracker **/
     double cutoff_freq = 30.0; //[Hz]
     bool debug_mode = false;
-    m_emt = std::make_unique<EMTracker>(hostname, m_sample_time, cutoff_freq, debug_mode); // Allocate the object dynamically
+    m_emt = std::make_unique<EMTracker>(host_name, m_sample_time, cutoff_freq, debug_mode); // Allocate the object dynamically
 
     // // landmark registration process - uncomment only if you want to redo landmark registration
-    // std::string landmarks = "landmarks_truth_ctr_robot_v3.5.csv";
-    // std::string ref_sensor_name = "robot"; // "robot", "phantom", "tool"
+    // std::string landmarks = "landmarks_truth_sensor_1-3.csv";
+    // std::string ref_sensor_name = "sensor_3"; // "robot", "phantom", "tool", "sensor_1", "sensor_2"
     // m_emt->landmark_registration(landmarks, ref_sensor_name);
     // EMTrackerNode::~EMTrackerNode();
 
@@ -138,12 +148,12 @@ private:
     std::this_thread::sleep_for(std::chrono::milliseconds(4000));
   }
 
-  void setup_igtl(std::string hostname, int port)
+  void setup_igtl(std::string host_name, int port)
   {
-    std::cout << hostname << std::endl;
+    std::cout << host_name << std::endl;
 
     this->m_socket = igtl::ClientSocket::New();
-    int r = this->m_socket->ConnectToServer(hostname.c_str(), port);
+    int r = this->m_socket->ConnectToServer(host_name.c_str(), port);
 
     if (r != 0)
     {
@@ -182,7 +192,8 @@ private:
     rclcpp::Time now = this->get_clock()->now();
 
     double sample_time;
-    quatTransformation tool_in_robot, tool_dot_in_robot, robot_in_em, tool_in_em;
+    quatTransformation tool_in_robot, tool_dot_in_robot, robot_in_em, tool_in_em, probe_in_robot;
+    quatTransformation sensor_1_in_robot, sensor_2_in_robot, sensor_3_in_robot;
 
     blaze::StaticVector<double, 3UL> tool_pos_flt, tool_vel_flt = blaze::StaticVector<double, 3UL>(0.0);
 
@@ -191,10 +202,11 @@ private:
     m_emt->get_tool_transform_in_phantom(m_tool_in_phantom);
     m_emt->get_robot_transform_in_phantom(m_robot_in_phantom);
     m_emt->get_probe_transform_in_phantom(m_probe_in_phantom);
+    m_emt->get_probe_transform_in_robot(probe_in_robot);
 
     m_emt->get_sample_time(sample_time);
 
-    tool_pos_flt = m_filter->add_data_point(m_tool_in_phantom.translation);
+    tool_pos_flt = m_filter->add_data_point(tool_in_robot.translation);
     tool_vel_flt = (tool_pos_flt - m_tool_pos_flt_prev) / m_sample_time;
     m_tool_pos_flt_prev = tool_pos_flt;
 
@@ -202,9 +214,13 @@ private:
     msg_phantom.p[1] = m_tool_in_phantom.translation[1];
     msg_phantom.p[2] = m_tool_in_phantom.translation[2];
 
-    msg_base.p[0] = tool_in_robot.translation[0]; // to align with cathter robot system
-    msg_base.p[1] = tool_in_robot.translation[1];
-    msg_base.p[2] = tool_in_robot.translation[2];
+    // msg_base.p[0] = tool_in_robot.translation[0]; // to align with cathter robot system
+    // msg_base.p[1] = tool_in_robot.translation[1];
+    // msg_base.p[2] = tool_in_robot.translation[2];
+
+    msg_base.p[0] = tool_pos_flt[0]; // to align with cathter robot system
+    msg_base.p[1] = tool_pos_flt[1];
+    msg_base.p[2] = tool_pos_flt[2];
 
     msg_phantom_base.p[0] = m_robot_in_phantom.translation[0];
     msg_phantom_base.p[1] = m_robot_in_phantom.translation[1];
@@ -227,7 +243,7 @@ private:
     quatTransformation tran_in_em;
     geometry_msgs::msg::TransformStamped tf2_tran;
     tf2_tran.header.stamp = this->get_clock()->now();
-    if (m_emt->get_robot_transform_in_em(tran_in_em) == 0)
+    if (m_emt->get_robot_transform_in_em(tran_in_em) == 0 && std::isfinite(tran_in_em.translation[0]))
     {
       tf2_tran.header.frame_id = "em_tracker";
       tf2_tran.child_frame_id = "robot_base";
@@ -240,7 +256,7 @@ private:
       tf2_tran.transform.rotation.z = tran_in_em.rotation[3];
       tf2_transforms.push_back(tf2_tran);
     }
-    if (m_emt->get_tool_transform_in_em(tran_in_em) == 0)
+    if (m_emt->get_tool_transform_in_em(tran_in_em) == 0 && std::isfinite(tran_in_em.translation[0]))
     {
       tf2_tran.header.frame_id = "em_tracker";
       tf2_tran.child_frame_id = "ctr_tip";
@@ -253,7 +269,7 @@ private:
       tf2_tran.transform.rotation.z = tran_in_em.rotation[3];
       tf2_transforms.push_back(tf2_tran);
     }
-    if (m_emt->get_phantom_transform_in_em(tran_in_em) == 0)
+    if (m_emt->get_phantom_transform_in_em(tran_in_em) == 0 && std::isfinite(tran_in_em.translation[0]))
     {
       tf2_tran.header.frame_id = "em_tracker";
       tf2_tran.child_frame_id = "phantom";
@@ -266,7 +282,7 @@ private:
       tf2_tran.transform.rotation.z = tran_in_em.rotation[3];
       tf2_transforms.push_back(tf2_tran);
     }
-    if (m_emt->get_usprobe_transform_in_em(tran_in_em) == 0)
+    if (m_emt->get_usprobe_transform_in_em(tran_in_em) == 0 && std::isfinite(tran_in_em.translation[0]))
     {
       tf2_tran.header.frame_id = "em_tracker";
       tf2_tran.child_frame_id = "us_probe";
@@ -279,10 +295,49 @@ private:
       tf2_tran.transform.rotation.z = tran_in_em.rotation[3];
       tf2_transforms.push_back(tf2_tran);
     }
-    if (m_emt->get_probe_transform_in_em(tran_in_em) == 0)
+    if (m_emt->get_probe_transform_in_em(tran_in_em) == 0 && std::isfinite(tran_in_em.translation[0]))
     {
       tf2_tran.header.frame_id = "em_tracker";
       tf2_tran.child_frame_id = "probe";
+      tf2_tran.transform.translation.x = tran_in_em.translation[0];
+      tf2_tran.transform.translation.y = tran_in_em.translation[1];
+      tf2_tran.transform.translation.z = tran_in_em.translation[2];
+      tf2_tran.transform.rotation.w = tran_in_em.rotation[0];
+      tf2_tran.transform.rotation.x = tran_in_em.rotation[1];
+      tf2_tran.transform.rotation.y = tran_in_em.rotation[2];
+      tf2_tran.transform.rotation.z = tran_in_em.rotation[3];
+      tf2_transforms.push_back(tf2_tran);
+    }
+    if (m_emt->get_sensor_transform_in_em("sensor_1", tran_in_em) == 0 && std::isfinite(tran_in_em.translation[0]))
+    {
+      tf2_tran.header.frame_id = "em_tracker";
+      tf2_tran.child_frame_id = "sensor_1";
+      tf2_tran.transform.translation.x = tran_in_em.translation[0];
+      tf2_tran.transform.translation.y = tran_in_em.translation[1];
+      tf2_tran.transform.translation.z = tran_in_em.translation[2];
+      tf2_tran.transform.rotation.w = tran_in_em.rotation[0];
+      tf2_tran.transform.rotation.x = tran_in_em.rotation[1];
+      tf2_tran.transform.rotation.y = tran_in_em.rotation[2];
+      tf2_tran.transform.rotation.z = tran_in_em.rotation[3];
+      tf2_transforms.push_back(tf2_tran);
+    }
+    if (m_emt->get_sensor_transform_in_em("sensor_2", tran_in_em) == 0 && std::isfinite(tran_in_em.translation[0]))
+    {
+      tf2_tran.header.frame_id = "em_tracker";
+      tf2_tran.child_frame_id = "sensor_2";
+      tf2_tran.transform.translation.x = tran_in_em.translation[0];
+      tf2_tran.transform.translation.y = tran_in_em.translation[1];
+      tf2_tran.transform.translation.z = tran_in_em.translation[2];
+      tf2_tran.transform.rotation.w = tran_in_em.rotation[0];
+      tf2_tran.transform.rotation.x = tran_in_em.rotation[1];
+      tf2_tran.transform.rotation.y = tran_in_em.rotation[2];
+      tf2_tran.transform.rotation.z = tran_in_em.rotation[3];
+      tf2_transforms.push_back(tf2_tran);
+    }
+    if (m_emt->get_sensor_transform_in_em("sensor_3", tran_in_em) == 0 && std::isfinite(tran_in_em.translation[0]))
+    {
+      tf2_tran.header.frame_id = "em_tracker";
+      tf2_tran.child_frame_id = "sensor_3";
       tf2_tran.transform.translation.x = tran_in_em.translation[0];
       tf2_tran.transform.translation.y = tran_in_em.translation[1];
       tf2_tran.transform.translation.z = tran_in_em.translation[2];
@@ -305,12 +360,16 @@ private:
 
     double time = static_cast<double>(now.nanoseconds()) / 1E9;
     // log_position(time, tool_transform.translation, sample_time);
-    log_position(tool_in_robot.translation, sample_time);
+    // log_position(tool_in_robot.translation, sample_time, "tip");
+    if (m_flag_log_position)
+    {
+      log_position(tool_in_robot, sample_time, "tip");
+    }
+    // log_position(tool_pos_flt, sample_time, "tip_flt");
+    // log_position(probe_in_robot.translation, sample_time, "prb");
   }
 
-  void handle_tranformation_service_request(
-      const std::shared_ptr<interfaces::srv::Transformation::Request> request,
-      std::shared_ptr<interfaces::srv::Transformation::Response> response)
+  void handle_tranformation_service_request(const std::shared_ptr<interfaces::srv::Transformation::Request> request, std::shared_ptr<interfaces::srv::Transformation::Response> response)
   {
     // Populate your transformation matrix here
     // Example transformation matrix (identity matrix)
@@ -461,7 +520,56 @@ private:
     }
   }
 
-  void log_position(blaze::StaticVector<double, 3> position, double sample_time)
+  void handle_freeze_robot(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response)
+  {
+    if (request->data)
+    {
+      m_emt->freeze_robot(true);
+      response->success = true;
+      response->message = "Robot frozen";
+      RCLCPP_INFO(this->get_logger(), "Robot is frozen");
+    }
+    else
+    {
+      m_emt->freeze_robot(false);
+      response->success = true;
+      response->message = "Robot defrozen";
+      RCLCPP_INFO(this->get_logger(), "Robot is active");
+    }
+  }
+
+  void log_position(const quatTransformation& tool_in_robot, double sample_time, std::string prefix = "")
+  {
+    std::ostringstream oss;
+    auto print_with_space_if_positive = [](double value)
+    {
+      std::ostringstream tmp;
+      tmp << std::fixed << std::setprecision(4);
+      if (value >= 0)
+      {
+        tmp << " " << value;
+      }
+      else
+      {
+        tmp << value;
+      }
+      return tmp.str();
+    };
+
+    oss << '[' << prefix << "] " 
+        << "x:" << print_with_space_if_positive(tool_in_robot.translation[0]) << "  "
+        << "y:" << print_with_space_if_positive(tool_in_robot.translation[1]) << "  "
+        << "z:" << print_with_space_if_positive(tool_in_robot.translation[2]) << " [m] | "
+        << "qo:" << print_with_space_if_positive(tool_in_robot.rotation[0]) << "  "
+        << "qx:" << print_with_space_if_positive(tool_in_robot.rotation[1]) << "  "
+        << "qy:" << print_with_space_if_positive(tool_in_robot.rotation[2]) << "  "
+        << "qz:" << print_with_space_if_positive(tool_in_robot.rotation[3]) << "  "
+        << "dt:" << std::fixed << std::setprecision(1) << sample_time * 1e3 << " [ms]";
+
+    RCLCPP_INFO(get_logger(), "%s", oss.str().c_str());
+  }
+
+  void log_position(blaze::StaticVector<double, 3> position, double sample_time, std::string prefix = "")
   {
     std::ostringstream oss;
     auto print_with_space_if_positive = [](double value)
@@ -479,10 +587,11 @@ private:
       return tmp.str();
     };
 
-    oss << "X:" << print_with_space_if_positive(position[0]) << "  "
-        << "Y:" << print_with_space_if_positive(position[1]) << "  "
-        << "Z:" << print_with_space_if_positive(position[2]) << " [m]"
-        << "  |  dT:" << std::fixed << std::setprecision(1) << sample_time * 1e3 << " [ms]";
+    oss << '[' << prefix << "] " 
+        << "x:" << print_with_space_if_positive(position[0]) << "  "
+        << "y:" << print_with_space_if_positive(position[1]) << "  "
+        << "z:" << print_with_space_if_positive(position[2]) << " [m]"
+        << " | dt:" << std::fixed << std::setprecision(1) << sample_time * 1e3 << " [ms]";
 
     RCLCPP_INFO(get_logger(), "%s", oss.str().c_str());
   }
@@ -491,6 +600,7 @@ private:
   double m_sample_time;
   double m_cutoff_freq;
   bool m_flag_igtl;
+  bool m_flag_log_position;
   std::unique_ptr<EMTracker> m_emt;
   std::unique_ptr<ButterworthFilter<3UL>> m_filter;
   blaze::StaticVector<double, 3UL> m_tool_pos_flt_prev = blaze::StaticVector<double, 3UL>(0.0);
@@ -505,6 +615,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr m_callback_group_read;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_heartbeat;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr m_freeze_phantom_service;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr m_freeze_robot_service;
   rclcpp::Service<interfaces::srv::Transformation>::SharedPtr m_ctr_tranform_service;
 
   std::shared_ptr<tf2_ros::TransformBroadcaster> m_tf2_broadcast;

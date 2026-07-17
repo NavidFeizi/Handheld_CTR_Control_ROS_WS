@@ -1,52 +1,89 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <root>
- <tabbed_widget parent="main_window" name="Main Window">
+ <tabbed_widget name="Main Window" parent="main_window">
   <Tab tab_name="tab1" containers="1">
    <Container>
-    <DockSplitter orientation="-" sizes="0.250667;0.249333;0.250667;0.249333" count="4">
+    <DockSplitter orientation="-" count="3" sizes="0.308239;0.326705;0.365057">
      <DockArea name="...">
-      <plot flip_y="false" style="Lines" flip_x="false" mode="TimeSeries">
-       <range top="0.133344" right="1573.150046" left="1553.200244" bottom="0.075115"/>
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range left="88.982835" right="108.962664" bottom="0.014679" top="0.014860"/>
        <limitY/>
-       <curve color="#31d637" name="/joint_space/feedback/position[1]"/>
-       <curve color="#f68244" name="/joint_space/feedback/position[3]"/>
+       <curve color="#1f77b4" name="/task_space/target/p[0]"/>
+       <curve color="#ff7f0e" name="/task_space/sim_out/p[0]"/>
+       <curve color="#17becf" name="/task_space/feedback/base_tool/p[0]"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" style="Lines" flip_x="false" mode="TimeSeries">
-       <range top="7.509144" right="1573.150046" left="1553.200244" bottom="-27.729656"/>
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range left="88.982835" right="108.962664" bottom="-0.021026" top="-0.020724"/>
        <limitY/>
-       <curve color="#1d1ac9" name="/joint_space/feedback/position[0]"/>
-       <curve color="#ff0e40" name="/joint_space/feedback/position[2]"/>
+       <curve color="#d62728" name="/task_space/target/p[1]"/>
+       <curve color="#f14cc1" name="/task_space/sim_out/p[1]"/>
+       <curve color="#bcbd22" name="/task_space/feedback/base_tool/p[1]"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" style="Lines" flip_x="false" mode="TimeSeries">
-       <range top="0.100000" right="1573.150046" left="1553.200244" bottom="-0.100000"/>
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range left="88.982835" right="108.962664" bottom="0.128448" top="0.128561"/>
        <limitY/>
-       <curve color="#1ac938" name="/joint_space/feedback/current[1]"/>
-       <curve color="#ff7f0e" name="/joint_space/feedback/current[3]"/>
-       <curve color="#1f77b4" name="/joint_space/feedback/current[0]"/>
-       <curve color="#d62728" name="/joint_space/feedback/current[2]"/>
-      </plot>
-     </DockArea>
-     <DockArea name="...">
-      <plot flip_y="false" style="Lines" flip_x="false" mode="TimeSeries">
-       <range top="0.100000" right="19.999996" left="0.000000" bottom="-0.100000"/>
-       <limitY/>
+       <curve color="#1ac938" name="/task_space/target/p[2]"/>
+       <curve color="#9467bd" name="/task_space/sim_out/p[2]"/>
+       <curve color="#1f77b4" name="/task_space/feedback/base_tool/p[2]"/>
       </plot>
      </DockArea>
     </DockSplitter>
    </Container>
   </Tab>
-  <currentTabIndex index="0"/>
+  <Tab tab_name="tab2" containers="1">
+   <Container>
+    <DockSplitter orientation="-" count="4" sizes="0.200501;0.250627;0.305764;0.243108">
+     <DockArea name="Force">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range left="88.978755" right="108.978508" bottom="-0.295867" top="0.357924"/>
+       <limitY/>
+       <curve color="#1f77b4" name="/task_space/force_estimate/x"/>
+       <curve color="#d62728" name="/task_space/force_estimate/y"/>
+       <curve color="#1ac938" name="/task_space/force_estimate/z"/>
+       <curve color="#ff7f0e" name="/task_space/force_estimate/magnitude"/>
+      </plot>
+     </DockArea>
+     <DockArea name="residu">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range left="88.978755" right="108.978508" bottom="-0.000089" top="0.000098"/>
+       <limitY/>
+       <curve color="#4cabf1" name="/EKF/residual_error/x"/>
+       <curve color="#9467bd" name="/EKF/residual_error/y"/>
+       <curve color="#00dc14" name="/EKF/residual_error/z"/>
+       <curve color="#ff0c00" name="/EKF/residual_error/pos_mag"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range left="88.978755" right="108.978508" bottom="-0.081089" top="-0.032698"/>
+       <limitY/>
+       <curve color="#1f77b4" name="/joint_space/feedback/position[1]"/>
+       <curve color="#d62728" name="/joint_space/feedback/position[3]"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range left="88.978755" right="108.978508" bottom="0.495115" top="0.723823"/>
+       <limitY/>
+       <curve color="#1ac938" name="/joint_space/feedback/position[0]"/>
+       <curve color="#ff7f0e" name="/joint_space/feedback/position[2]"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <currentTabIndex index="1"/>
  </tabbed_widget>
  <use_relative_time_offset enabled="1"/>
  <!-- - - - - - - - - - - - - - - -->
  <!-- - - - - - - - - - - - - - - -->
  <Plugins>
   <plugin ID="DataLoad CSV">
-   <parameters time_axis="" delimiter="0"/>
+   <parameters delimiter="0" time_axis=""/>
   </plugin>
   <plugin ID="DataLoad MCAP"/>
   <plugin ID="DataLoad ROS2 bags">
@@ -64,7 +101,7 @@
    <max_array_size value="100"/>
    <boolean_strings_to_number value="true"/>
    <remove_suffix_from_strings value="true"/>
-   <selected_topics value="/joint_space/feedback;/robot_status"/>
+   <selected_topics value="/EKF/computation_time;/EKF/residual_error;/joint_space/feedback;/joint_space/target;/task_space/feedback/base_tool;/task_space/force_estimate;/task_space/target;/task_space/sim_out"/>
   </plugin>
   <plugin ID="UDP Server"/>
   <plugin ID="WebSocket Server"/>

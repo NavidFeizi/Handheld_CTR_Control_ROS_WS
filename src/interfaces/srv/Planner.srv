@@ -1,0 +1,7 @@
+# Config.srv
+string command
+float64[3] value
+---
+bool success
+string message
+float64 value

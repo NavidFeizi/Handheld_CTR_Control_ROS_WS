@@ -1,0 +1,7 @@
+# Recording.srv
+string command
+float64 duration
+string name  # Custom name for the recording session/folder
+---
+bool success
+string message

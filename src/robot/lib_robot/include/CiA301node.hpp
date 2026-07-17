@@ -66,10 +66,9 @@ public:
              double VelocityFactor,
              unsigned int commandPeriod,
              OpMode operationMode,
-             double maxAcc,
-             double maxVel,
+             double ProfileAccSI,
+             double ProfileVelSI,
              //  double current_threshold,
-             //  double vel_findlimit,
              std::shared_ptr<SharedState> sharedState,
              std::shared_ptr<spdlog::logger> shared_logger);
   ~Cia301Node();
@@ -103,7 +102,7 @@ public:
 
   // ============================== Status Methods ==============================
   int32_t getCpuTemp() const;
-  int32_t getDriverTemp() const;
+  int32_t getWindingTemp() const;
   std::bitset<32> getDigitalIn() const;
 
 private:

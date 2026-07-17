@@ -22386,3 +22386,4 @@ build/robot/CMakeFiles/forward_kin_autogen.dir/compiler_depend.internal
 build/robot/CMakeFiles/qt_gui_autogen.dir/compiler_depend.internal
 build/robot/ctr_library/CMakeFiles/CTRlib_autogen.dir/compiler_depend.internal
 build/robot/lib_robot/CMakeFiles/ROBOTlib_autogen.dir/compiler_depend.internal
+.github/copilot-instructions.md

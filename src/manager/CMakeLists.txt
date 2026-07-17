@@ -26,45 +26,51 @@ set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(interfaces REQUIRED) 
-
 find_package(ament_index_cpp REQUIRED)
 
-# Define executables
+find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_eigen REQUIRED)
+find_package(Eigen3 REQUIRED)
+
+find_package(Qt5 REQUIRED COMPONENTS Core Widgets Concurrent)
+
+set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
+
+# Define and link executables
 add_executable(manage src/manager_node.cpp)
-add_executable(record src/recorder_node.cpp)
-
-# OpenMP
-find_package(OpenMP REQUIRED)
-if(OpenMP_FOUND)
-    message(STATUS "OpenMP found")
-    add_compile_options(${OpenMP_CXX_FLAGS})
-endif()
-
-# Set number of threads for OpenBLAS
-if(DEFINED ENV{OPENBLAS_NUM_THREADS})
-    set(OPENBLAS_NUM_THREADS $ENV{OPENBLAS_NUM_THREADS})
-else()
-    set(OPENBLAS_NUM_THREADS 64) # Default to 64 if not set
-endif()
-
-# Optionally, set the number of OpenMP threads
-if(DEFINED ENV{OMP_NUM_THREADS})
-    set(OMP_NUM_THREADS $ENV{OMP_NUM_THREADS})
-else()
-    set(OMP_NUM_THREADS 4) # Default to 4 if not set
-endif()
-
-add_compile_definitions(OMP_NUM_THREADS=${OMP_NUM_THREADS})
-
 ament_target_dependencies(manage rclcpp std_msgs rclcpp_action interfaces ament_index_cpp)
 
-ament_target_dependencies(record rclcpp std_msgs interfaces ament_index_cpp)
+add_executable(record src/recorder_node.cpp)
+ament_target_dependencies(record rclcpp std_msgs interfaces ament_index_cpp 
+                            tf2 tf2_ros geometry_msgs tf2_eigen Eigen3)
+
+add_executable(procedure src/procedure_node.cpp)
+ament_target_dependencies(procedure rclcpp std_msgs interfaces ament_index_cpp)
+
+add_executable(joint_path src/joint_path_node.cpp)
+ament_target_dependencies(joint_path rclcpp std_msgs interfaces ament_index_cpp)
+
+add_executable(master 
+    src/master_node.cpp
+    src/master_qt_gui.cpp
+    include/manager/master_node.hpp
+    include/manager/master_qt_gui.hpp)
+target_include_directories(master PRIVATE include)
+target_link_libraries(master Qt5::Widgets Qt5::Core Qt5::Concurrent)
+ament_target_dependencies(master rclcpp std_msgs std_srvs interfaces ament_index_cpp 
+                            tf2 tf2_ros geometry_msgs tf2_eigen Eigen3)
 
 install(TARGETS
 manage
 record
+procedure
+joint_path
+master
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY

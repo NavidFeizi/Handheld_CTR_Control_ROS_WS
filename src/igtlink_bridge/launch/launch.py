@@ -1,26 +1,58 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch.actions import ExecuteProcess, TimerAction
 
 def generate_launch_description():
-    ld = LaunchDescription()
+    # Launch args
+    hostname_module_arg = DeclareLaunchArgument('hostname_module', default_value='10.15.232.114')
+    port_module_arg = DeclareLaunchArgument('port_module', default_value='18975')
+    hostname_slicer_arg = DeclareLaunchArgument('hostname_slicer', default_value='localhost')
+    port_slicer_arg = DeclareLaunchArgument('port_slicer', default_value='18944')
+    auto_connect_arg = DeclareLaunchArgument('auto_connect', default_value='false')
 
-    tracker_node = ExecuteProcess(
-        cmd=[
-            'taskset', '-c', '8',  # This sets the affinity to CPU core 0
-            # 'gnome-terminal', '--',
-            'ros2', 'run', 'igtlink_bridge', 'bridge',
-            '--ros-args',
-            '-p', 'hostname:=localhost',
-            # '-p', 'port:=18944',
-            # '-p', 'hostname:="10.15.225.222"',
-            '-p', 'port:=18975',
-            '-p', 'm_conv_to_ascension:=false',
-            # '--ros-args', '--log-level', 'tf2:=warn',
-            '--remap', '__node:=igtlink_bridge_node'
-        ],
+    hostname_module = LaunchConfiguration('hostname_module')
+    port_module = LaunchConfiguration('port_module')
+    hostname_slicer = LaunchConfiguration('hostname_slicer')
+    port_slicer = LaunchConfiguration('port_slicer')
+    auto_connect = LaunchConfiguration('auto_connect')
+
+    module_node = Node(
+        package='igtlink_bridge',
+        executable='bridge',
+        name='igtlink_bridge_module_node',
         output='screen',
+        prefix=['taskset -c 8'],
+        parameters=[{
+            'hostname': hostname_module,
+            'port': port_module,
+            'convert_to_startrack': True,
+            'auto_connect': auto_connect,
+        }],
     )
 
-    ld.add_action(tracker_node)
+    slicer_node = Node(
+        package='igtlink_bridge',
+        executable='bridge',
+        name='igtlink_bridge_slicer_node',
+        # output='screen',
+        prefix=['taskset -c 8'],
+        parameters=[{
+            'hostname': hostname_slicer,
+            'port': port_slicer,
+            'convert_to_startrack': False,
+            'auto_connect': auto_connect,
+        }],
+    )
+
+    ld = LaunchDescription()
+    ld.add_action(hostname_module_arg)
+    ld.add_action(port_module_arg)
+    ld.add_action(hostname_slicer_arg)
+    ld.add_action(port_slicer_arg)
+    ld.add_action(auto_connect_arg)
+
+    # ld.add_action(module_node)
+    ld.add_action(slicer_node)
+
     return ld

@@ -1,0 +1,103 @@
+{
+    "physics_params": {
+        "young_modulus": [
+            50000000000.0,
+            50000000000.0,
+            50000000000.0
+        ],
+        "shear_modulus": [
+            19230000000.0,
+            19230000000.0,
+            19230000000.0
+        ],
+        "curve_radius": [
+            0.0357,
+            0.08065,
+            0.228
+        ],
+        "straight_length": [
+            0.169,
+            0.065,
+            0.01
+        ],
+        "curve_length": [
+            0.041,
+            0.1,
+            0.1
+        ],
+        "outer_diameter": [
+            0.0005,
+            0.0009,
+            0.0015
+        ],
+        "inner_diameter": [
+            0.0004,
+            0.0007,
+            0.0012
+        ]
+    },
+    "dataset_params": {
+        "data_name": "ctr_v4.2",
+        "num_coll_samples": 20000,
+        "num_bound_samples": 1000,
+        "num_obs_samples": 2000,
+        "beta3_range": [
+            -0.01,
+            0.0
+        ],
+        "beta2_range": [
+            -0.05500000000000001,
+            0.0
+        ],
+        "beta1_range": [
+            -0.015000000000000013,
+            0.0
+        ],
+        "alpha3_range": [
+            -3.141592653589793,
+            3.141592653589793
+        ],
+        "alpha2_range": [
+            -3.141592653589793,
+            3.141592653589793
+        ],
+        "alpha1_range": [
+            -3.141592653589793,
+            3.141592653589793
+        ],
+        "description": "Dataset for 3-tube CTR with Grassmann et al. parameters - beta1, beta2, beta3, alpha1, alpha2, alpha3 vary"
+    },
+    "model_params": {
+        "model_name": "ctr_v4.2.7",
+        "layers": [
+            7,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            15
+        ],
+        "tau_idx": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "description": "a branch of v4.2.6 with only innertube position obs data and tweaking the weights"
+    },
+    "train_params": {
+        "weights": {
+            "obs": 1000.0,
+            "bc": 100.0,
+            "phy_m": 100000.0,
+            "phy_uz": 0.0001,
+            "phy_th": 0.01,
+            "phy_p": 1.0,
+            "phy_h": 0.1
+        }
+    }
+}

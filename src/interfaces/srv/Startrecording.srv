@@ -1,5 +1,0 @@
-# Startrecording.srv
-float64 duration
----
-bool success
-string message

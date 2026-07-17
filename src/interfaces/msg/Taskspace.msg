@@ -7,3 +7,5 @@ float64[3] p [0.0, 0.0, 0.0]            # position
 float64[4] h [0.0, 0.0, 0.0, 0.0]       # orientation (quat)
 float64[3] q [0.0, 0.0, 0.0]            # translational velocity
 float64[3] w [0.0, 0.0, 0.0]            # angular velocity
+
+float64[3] f [0.0, 0.0, 0.0]            # tip force

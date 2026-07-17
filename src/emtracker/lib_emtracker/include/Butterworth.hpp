@@ -45,10 +45,21 @@ public:
 
     blaze::StaticVector<double, N> add_data_point(const blaze::StaticVector<double, N> &U)
     {
-        blaze::StaticVector<double, N> filtered_U = m_coeffs.b0 * U + m_coeffs.b1 * m_prev_U1 + m_coeffs.b2 * m_prev_U2 - m_coeffs.a1 * m_prev_filtered_U1 - m_coeffs.a2 * m_prev_filtered_U2;
+        blaze::StaticVector<double, N> U_to_use = U;
+        
+        // Check each element and use previous value if current is NaN
+        for (size_t i = 0; i < N; ++i)
+        {
+            if (std::isnan(U[i]))
+            {
+                U_to_use[i] = m_prev_U1[i];
+            }
+        }
+        
+        blaze::StaticVector<double, N> filtered_U = m_coeffs.b0 * U_to_use + m_coeffs.b1 * m_prev_U1 + m_coeffs.b2 * m_prev_U2 - m_coeffs.a1 * m_prev_filtered_U1 - m_coeffs.a2 * m_prev_filtered_U2;
 
         m_prev_U2 = m_prev_U1;
-        m_prev_U1 = U;
+        m_prev_U1 = U_to_use;
         m_prev_filtered_U2 = m_prev_filtered_U1;
         m_prev_filtered_U1 = filtered_U;
 

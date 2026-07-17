@@ -1,0 +1,105 @@
+{
+    "physics_params": {
+        "description": "Grassmann et al. CTR parameters",
+        "young_modulus": [
+            50000000000.0,
+            50000000000.0,
+            50000000000.0
+        ],
+        "shear_modulus": [
+            19230000000.0,
+            19230000000.0,
+            19230000000.0
+        ],
+        "curve_radius": [
+            0.0357,
+            0.08065,
+            0.228
+        ],
+        "straight_length": [
+            0.169,
+            0.065,
+            0.01
+        ],
+        "curve_length": [
+            0.041,
+            0.1,
+            0.1
+        ],
+        "inner_diameter": [
+            0.0004,
+            0.0007,
+            0.0012
+        ],
+        "outer_diameter": [
+            0.0005,
+            0.0009,
+            0.0015
+        ]
+    },
+    "dataset_params": {
+        "data_name": "ctr_v4.4",
+        "num_coll_samples": 20000,
+        "num_bound_samples": 1000,
+        "num_obs_samples": 2000,
+        "description": "Synthesized dataset for Grassmann et al. - all joints vary",
+        "date_created": "2025-10-31",
+        "beta3_range": [
+            -0.01,
+            0.0
+        ],
+        "beta2_range": [
+            -0.055,
+            -0.0
+        ],
+        "beta1_range": [
+            -0.045,
+            -0.0
+        ],
+        "alpha3_range": [
+            -6.283185307179586,
+            6.283185307179586
+        ],
+        "alpha2_range": [
+            -3.141592653589793,
+            3.141592653589793
+        ],
+        "alpha1_range": [
+            -3.141592653589793,
+            3.141592653589793
+        ]
+    },
+    "model_params": {
+        "model_name": "ctr_v4.4.5",
+        "description": "trained on synthesized Grassmann data for a larger configuration domain - a branch of ctr_v4.4.4 with different weights",
+        "layers": [
+            7,
+            100,
+            100,
+            100,
+            100,
+            100,
+            100,
+            15
+        ],
+        "tau_idx": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ]
+    },
+    "train_params": {
+        "weights": {
+            "obs": 100.0,
+            "bc": 1000.0,
+            "phy_m": 10000.0,
+            "phy_uz": 0.0001,
+            "phy_th": 0.01,
+            "phy_p": 1.0,
+            "phy_h": 0.1
+        }
+    }
+}

@@ -111,7 +111,7 @@ void Calculate_Registration_Transformation(const std::vector<StaticVector<double
   std::uniform_real_distribution<double> dist;
   double error, error_min = 1000.00;
 
-  for (size_t i = 0; i < 50; i++)
+  for (size_t i = 0; i < 10; i++)
   {
     // Generate random initial guesses within the bounds
     for (size_t j = 0; j < x.size(); ++j)
@@ -131,7 +131,7 @@ void Calculate_Registration_Transformation(const std::vector<StaticVector<double
       error_min = error;
     }
 
-    std::cout << "Square Error [mm]: " << error << "    "
+    std::cout << "RMSE [mm]: " << error << "    "
               << "Num itter: " << optimizer.get_numevals() << "    "
               << "Stop: " << nloptResult2String(result) << std::endl;
   }
@@ -145,7 +145,7 @@ void Calculate_Registration_Transformation(const std::vector<StaticVector<double
             << "qX: " << transformation.rotation[1UL] << "   "
             << "qY: " << transformation.rotation[2UL] << "   "
             << "qZ: " << transformation.rotation[3UL] << "  |  "
-            << "RMSE: " << sqrt(transformation.error) << "[mm]  " << std::endl;
+            << "RMSE: " << transformation.error << "[mm]  " << std::endl;
 }
 
 /** Cost function of the Calculate_Transformation optimization problem

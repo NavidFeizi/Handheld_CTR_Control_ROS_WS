@@ -30,15 +30,17 @@ sensor_config:
     #   serial_number: 3CD50C08           # Handheld ctr tip sensor - new
     #   serial_number: 3C88DC01           # Handheld ctr tip sensor J-bar
     #   serial_number: 37911000           # Handheld ctr tip sensor - new
-      serial_number: 3CD50C04           # Handheld ctr tip sensor - NavSci
-      srom_filename: None
-      load_srom: false
+      # serial_number: 3CD50C04           # Handheld ctr tip sensor - NavSci
+      serial_number: 3C88A405       # Handheld ctr tip sensor - control box
+      srom_filename: 3C88A405.rom
+      load_srom: true
       tran_filename: None
       load_tran: false              # if false, identity tranformation is used
 
   - sensor:
       name: robot
-      serial_number: 3B2A8800       # Handheld CTR robot reference
+    #   serial_number: 3B2A8800       # Handheld CTR robot reference - old version
+      serial_number: 39B33001       # Handheld CTR robot reference - control box
       srom_filename: 610029_20150724_EOL.rom
       load_srom: true
       tran_filename: 610094_robot2base.csv
@@ -59,5 +61,29 @@ sensor_config:
       load_srom: false
       tran_filename: None
       load_tran: false
+
+  - sensor:
+      name: sensor_1
+      serial_number: 37BB9400       # S1
+      srom_filename: None
+      load_srom: false
+      tran_filename: sensor_1.csv
+      load_tran: true
+
+  - sensor:
+      name: sensor_2
+      serial_number: 39224800       # S2
+      srom_filename: None
+      load_srom: false
+      tran_filename: sensor_2.csv
+      load_tran: true
+
+  - sensor:
+      name: sensor_3
+      serial_number: 3F10F40A      # S3
+      srom_filename: None
+      load_srom: false
+      tran_filename: sensor_3.csv
+      load_tran: true
 
 

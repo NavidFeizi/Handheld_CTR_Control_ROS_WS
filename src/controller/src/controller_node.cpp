@@ -82,8 +82,8 @@ public:
     constexpr double G3 = E3 / (2.00 * (1.00 + nu));
 
     // Precurvature radii for the tubes
-    constexpr double R1 = 41.00E-3; // (4.1cm curvature radius)
-    constexpr double R2 = 95.00E-3; // (9.5 cm curvature radius)
+    constexpr double R1 = 64.00E-3; // (4.1cm curvature radius)
+    constexpr double R2 = 107.00E-3; // (9.5 cm curvature radius)
     constexpr double R3 = inf;      // (infinite curvature radius)
 
     // -- ** -- Precurvature vectors (for curved portions of the tubes) -- ** -- [u_x* u_y* 0]

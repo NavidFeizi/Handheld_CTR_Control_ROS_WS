@@ -1027,7 +1027,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 	static constexpr double ke = 2.00;
 
 	size_t iterJ = 0UL;
-	static constexpr size_t maxIter_J = 25UL;
+	static constexpr size_t maxIter_J = 20UL;
 
 	// position control loop
 	while ((dist2Tgt > posTol) && (N_itr < maxIter))
@@ -1068,7 +1068,7 @@ bool CTR::posCTRL(blaze::StaticVector<double, 5UL> &initGuess, const blaze::Stat
 		betaMin[2UL] = std::max(-ls[2UL] + deltaBar, this->m_beta[1UL] + m_stageThickness);
 
 		betaMax[0UL] = m_beta[1UL] - m_stageThickness;
-		betaMax[1UL] = std::min(this->m_beta[2UL] - m_stageThickness, L[0UL] + this->m_beta[0UL] - L[1UL]);
+		betaMax[1UL] = std::min({-36.00E-3, this->m_beta[2UL] - m_stageThickness, L[0UL] + this->m_beta[0UL] - L[1UL]});
 		betaMax[2UL] = std::min({-deltaBar, L[1UL] + this->m_beta[1UL] - L[2UL], L[0UL] + this->m_beta[0UL] - L[2UL]});
 
 		// penalty function for local optimization (actuator collision avoidance)

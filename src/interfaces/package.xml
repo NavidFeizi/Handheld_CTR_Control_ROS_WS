@@ -4,7 +4,7 @@
   <name>interfaces</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="cstar-10@todo.todo">cstar-10</maintainer>
+  <maintainer email="nfeizi@uwo.com">navid</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

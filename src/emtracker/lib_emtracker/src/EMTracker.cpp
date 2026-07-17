@@ -95,8 +95,7 @@ EMTracker::EMTracker(const std::string &hostname, double filter_sample_time, dou
 EMTracker::~EMTracker()
 {
   std::cout << "EMTracker destructor called" << std::endl;
-  EMTracker::stop_read_thread();
-  m_combinedAPI->stopTracking();
+  stop_read_thread();
   std::cout << "Tracking stopped" << std::endl;
 }
 
@@ -299,7 +298,7 @@ void EMTracker::landmark_registration(const std::string &landmarks_file_name, st
   quatTransformation transform_0_6;                             // transformation from EM frame to Probe or tool tip
   quatTransformation transform_1_6;                             // transformation from Reference EM frame to Probe or tool tip
   quatTransformation transform_1_2;                             // transformation from Reference EM frame to system frame
-  std::vector<blaze::StaticVector<double, 3>> pointBuffer(200); // Create a buffer to store the past 200 samples
+  std::vector<blaze::StaticVector<double, 3>> pointBuffer(100); // Create a buffer to store the past 200 samples
   std::vector<blaze::StaticVector<double, 3>> landmarks_truth;
 
   // Load truth landmark positions from CSV file
@@ -350,14 +349,14 @@ void EMTracker::landmark_registration(const std::string &landmarks_file_name, st
     // Add the current sample to the buffer
     pointBuffer.push_back(transform_1_6.translation);
     // Remove the oldest sample if the buffer size exceeds 200
-    if (pointBuffer.size() > 200)
+    if (pointBuffer.size() > 100)
     {
       pointBuffer.erase(pointBuffer.begin());
     }
 
     // Check if all distances are less than the threshold
     bool status = EMTracker::points_in_sphere(pointBuffer, threshold);
-    if (pointBuffer.size() == 200 && status)
+    if (pointBuffer.size() == 100 && status)
     {
       // Calculate and save the average position of the landmark
       EMTracker::column_average(pointBuffer, landmarks_measured[i]);
@@ -415,11 +414,20 @@ void EMTracker::start_read_thread()
 
 void EMTracker::stop_read_thread()
 {
-  stopFlag.store(true); // Set the flag to true to signal the read loop to stop
+  // 1) Ask the read loop to exit
+  stopFlag.store(true, std::memory_order_release); 
+
+  // 2) Stop tracking to unblock getTrackingDataBX if it’s blocking
+  if (m_combinedAPI) {
+    m_combinedAPI->stopTracking();
+  }
+
+  // 3) Join the thread
   if (m_emThread.joinable())
   {
-    m_emThread.join(); // Wait for the thread to finish
+    m_emThread.join(); 
   }
+
   std::cout << "Read loop stopped!" << std::endl;
 }
 
@@ -459,17 +467,20 @@ void EMTracker::Read_Loop()
   SleepSeconds(1);
 
   std::cout << "Reading EM sensors ..." << std::endl;
-  while (!stopFlag.load())
+  while (!stopFlag.load(std::memory_order_acquire))
   {
     auto t0 = std::chrono::high_resolution_clock::now();
 
     sensors_data = m_combinedAPI->getTrackingDataBX();
 
-    ToolData2QuatTransform(sensors_data[m_sensorConfigMap["robot"].probe_handle_num], temp);
-    Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["robot"].probe_handle_num], m_transform_0_1);
-
     ToolData2QuatTransform(sensors_data[m_sensorConfigMap["tool"].probe_handle_num], temp);
     Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["tool"].probe_handle_num], m_transform_0_2);
+
+    if (m_sensorConfigMap["robot"].active && !m_flag_freeze_robot)
+    {
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["robot"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["robot"].probe_handle_num], m_transform_0_1);
+    }
 
     if (m_sensorConfigMap["phantom"].active && !m_flag_freeze_phantom)
     {
@@ -497,6 +508,24 @@ void EMTracker::Read_Loop()
     {
       ToolData2QuatTransform(sensors_data[m_sensorConfigMap["probe_3"].probe_handle_num], temp);
       Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["probe_3"].probe_handle_num], m_transform_0_6);
+    }
+
+    if (m_sensorConfigMap["sensor_1"].active)
+    {
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["sensor_1"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["sensor_1"].probe_handle_num], m_transform_0_7);
+    }
+
+    if (m_sensorConfigMap["sensor_2"].active)
+    {
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["sensor_2"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["sensor_2"].probe_handle_num], m_transform_0_8);
+    }
+
+    if (m_sensorConfigMap["sensor_3"].active)
+    {
+      ToolData2QuatTransform(sensors_data[m_sensorConfigMap["sensor_3"].probe_handle_num], temp);
+      Combine_Quat_Transformation(temp, m_sec_transforms[m_sensorConfigMap["sensor_3"].probe_handle_num], m_transform_0_9);
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -527,6 +556,22 @@ void EMTracker::Read_Loop()
         m_transform_0_6.rotation = m_filter_rot_probe->add_data_point(m_transform_0_6.rotation);
       }
       Combine_Quat_Transformation(m_transform_0_3.inv(), m_transform_0_6, m_transform_3_6);
+      Combine_Quat_Transformation(m_transform_0_1.inv(), m_transform_0_6, m_transform_1_6);
+    }
+
+    if (m_sensorConfigMap["sensor_1"].active)
+    {
+      Combine_Quat_Transformation(m_transform_0_1.inv(), m_transform_0_7, m_transform_1_7);
+    }
+
+    if (m_sensorConfigMap["sensor_2"].active)
+    {
+      Combine_Quat_Transformation(m_transform_0_1.inv(), m_transform_0_8, m_transform_1_8);
+    }
+
+    if (m_sensorConfigMap["sensor_3"].active)
+    {
+      Combine_Quat_Transformation(m_transform_0_1.inv(), m_transform_0_9, m_transform_1_9);
     }
 
     // Calculate tool relative translational velocity
@@ -553,12 +598,20 @@ void EMTracker::Read_Loop()
     {
       break;
     }
+
+    // For safety: bound the loop rate (e.g., 1000 Hz max)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 
 void EMTracker::freeze_phantom(bool status)
 {
   m_flag_freeze_phantom = status;
+}
+
+void EMTracker::freeze_robot(bool status)
+{
+  m_flag_freeze_robot = status;
 }
 
 void EMTracker::set_filter_params(double fc_ref, double fc_tools)
@@ -623,7 +676,7 @@ int EMTracker::get_probe_transform_in_em(quatTransformation &transform)
   }
   else
   {
-    return 0;
+    return 1;
   }
 }
 
@@ -661,6 +714,32 @@ void EMTracker::get_probe_transform_in_phantom(quatTransformation &transform)
 {
   transform.translation = m_transform_3_6.translation * 1.00E-3; // Convert from mm to meters
   transform.rotation = m_transform_3_6.rotation;
+}
+
+int EMTracker::get_sensor_transform_in_em(const std::string &sensor_name, quatTransformation &transform)
+{
+  if (sensor_name == "sensor_1" && m_sensorConfigMap["sensor_1"].active)
+  {
+    transform.translation = m_transform_0_7.translation * 1.00E-3;
+    transform.rotation = m_transform_0_7.rotation;
+    return 0;
+  }
+  else if (sensor_name == "sensor_2" && m_sensorConfigMap["sensor_2"].active)
+  {
+    transform.translation = m_transform_0_8.translation * 1.00E-3;
+    transform.rotation = m_transform_0_8.rotation;
+    return 0;
+  }
+  else if (sensor_name == "sensor_3" && m_sensorConfigMap["sensor_3"].active)
+  {
+    transform.translation = m_transform_0_9.translation * 1.00E-3;
+    transform.rotation = m_transform_0_9.rotation;
+    return 0;
+  }
+  else
+  {
+    return 1;
+  }
 }
 
 void EMTracker::get_sample_time(double &sample_time)

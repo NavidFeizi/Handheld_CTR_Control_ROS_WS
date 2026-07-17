@@ -15,6 +15,7 @@
 #include "interfaces/srv/jointstarget.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "interfaces/srv/config.hpp"
+#include "interfaces/srv/planner.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include "std_msgs/msg/float64_multi_array.hpp"
 
@@ -27,11 +28,10 @@
 #include <fstream>
 #include <filesystem>
 
-#include "CTR.hpp"
+#include "PINNs.hpp"
 #include "Planner.hpp"
 #include <limits>
 
-// #include <chrono>
 #include <future> // needed in order to invoke async "execute functions asynchronously"
 #include <boost/tokenizer.hpp>
 #include <functional>
@@ -47,15 +47,26 @@ using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
 
+std::string package_name = "planner";
+std::string PACKAGE_SHARE_DIR = ament_index_cpp::get_package_share_directory(package_name);
+
 class PathPlannerNode : public rclcpp::Node
 {
+  // Compile-time CTR sizing — declared first so they are visible in the
+  // member-function parameter types further down (parameter lists are not part
+  // of the complete-class context).
+  const std::string kModelName = "ctr_8x91_0.18_tanh_9K_9K_50K_FP64";
+  const static size_t kBackbonePoints = 150UL; // number of discretized backbone points for the planning CTR
+  const static size_t kControlInputs = 4UL;    // number of control inputs (actuated tubes)
+  const static size_t kBatch = 1UL;
+
 public:
   // default class constructor
-  PathPlannerNode() : Node("path_planner"), count_(0)
+  PathPlannerNode() : Node("path_planner"), m_ctr_pinn(kModelName, kBatch, kBackbonePoints), m_motionPlan(m_ctr_pinn)
   {
     PathPlannerNode::declare_parameters();
     PathPlannerNode::setup_ros_interfaces();
-    PathPlannerNode::init_planner();
+    RCLCPP_INFO(this->get_logger(), "Path Planner Node has been initialized.");
   }
 
   // class destructor
@@ -68,9 +79,13 @@ public:
   void declare_parameters()
   {
     std::string workspace_directory = ament_index_cpp::get_package_share_directory(m_packageName);
-    std::string output_dir = workspace_directory + "/../../../../Output_Files/path_data";
+    std::string output_dir = workspace_directory + "/../../../../Shared_Files";
     this->declare_parameter<std::string>("temp_dir", output_dir);
     m_tempDir = this->get_parameter("temp_dir").as_string();
+    if (!std::filesystem::exists(m_tempDir))
+    {
+      std::filesystem::create_directories(m_tempDir);
+    }
   }
 
   // Setup ROS interfaces, including publishers, subscribers, and services.
@@ -88,12 +103,17 @@ public:
     subs_current_q.callback_group = m_callback_group_sub_1;
     m_subscription_q = create_subscription<interfaces::msg::Jointspace>("joint_space/feedback", 10, std::bind(&PathPlannerNode::updateCurrentQ, this, _1), subs_current_q);
 
+    // Subscriber to receive current q
+    m_callback_group_sub_2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    auto subs_current_tip = rclcpp::SubscriptionOptions();
+    subs_current_tip.callback_group = m_callback_group_sub_2;
+    m_subscription_tip = create_subscription<interfaces::msg::Taskspace>("task_space/feedback/base_tool", 10, std::bind(&PathPlannerNode::updateCurrentX, this, _1), subs_current_q);
+
     // // path planning service
     // m_manual_target_service = create_service<interfaces::srv::Config>("manual_target", std::bind(&PathPlannerNode::planner_callback, this, _1, _2));
 
     // path planning service
-    /// robot setup service
-    m_command_service = create_service<interfaces::srv::Config>("planner/command", std::bind(&PathPlannerNode::actuateRobot_callback, this, _1, _2));
+    m_command_service = create_service<interfaces::srv::Planner>("planner/command", std::bind(&PathPlannerNode::plannerService_callback, this, _1, _2));
 
     // publisher to send the path
     m_publisher_path = create_publisher<std_msgs::msg::Float64MultiArray>("task_space/path", 10);
@@ -102,108 +122,25 @@ public:
     m_publisher_actuate = create_publisher<interfaces::msg::Jointspace>("joint_space/target", 10);
   }
 
-  //
-  void init_planner()
-  {
-    constexpr double inf = std::numeric_limits<double>::infinity();
-
-    //  # # # # # # # # ---- Properties of Nitinol Tubes ---- # # # # # # # #
-    // Young's modulus GPa
-    constexpr double E1 = 30.00E9;
-    constexpr double E2 = 30.00E9;
-    constexpr double E3 = 74.9122E9;
-    // Poisson's ratio
-    constexpr double nu = 0.300;
-    // Shear modulus
-    constexpr double G1 = E1 / (2.00 * (1.00 + nu));
-    constexpr double G2 = E2 / (2.00 * (1.00 + nu));
-    constexpr double G3 = E3 / (2.00 * (1.00 + nu));
-
-    // Precurvature radii for the tubes
-    constexpr double R1 = 41.00E-3; // (4.1cm curvature radius)
-    constexpr double R2 = 95.00E-3; // (9.5 cm curvature radius)
-    constexpr double R3 = inf;      // (infinite curvature radius)
-
-    // -- ** -- Precurvature vectors (for curved portions of the tubes) -- ** -- [u_x* u_y* 0]
-    constexpr blaze::StaticVector<double, 3UL> u1 = {1.00 / R1, 0.00, 0.00};
-    constexpr blaze::StaticVector<double, 3UL> u2 = {1.00 / R2, 0.00, 0.00};
-    constexpr blaze::StaticVector<double, 3UL> u3 = {1.00 / R3, 0.00, 0.00};
-
-    // --** --Lengths of the tubes' straight sections (meters) -- ** --
-    constexpr blaze::StaticVector<double, 3UL> ls = {158.00E-3, 77.00E-3, 60.00E-3};
-
-    // --** --Lengths of the tubes' curved sections (meters) -- ** --
-    constexpr blaze::StaticVector<double, 3UL> lc = {58.00E-3, 55.00E-3, 0.00};
-
-    // --** --Outer and Inner diameters of the tubes (meters)--** --
-    constexpr blaze::StaticVector<double, 3UL> ID = {0.737E-3, 0.965E-3, 1.1448E-3};
-    constexpr blaze::StaticVector<double, 3UL> OD = {0.940E-3, 1.372E-3, 2.045E-3};
-
-    // # # # # # ---- Instantiating the three Tube objects ---- # # # # #
-    std::shared_ptr<Tube> T1 = std::make_shared<Tube>(OD[0UL], ID[0UL], E1, G1, ls[0UL], lc[0UL], u1); // innermost tube
-    std::shared_ptr<Tube> T2 = std::make_shared<Tube>(OD[1UL], ID[1UL], E2, G2, ls[1UL], lc[1UL], u2); // intermediate tube
-    std::shared_ptr<Tube> T3 = std::make_shared<Tube>(OD[2UL], ID[2UL], E3, G3, ls[2UL], lc[2UL], u3); // outermost tube
-
-    std::cout << "k1: " << T1->getK(0) << std::endl
-              << "k2: " << T2->getK(0) << std::endl;
-
-    // instantiating an array of smart pointers to CTR component tubes
-    std::array<std::shared_ptr<Tube>, 3UL> Tb = {T1, T2, T3};
-
-    // initial joint actuation values "home position" - q = [Beta Alpha]
-    blaze::StaticVector<double, 3UL> Beta_0 = {-150.00E-3, -73.00E-3, 0.00}; // +50.00E-3
-    blaze::StaticVector<double, 3UL> Alpha_0 = {mathOp::deg2Rad(0.00), mathOp::deg2Rad(0.00), mathOp::deg2Rad(0.00)};
-
-    blaze::StaticVector<double, 6UL> q_0;
-    blaze::subvector<0UL, 3UL>(q_0) = Beta_0;
-    blaze::subvector<3UL, 3UL>(q_0) = Alpha_0;
-
-    // Determining the accuracy of BVP solutions
-    double Tol = 1.00E-6;
-
-    // tolerance for position control
-    double pos_tol = 5.00E-4;
-
-    // clearance between linear actuator stages
-    double Clr = 30.00E-3;
-
-    // Method for solving the BVP Problem
-    // 1: Newton-Raphson
-    // 2: Levenberg-Marquardt
-    // 3: Powell's Dog-Leg
-    // 4: Modified Newton-Raphson (globally convergent)
-    // 5: Broyden
-    // # # # # # ---- Instantiating the CTR object ---- # # # # #
-    CTR CTR_robot = CTR(Tb, q_0, Tol, mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON, Clr);
-
-    CTR CTR_StateValidator = CTR(Tb, q_0, Tol, mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON, Clr);
-    CTR CTR_MotionValidator = CTR(Tb, q_0, Tol, mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON, Clr);
-    CTR CTR_ObjectiveFunction = CTR(Tb, q_0, Tol, mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON, Clr);
-
-    CTR_robot.actuate_CTR(this->m_initGuess, q_0);
-
-    // instantiating an Planner object for defining a motion plan to deploy the CTR into the anatomy
-    m_motionPlan = std::make_shared<Planner>(CTR_StateValidator, CTR_MotionValidator, CTR_ObjectiveFunction);
-
-    // instantiating the CTR object for inverse kinematics
-    this->m_CTR_robot_IK = std::make_shared<CTR>(Tb, q_0, Tol, mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON, Clr);
-    this->m_CTR_robot_IK->actuate_CTR(this->m_initGuess, q_0);
-
-    // instantiating the CTR object for task trajectory generation
-    this->m_CTR_robot_TT = std::make_shared<CTR>(Tb, q_0, Tol, mathOp::rootFindingMethod::MODIFIED_NEWTON_RAPHSON, Clr);
-    this->m_CTR_robot_TT->actuate_CTR(this->m_initGuess, q_0);
-  }
-
-  // Update current tool (tip) position in the base frame.
+  // Update current joints position.
   void updateCurrentQ(const interfaces::msg::Jointspace::ConstSharedPtr &msg)
   {
     m_current_q[0UL] = msg->position[1UL];
     m_current_q[1UL] = msg->position[3UL];
-    m_current_q[2UL] = 0.0;
+    m_current_q[2UL] = 0.00;
     m_current_q[3UL] = msg->position[0UL];
     m_current_q[4UL] = msg->position[2UL];
-    m_current_q[5UL] = 0.0;
-    // std::cout << "m_current_q" << blaze::trans(m_current_q) << std::endl;
+    m_current_q[5UL] = 0.00;
+    // std::cout << "m_current_q: " << blaze::trans(m_current_q) << std::endl;
+  }
+
+  // Update current tool (tip) position in the base frame.
+  void updateCurrentX(const interfaces::msg::Taskspace::ConstSharedPtr &msg)
+  {
+    m_x[0UL] = msg->p[0UL];
+    m_x[1UL] = msg->p[1UL];
+    m_x[2UL] = msg->p[2UL];
+    // std::cout << "m_current_x: " << blaze::trans(m_current_q) << std::endl;
   }
 
   /// listen to ROS2 tf2 message
@@ -214,205 +151,395 @@ public:
 
     for (auto sourceFrame : frameNames)
 
-      if (sourceFrame == "probe")
+      if (sourceFrame == "probe") // "probe", "path_target"
       {
+        // RCLCPP_INFO(this->get_logger(), "Target received");
         std::string targetFrame = "robot_base";
         try
         {
           tf2_tran = m_tf_buffer->lookupTransform(targetFrame, sourceFrame, tf2::TimePointZero);
-          // std::cout << "X: " << tf2_tran.transform.translation.x << "  Y: " << tf2_tran.transform.translation.y << "  Z: " << tf2_tran.transform.translation.z << std::endl;
+          // RCLCPP_INFO(this->get_logger(), "Target transform updated");
+          // std::cout << "Target in Robot -> X: " << tf2_tran.transform.translation.x << "  Y: " << tf2_tran.transform.translation.y << "  Z: " << tf2_tran.transform.translation.z << std::endl;
         }
         catch (const tf2::TransformException &ex)
         {
-          RCLCPP_INFO(
-              this->get_logger(), "Could not transform %s to %s: %s",
-              targetFrame.c_str(), sourceFrame.c_str(), ex.what());
+          // RCLCPP_INFO(this->get_logger(), "Could not transform %s to %s: %s", targetFrame.c_str(), sourceFrame.c_str(), ex.what());
           return;
         }
         Eigen::Matrix4d eigen_trans = tf2::transformToEigen(tf2_tran).matrix();
-        m_manual_target[0] = eigen_trans(0, 3);
-        m_manual_target[1] = eigen_trans(1, 3);
-        m_manual_target[2] = eigen_trans(2, 3);
+        m_manual_target[0UL] = eigen_trans(0, 3);
+        m_manual_target[1UL] = eigen_trans(1, 3);
+        m_manual_target[2UL] = eigen_trans(2, 3);
 
         // RCLCPP_INFO(this->get_logger(), "IGTL EM tf2 sent");
+
+        try
+        {
+          tf2_tran = m_tf_buffer->lookupTransform("em_tracker", sourceFrame, tf2::TimePointZero);
+          // std::cout << "Target in EM -> X: " << tf2_tran.transform.translation.x << "  Y: " << tf2_tran.transform.translation.y << "  Z: " << tf2_tran.transform.translation.z << std::endl;
+        }
+        catch (const tf2::TransformException &ex)
+        {
+          // RCLCPP_INFO(this->get_logger(), "Could not transform %s to %s: %s", targetFrame.c_str(), sourceFrame.c_str(), ex.what());
+          return;
+        }
       }
-  }
 
-  // Service callback to triget tasks, enable, and control mode section
-  void plan()
-  {
-    // ToDo: add a timeout
-
-    // initial state: initial robot configuration prior to the deployment ==> CTR steered to renal calyx
-    blaze::StaticVector<double, 6UL> q_initial, q_final;
-    // initial configuration
-    q_initial = m_current_q;
-
-    // run IK to compute q_final
-    std::cout << "Target: x: " << m_manual_target[0] * 1e3 << " |  " << "y: " << m_manual_target[1] * 1e3 << " |  " << "z: " << m_manual_target[2] * 1e3 << std::endl;
-    std::cout << "Running IK..." << std::endl;
-    constexpr double pos_tol = 2.00E-3;
-    auto start = std::chrono::high_resolution_clock::now();
-    m_CTR_robot_IK->posCTRL(m_initGuess_IK, m_manual_target, pos_tol);
-    q_final = m_CTR_robot_IK->getConfiguration();
-    auto end = std::chrono::high_resolution_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    std::cout << "IK time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
-
-    // final configuration
-    // q_final = {-0.0949115, -0.0497543, 0.00, 0.227169, -0.318651, 0.00}; // Lower-Pole Access
-    // q_final = {-0.083473, -0.051600, 0.00, -0.647814, -1.493957, 0.00}; // Mid-Pole Access
-    // q_final = {-0.0629115, -0.0317543, 0.00, 0.227169, -1.6851, 0.00}; // Upper-Pole Access
-    // q_final = {-0.06843, -0.031600, 0.00, -1.647814, -2.93957, 0.00};
-
-    // setting the initial state: initial configuration of the robot
-    m_motionPlan->setStartState(q_initial);
-    // setting the goal state: distal end steered to renal calyx
-    m_motionPlan->setGoalState(q_final);
-
-    std::cout << "Start state: " << blaze::trans(q_initial)
-              << "Goal state: " << blaze::trans(q_final) << std::endl;
-
-    // setting up the planning problem and its definitions
-    constexpr double runTime = 240.00; // Planning time in seconds (2 min)
-
-    const std::string plannedPathFile("plannedPath.csv");
-
-    start = std::chrono::high_resolution_clock::now();
-    // motionPlan.plan(runTime, Planner::optimalPlanner::PLANNER_RRT, Planner::planningObjective::OBJECTIVE_BACKBONE_LENGTH, plannedPathFile);
-    m_motionPlan->plan(runTime, Planner::optimalPlanner::PLANNER_RRT, Planner::planningObjective::OBJECTIVE_REVJOINTSANDPATHLENGTH, m_tempDir, plannedPathFile);
-    end = std::chrono::high_resolution_clock::now();
-    elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-    std::cout << "Finished planning!! - Saving plan in: " << plannedPathFile << std::endl;
-    std::cout << "Planning time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
-
-    start = std::chrono::high_resolution_clock::now();
-    publishTaskTraj();
-    end = std::chrono::high_resolution_clock::now();
-    elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    std::cout << "FK for taskspace plan gen time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
-  }
-
-  /// load generated path in joint space and run it through FK to generate path in task space
-  void publishTaskTraj()
-  {
-    // initial guess for the BVP
-    blaze::StaticVector<double, 5UL> initGuess;
-
-    // reading the planned path from the CSV file
-    readFromCSV(m_JointValues, m_tempDir, "plannedPath");
-
-    // total number of joint values in the motion plan
-    const size_t totalRows = m_JointValues.rows();
-    // stores the current joint values to be actuated
-    blaze::StaticVector<double, 6UL> q;
-    // amount of time in milliseconds elapsed between consecutive CTR configurations
-    constexpr size_t milliseconds = 50UL;
-
-    bool convergence = false;
-    int counter = 0;
-    int step = 20;
-    int num_decimated_rows = floor(totalRows / step) + 1;
-    // std::cout << "decimated rows: " << num_decimated_rows << std::endl;
-
-    std_msgs::msg::Float64MultiArray msg;
-    // 3 rows × n cols → flattened into row-major
-    msg.layout.dim.resize(2);
-    msg.layout.dim[0].label = "rows";
-    msg.layout.dim[0].size = num_decimated_rows;
-    msg.layout.dim[0].stride = num_decimated_rows * 3;
-    msg.layout.dim[1].label = "cols";
-    msg.layout.dim[1].size = 3;
-    msg.layout.dim[1].stride = 3;
-    msg.data.resize(num_decimated_rows * 3);
-
-    for (size_t row = 0UL; row < totalRows; row += step)
-    {
-      q[0UL] = m_JointValues(row, 0UL);
-      q[1UL] = m_JointValues(row, 1UL);
-      q[2UL] = m_JointValues(row, 2UL);
-      q[3UL] = m_JointValues(row, 3UL);
-      q[4UL] = m_JointValues(row, 4UL);
-      q[5UL] = m_JointValues(row, 5UL);
-
-      convergence = m_CTR_robot_TT->actuate_CTR(initGuess, q);
-
-      if (!convergence)
-        initGuess = 0.00;
-
-      blaze::StaticVector<double, 3> tipPos = m_CTR_robot_TT->getTipPos();
-
-      for (size_t j = 0; j < 3; ++j)
+      else if (sourceFrame == "ctr_tip") // "probe", "path_target"
       {
-        msg.data[counter * 3 + j] = tipPos[j]; // row-major order
-      }
-      counter++;
-    }
+        // RCLCPP_INFO(this->get_logger(), "Target received");
+        std::string targetFrame = "robot_base";
+        try
+        {
+          tf2_tran = m_tf_buffer->lookupTransform(targetFrame, sourceFrame, tf2::TimePointZero);
+          // std::cout << "Target in Robot -> X: " << tf2_tran.transform.translation.x << "  Y: " << tf2_tran.transform.translation.y << "  Z: " << tf2_tran.transform.translation.z << std::endl;
+        }
+        catch (const tf2::TransformException &ex)
+        {
+          // RCLCPP_INFO(this->get_logger(), "Could not transform %s to %s: %s", targetFrame.c_str(), sourceFrame.c_str(), ex.what());
+          return;
+        }
+        Eigen::Matrix4d eigen_trans = tf2::transformToEigen(tf2_tran).matrix();
+        // m_x[0UL] = eigen_trans(0, 3);
+        // m_x[1UL] = eigen_trans(1, 3);
+        // m_x[2UL] = eigen_trans(2, 3);
 
-    m_publisher_path->publish(msg);
-    // RCLCPP_INFO(this->get_logger(), "Published Task Trajectory");
+        // RCLCPP_INFO(this->get_logger(), "IGTL EM tf2 sent");
+
+        try
+        {
+          tf2_tran = m_tf_buffer->lookupTransform("em_tracker", sourceFrame, tf2::TimePointZero);
+          // std::cout << "Target in EM -> X: " << tf2_tran.transform.translation.x << "  Y: " << tf2_tran.transform.translation.y << "  Z: " << tf2_tran.transform.translation.z << std::endl;
+        }
+        catch (const tf2::TransformException &ex)
+        {
+          // RCLCPP_INFO(this->get_logger(), "Could not transform %s to %s: %s", targetFrame.c_str(), sourceFrame.c_str(), ex.what());
+          return;
+        }
+      }
   }
 
   // Service callback to trigger commanding the robot
-  void actuateRobot_callback(const std::shared_ptr<interfaces::srv::Config::Request> request,
-                             std::shared_ptr<interfaces::srv::Config::Response> response)
+  void plannerService_callback(const std::shared_ptr<interfaces::srv::Planner::Request> request, std::shared_ptr<interfaces::srv::Planner::Response> response)
   {
-    if (request->command == "moveStep")
+    if (request->command == "generateTrajectory")
     {
-      interfaces::msg::Jointspace msg;
-      if (abs(request->value) > 200)
+      blaze::StaticVector<double, 3UL> target = request->value;
+      // std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      double error = 0.0;
+
+      // target = {-0.00127, 0.00398, 0.13724};
+      // target = {-0.00056, 0.02588, 0.11926};
+      // target = {0.00801581, 0.0327939, 0.130476};
+      // target = {0.00395, 0.02749, 0.12326};
+
+      try
       {
-        response->message = "Too large step size";
+        // Map the 6-element current configuration [β₁, β₂, β₃, α₁, α₂, α₃] (tube-3
+        // entries are static/zero) down to the 4 actuated inputs [β₁, β₂, α₁, α₂].
+        blaze::StaticVector<double, 4UL> q_initial = {m_current_q[0UL], m_current_q[1UL], m_current_q[3UL], m_current_q[4UL]};
+        blaze::StaticVector<double, 4UL> q_final = q_initial;
+        error = inverseKin(target, q_final);
+
+        RCLCPP_INFO(this->get_logger(), "Initial config: q = %.4f, %.4f, %.4f, %.4f", q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL]);
+        RCLCPP_INFO(this->get_logger(), "Final config: q = %.4f, %.4f, %.4f, %.4f", q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]);
+
+        bool planning_status = plan(q_initial, q_final);
+        if (planning_status)
+        {
+          response->success = true;
+          response->value = error;
+          response->message = "Path generated successfully.";
+        }
+        else
+        {
+          response->success = false;
+          response->value = error;
+          response->message = "Planning failed to find a solution.";
+          return;
+        }
+      }
+      catch (const std::exception &e)
+      {
+        std::cout << "Planning error: " << e.what() << '\n';
         response->success = false;
-        return;
+        response->value = error;
+        response->message = e.what();
       }
-
-      m_counter += request->value;
-      std::cout << "m_counter" << m_counter << std::endl;
-
-      if (m_counter < 0)
-      {
-        std::cout << "lower bound" << std::endl;
-        m_counter = 0;
-      }
-      else if (m_counter > static_cast<int>(m_JointValues.rows()) - 1)
-      {
-        std::cout << "upper bound" << std::endl;
-        m_counter = static_cast<int>(m_JointValues.rows()) - 1;
-      }
-
-      auto joint_row = row(m_JointValues, m_counter);
-      msg.position[0] = joint_row[3UL];
-      msg.position[1] = joint_row[0UL];
-      msg.position[2] = joint_row[4UL];
-      msg.position[3] = joint_row[1UL];
-      m_publisher_actuate->publish(msg);
-
-      std::ostringstream oss;
-      oss << "Joints command sent (row " << m_counter << "/" << m_JointValues.rows() << "): [";
-      for (size_t j = 0; j < joint_row.size(); ++j)
-      {
-        oss << joint_row[j];
-        if (j != joint_row.size() - 1)
-          oss << ", ";
-      }
-      oss << "]";
-
-      response->message = oss.str();
-      response->success = true;
-    }
-    else if (request->command == "generateManualTrajectory")
-    {
-      plan();
-      response->success = true;
-      response->message = "Plan generate and published";
     }
     else
     {
       response->success = false;
-      response->message = "Invalid command";
+      response->value = 0.0;
+      response->message = "Invalid planner command";
     }
+  }
+
+  // Service callback to triget tasks, enable, and control mode section
+  double inverseKin(const blaze::StaticVector<double, 3UL> &target, blaze::StaticVector<double, 4UL> &q)
+  {
+    // run IK to compute q_final
+    constexpr double posTolerance = 5.00E-4;
+    blaze::StaticVector<double, 3UL> tipPosition;
+
+    std::cout << "\nRunning IK..." << std::endl;
+    auto start = std::chrono::high_resolution_clock::now();
+    m_ctr_pinn.posCTRL(q, target, posTolerance);
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    std::cout << "IK time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
+
+    m_ctr_pinn.getPosDistal(q, tipPosition);
+    std::cout << "CTR target joints are: q = " << blaze::trans(q)
+              << "target: " << blaze::trans(target)
+              << "tip position (after IK): " << blaze::trans(tipPosition)
+              << "error: " << blaze::norm(target - tipPosition) * 1.00E3 << " mm\n"
+              << std::endl;
+
+    return blaze::norm(target - tipPosition);
+  }
+
+  // Service callback to triget tasks, enable, and control mode section
+  bool plan(const blaze::StaticVector<double, 4UL> &q_initial, const blaze::StaticVector<double, 4UL> &q_final)
+  {
+    bool planning_status = false;
+    // std::cout << "Target: x: " << m_manual_target[0] * 1.00E3 << " |  " << "y: " << m_manual_target[1] * 1.00E3 << " |  " << "z: " << m_manual_target[2] * 1.00E3 << std::endl;
+
+    // setting the initial state: initial configuration of the robot
+    m_motionPlan.setStartState(q_initial);
+    m_motionPlan.setGoalState(q_final);
+
+    blaze::StaticVector<double, 4UL> scale = {1.00, 1.00, 20.0, 20.0};
+    double norm_diff = blaze::norm((m_q_initial_prev - q_initial) / scale);
+
+    std::cout << "\nStart state: " << blaze::trans(q_initial) << "Goal state: " << blaze::trans(q_final) << std::endl;
+
+    // setting up the planning problem and its definitions
+    constexpr double runTime = 3.00; // Planning time in seconds (2 min)
+
+    // completely silence OMPL's own logging:
+    ompl::msg::setLogLevel(ompl::msg::LOG_NONE);
+
+    const std::string plannedPathFile = m_tempDir + "/plannedPath.csv";
+    auto start = std::chrono::high_resolution_clock::now();
+    // motionPlan.plan(runTime, Planner::optimalPlanner::PLANNER_RRT, Planner::planningObjective::OBJECTIVE_BACKBONE_LENGTH, plannedPathFile);
+    if (true)//(norm_diff > 1.00E-3)
+    {
+      // m_motionPlan->plan(runTime, Planner::optimalPlanner::PLANNER_RRT, Planner::planningObjective::OBJECTIVE_BACKBONE_LENGTH);
+      // m_motionPlan.plan(runTime, Planner<kBackbonePoints, kControlInputs>::optimalPlanner::PLANNER_RRT_CONNECT, Planner<kBackbonePoints, kControlInputs>::planningObjective::OBJECTIVE_REVJOINTSANDPATHLENGTH);
+      // planning_status = m_motionPlan.plan(runTime, Planner<kBackbonePoints, kControlInputs>::optimalPlanner::PLANNER_RRT_CONNECT, Planner<kBackbonePoints, kControlInputs>::planningObjective::OBJECTIVE_REVJOINTS_AND_BACKBONE);
+      // m_ctr_pinn
+      planning_status = m_motionPlan.planTwoPhase(runTime, Planner<kControlInputs>::optimalPlanner::PLANNER_RRT_CONNECT);
+
+      // std::cout << "The first plan" << std::endl;
+      m_first_plan = false;
+    }
+    else
+    {
+      m_motionPlan.replan(runTime);
+      std::cout << "Not the first plan (replan)" << std::endl;
+    }
+    m_motionPlan.writeSolutionToFile(plannedPathFile);
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+    std::cout << "Finished planning!! - Saved plan in: " << plannedPathFile << std::endl;
+    std::cout << "Planning time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
+
+    m_q_initial_prev = q_initial;
+
+    // start = std::chrono::high_resolution_clock::now();
+    publishTaskSpacePath();
+    // m_traj_counter = 0;
+    // end = std::chrono::high_resolution_clock::now();
+    // elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    // std::cout << "FK for taskspace plan gen time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
+
+    // planning_status = 0;
+    return planning_status;
+  }
+
+  /// Load generated path in joint space, run it through FK to generate task-space path, and publish.
+  void publishTaskSpacePath()
+  {
+    const double step_size = 2e-3;
+    std::vector<blaze::StaticVector<double, kControlInputs>> m_q_list;
+    blaze::StaticVector<double, 3UL> tipPosition;
+
+    // RCLCPP_INFO(get_logger(), "Checkpoint_0");
+    read_path_from_csv(m_q_list, "plannedPath.csv");
+
+    if (m_q_list.size() == 0)
+    {
+      RCLCPP_ERROR(get_logger(), "Failed to read planned path or empty CSV");
+      m_q = {m_current_q[0UL], m_current_q[1UL], m_current_q[3UL], m_current_q[4UL]};
+    }
+  
+    auto m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, step_size);
+    // RCLCPP_INFO(get_logger(), "Checkpoint_1");
+    // prepare message format
+    size_t pathSize = m_q_list_adjusted.size();
+    std_msgs::msg::Float64MultiArray msg;
+    msg.layout.dim.resize(2);
+    msg.layout.dim[0].label = "rows";
+    msg.layout.dim[0].size = pathSize;
+    msg.layout.dim[0].stride = pathSize * 3;
+    msg.layout.dim[1].label = "cols";
+    msg.layout.dim[1].size = 3;
+    msg.layout.dim[1].stride = 3;
+    msg.data.resize(pathSize * 3);
+    // RCLCPP_INFO(get_logger(), "Checkpoint_2");
+    for (size_t i = 0; i < m_q_list_adjusted.size(); ++i)
+    {
+      m_ctr_pinn.getPosDistal(m_q_list_adjusted[i], tipPosition);
+
+      const size_t idx = i * 3UL;
+      msg.data[idx] = tipPosition[0UL];
+      msg.data[idx + 1] = tipPosition[1UL];
+      msg.data[idx + 2] = tipPosition[2UL];
+    }
+    // RCLCPP_INFO(get_logger(), "Checkpoint_3");
+
+    m_publisher_path->publish(msg);
+    RCLCPP_INFO(get_logger(), "Published task-space path with %zu points.", pathSize);
+
+    // readFromCSV(m_JointValues, m_tempDir, "plannedPath");
+    // // Read joint space path from CSV
+    // if (m_JointValues.rows() == 0)
+    // {
+    //   RCLCPP_ERROR(get_logger(), "Failed to read planned path or empty CSV");
+    //   m_q = m_current_q;
+    // }
+    // else
+    // {
+    //   m_q = blaze::trans(blaze::row(m_JointValues, m_JointValues.rows() - 1UL));
+    // }
+
+    // // Actuate CTR to current config
+    // bool convergence = m_ctr_pinn.actuate_CTR(m_initGuess, m_current_q);
+    // if (!convergence)
+    // {
+    //   RCLCPP_ERROR(get_logger(), "FK failed for initial joint state");
+    //   return;
+    // }
+    // // Get backbone shape
+    // const size_t current_number_of_bb_points = m_ctr_pinn.getNumberOfkBackbonePoints() + 1;
+    // std::cout << "current_number_of_bb_points: " << current_number_of_bb_points << std::endl;
+
+    // // Actuate CTR to compute FK
+    // convergence = m_ctr_pinn.actuate_CTR(m_initGuess, m_q);
+    // if (!convergence)
+    // {
+    //   RCLCPP_ERROR(get_logger(), "FK failed for final joint state");
+    //   return;
+    // }
+
+    // // Get backbone shape
+    // const auto [x, y, z] = m_ctr_pinn.getShape();
+    // std::cout << "final_config_number_of_bb_points: " << x.size() << std::endl;
+
+    // std::cout << "Replaned trajectory -- CTR tip position: " << blaze::trans(m_ctr_pinn.getTipPos()) << std::endl;
+
+    // size_t pathSize = x.size() - current_number_of_bb_points;
+
+    // std_msgs::msg::Float64MultiArray msg;
+    // msg.layout.dim.resize(2);
+    // msg.layout.dim[0].label = "rows";
+    // msg.layout.dim[0].size = pathSize;
+    // msg.layout.dim[0].stride = pathSize * 3;
+    // msg.layout.dim[1].label = "cols";
+    // msg.layout.dim[1].size = 3;
+    // msg.layout.dim[1].stride = 3;
+    // msg.data.resize(pathSize * 3);
+
+    // // Populate message
+    // for (size_t i = 0; i < pathSize; ++i)
+    // {
+    //   const size_t idx = i * 3UL;
+    //   msg.data[idx] = x[i + current_number_of_bb_points];
+    //   msg.data[idx + 1] = y[i + current_number_of_bb_points];
+    //   msg.data[idx + 2] = z[i + current_number_of_bb_points];
+    // }
+
+    // m_publisher_path->publish(msg);
+  }
+
+  void read_path_from_csv(std::vector<blaze::StaticVector<double, kControlInputs>>& init_q_list,  const std::string& fileName)
+  {
+      std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
+      ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
+      std::filesystem::path file_path = ws_dir / "Shared_Files" / fileName;
+
+      std::ifstream file;
+      file.open(file_path, std::ifstream::in);
+      if (!file.is_open())
+      {
+          RCLCPP_ERROR(get_logger(), "Failed to open file: %s", file_path.c_str());
+          return;
+      }
+
+      init_q_list.clear();
+      std::string line;
+
+      // writeSolutionToFile() emits no header; every line is a control-space state.
+      // Read file line by line
+      while (std::getline(file, line))
+      {
+          std::istringstream ss(line);
+          std::string value;
+          std::vector<double> row;
+
+          while (std::getline(ss, value, ','))
+          {
+              try
+              {
+                  row.push_back(std::stod(value));
+              }
+              catch (const std::exception& e)
+              {
+                  RCLCPP_WARN(get_logger(), "Failed to parse value: %s", value.c_str());
+              }
+          }
+
+          if (row.size() == kControlInputs)
+          {
+              blaze::StaticVector<double, kControlInputs> q_point = {row[0], row[1], row[2], row[3]};
+              init_q_list.push_back(q_point);
+          }
+          else
+          {
+              RCLCPP_WARN(get_logger(), "Line does not contain exactly %zu values: %s", kControlInputs, line.c_str());
+          }
+      }
+
+      file.close();
+      RCLCPP_INFO(get_logger(), "Loaded %zu path points from CSV file.", init_q_list.size());
+  }
+
+  std::vector<blaze::StaticVector<double, kControlInputs>> adjustConfigurationListStepSize(const std::vector<blaze::StaticVector<double, kControlInputs>>& q_list_in, double step_size)
+  {
+      std::vector<blaze::StaticVector<double, kControlInputs>> q_list_out;
+
+      if (q_list_in.empty())
+      {
+          RCLCPP_WARN(this->get_logger(), "Empty list");
+          return q_list_out;
+      }
+
+      size_t prev_idx = 0;
+      q_list_out.push_back(q_list_in[0]);
+
+      for (size_t i = 1; i < q_list_in.size(); ++i)
+      {
+          if (std::abs(q_list_in[i][0] - q_list_in[prev_idx][0]) >= step_size)
+          {
+              prev_idx = i;
+              q_list_out.push_back(q_list_in[i]);
+          }
+      }
+      q_list_out.push_back(q_list_in.back());
+
+      return q_list_out;
   }
 
   // function that reads relevant clinical data from CSV files for each case
@@ -435,7 +562,6 @@ public:
 
     typedef boost::tokenizer<boost::escaped_list_separator<char>> Tokenizer;
 
-    std::vector<std::string> vec;
     std::string line;
 
     size_t row = 0UL, col = 0UL;
@@ -465,8 +591,10 @@ private:
   // Member variables
   const std::string m_packageName = "planner";
 
+  bool m_first_plan = true;
+
   size_t count_;
-  int m_counter = 0;
+  int m_traj_counter = 0;
   std::string m_tempDir;
   double m_t_init = 0.00;
   double m_sample_time;
@@ -476,9 +604,12 @@ private:
   blaze::StaticVector<double, 6UL> m_current_q;
   blaze::StaticVector<double, 4UL> m_rot_phantom_base;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub_1, m_callback_group_sub_2, m_callback_group_sub_3; // Callback group for running subscriber callback function on separate thread
-  rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subscription_q;                           // Subscriber object
+  rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subscription_q;
+  rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tip;
+
+  // Subscriber object
   rclcpp::Service<interfaces::srv::Config>::SharedPtr m_manual_target_service;
-  rclcpp::Service<interfaces::srv::Config>::SharedPtr m_command_service;
+  rclcpp::Service<interfaces::srv::Planner>::SharedPtr m_command_service;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_tf2;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr m_publisher_path;
   rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher_actuate;
@@ -493,22 +624,28 @@ private:
   std::mutex mutex_;
 
   blaze::StaticVector<double, 3> m_manual_target;
+  blaze::StaticVector<double, 3> m_x;
 
-  std::shared_ptr<CTR> m_CTR_robot_IK;
-  std::shared_ptr<CTR> m_CTR_robot_TT;
-  std::shared_ptr<Planner> m_motionPlan;
-  // Planner m_motionPlan;
-  std::shared_ptr<CTR> m_CTR_StateValidator;
-  std::shared_ptr<CTR> m_CTR_MotionValidator;
-  std::shared_ptr<CTR> m_CTR_ObjectiveFunction;
+  // std::shared_ptr<CTR> m_CTR_robot;
+  // // std::shared_ptr<CTR> m_CTR_robot_TT;
+  // std::shared_ptr<Planner> m_motionPlan;
+  // // Planner m_motionPlan;
+  // std::shared_ptr<CTR> m_CTR_StateValidator;
+  // std::shared_ptr<CTR> m_CTR_MotionValidator;
+  // std::shared_ptr<CTR> m_CTR_ObjectiveFunction;
 
   blaze::StaticVector<double, 5UL> m_initGuess;      // initial guess for the solution of the BVP
-  blaze::StaticVector<double, 5UL> m_initGuess_IK;   // initial guess for the solution of the BVP
-  blaze::StaticVector<double, 6UL> m_q;              // joint values of the CTR
+  blaze::StaticVector<double, 4UL> m_q;              // joint values of the CTR
   const double m_linearActuatorThickness = 30.00E-3; // thickness of the linear actuator stages --> collision avoidance
   const double m_pos_tol = 1.00E-3;
 
   blaze::HybridMatrix<double, 15000UL, 6UL, blaze::columnMajor> m_JointValues; // Sequence of actuation values
+
+  
+  PINNs<kControlInputs> m_ctr_pinn;
+  Planner<kControlInputs> m_motionPlan;
+
+  blaze::StaticVector<double, 4UL> m_q_initial_prev = {0.00, 0.00, 0.00, 0.00};
 };
 
 int main(int argc, char *argv[])

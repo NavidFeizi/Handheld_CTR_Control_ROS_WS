@@ -7,15 +7,18 @@
 #include <iomanip>
 #include <fstream>
 #include <filesystem>
+
 #include <boost/tokenizer.hpp>
 #include <blaze/Blaze.h>
 #include <blaze/Math.h>
 #include <blaze/math/DenseMatrix.h>
+
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "interfaces/msg/status.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/msg/jointspace.hpp"
-#include "interfaces/srv/startrecording.hpp"
+#include "interfaces/srv/recording.hpp"
 #include "interfaces/srv/jointstarget.hpp"
 #include "interfaces/action/target.hpp"
 
@@ -30,6 +33,15 @@ std::string PACKAGE_SHARE_DIR = ament_index_cpp::get_package_share_directory(pac
 
 template <typename MatrixType>
 MatrixType readFromCSV(MatrixType &Mat, const std::filesystem::path &filePath);
+
+// Declare your enum class
+enum class CtrlMode : int
+{
+    Config = 0x00,
+    Manual = 0x01,
+    Position = 0x02,
+    Velocity = 0x03,
+};
 
 class ManagerNode : public rclcpp::Node
 {
@@ -50,7 +62,7 @@ public:
     RCLCPP_INFO(this->get_logger(), "--- Output file initialized ---");
 
     // load planned path file
-    std::string configs_fileName("plannedPath_MidPole.csv");
+    std::string configs_fileName("plannedPath.csv");
     ManagerNode::load_plannedPath_file(m_plannedPath, configs_fileName);
     RCLCPP_INFO(this->get_logger(), "Planned path files loaded");
 
@@ -68,8 +80,6 @@ public:
     // ManagerNode::send_recod_request();
 
     ManagerNode::send_next_target();
-
-    
   }
 
   ~ManagerNode()
@@ -97,8 +107,11 @@ private:
     // auto sample_time = std::chrono::microseconds(static_cast<int>(m_sample_time * 1e6));
     // m_timer = this->create_wall_timer(sample_time, std::bind(&ManagerNode::target_joints_callback, this), m_callback_group_pub);
 
+    m_subscription_status = create_subscription<interfaces::msg::Status>("robot_status", 10, std::bind(&ManagerNode::robot_status_callback, this, std::placeholders::_1));
+
+
     // Recorder service
-    m_record_client = this->create_client<interfaces::srv::Startrecording>("start_recording");
+    m_record_client = this->create_client<interfaces::srv::Recording>("recording");
     while (!m_record_client->wait_for_service(std::chrono::seconds(1)))
     {
       if (!rclcpp::ok())
@@ -137,7 +150,7 @@ private:
   {
     std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
     ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
-    std::filesystem::path filePath = ws_dir / "Input_Files" / fileName;
+    std::filesystem::path filePath = ws_dir / "Shared_Files" / fileName;
 
     readFromCSV(data, filePath);
     // RCLCPP_INFO(this->get_logger(), "--- Data loaded ---");
@@ -165,7 +178,7 @@ private:
                   static_cast<int>(row), pose_in_robot_system[0UL] * 360 * M_1_PI, pose_in_robot_system[1UL] * 1e3, pose_in_robot_system[2UL] * 360 * M_1_PI, pose_in_robot_system[3UL] * 1e3);
 
         ManagerNode::send_request(pose_in_robot_system);
-        rclcpp::sleep_for(std::chrono::milliseconds(10));
+        rclcpp::sleep_for(std::chrono::milliseconds(50));
       }
     }
     else
@@ -204,18 +217,18 @@ private:
   // Record
   void send_recod_request()
   {
-    auto request = std::make_shared<interfaces::srv::Startrecording::Request>();
+    auto request = std::make_shared<interfaces::srv::Recording::Request>();
     request->duration = 30.00; // Set the desired duration
 
     using ServiceResponseFuture =
-        rclcpp::Client<interfaces::srv::Startrecording>::SharedFuture;
-    auto response_received_callback = std::bind(&ManagerNode::handle_recod_response, this, std::placeholders::_1);
+        rclcpp::Client<interfaces::srv::Recording>::SharedFuture;
+    auto response_received_callback = std::bind(&ManagerNode::handle_record_response, this, std::placeholders::_1);
 
     auto future_result = m_record_client->async_send_request(request, response_received_callback);
   }
 
   //
-  void handle_recod_response(rclcpp::Client<interfaces::srv::Startrecording>::SharedFuture future)
+  void handle_record_response(rclcpp::Client<interfaces::srv::Recording>::SharedFuture future)
   {
     auto response = future.get();
     if (response->success)
@@ -396,6 +409,22 @@ private:
     // RCLCPP_INFO(this->get_logger(), "New tip");
   }
 
+  // update robot status information
+  void robot_status_callback(const interfaces::msg::Status::SharedPtr msg)
+  {
+      m_enabled = msg->enable[0] * msg->enable[1] * msg->enable[2] * msg->enable[3];
+      m_reached = msg->reached[0] * msg->reached[1] * msg->reached[2] * msg->reached[3];
+      m_encoder = msg->encoder[0] * msg->encoder[1] * msg->encoder[2] * msg->encoder[3];
+      m_procedure = msg->procedure;
+      m_ready_to_engage = msg->ready_to_engage;
+      m_engaged = msg->engaged;
+      m_locked = msg->locked;
+      m_head_attached = msg->head_attached;
+
+      m_trans_limit = msg->trans_limit_en;
+      m_mode = static_cast<CtrlMode>(msg->control_mode);
+  }
+
   // member variables
   size_t count_;
   double m_sample_time = 1.00E-3; //[s]
@@ -414,13 +443,20 @@ private:
   rclcpp::TimerBase::SharedPtr m_timer;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_pub;
   rclcpp::Publisher<interfaces::msg::Jointspace>::SharedPtr m_publisher;
-  rclcpp::Client<interfaces::srv::Startrecording>::SharedPtr m_record_client;
+  rclcpp::Client<interfaces::srv::Recording>::SharedPtr m_record_client;
   rclcpp_action::Client<interfaces::action::Target>::SharedPtr m_client;
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool_1;
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool_2;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_1;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_2;
   rclcpp::Client<interfaces::srv::Jointstarget>::SharedPtr m_target_service;
+  rclcpp::Subscription<interfaces::msg::Status>::SharedPtr m_subscription_status;
+
+
+  CtrlMode m_mode; // controller mode (manual, velocity, position)
+  bool m_enabled, m_procedure, m_reached, m_encoder, m_trans_limit = false;                                     // Tracks button state
+  bool m_engaged, m_ready_to_engage, m_head_attached = false; // Tracks button state
+  int m_locked;
 };
 
 int main(int argc, char *argv[])

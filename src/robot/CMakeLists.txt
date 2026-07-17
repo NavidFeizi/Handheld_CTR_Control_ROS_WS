@@ -40,6 +40,10 @@ find_package(Blaze REQUIRED)
 find_package(TBB REQUIRED)
 find_package(NLopt REQUIRED)      # For CTRlib
 
+# Find necessary pinn packages
+find_package(Torch REQUIRED)
+find_package(nlohmann_json REQUIRED)  
+
 set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
 add_subdirectory(lib_robot)
@@ -49,6 +53,9 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_robot/include)
 add_subdirectory(ctr_library)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ctr_library/include)
 
+# Adding the CTR pinn library to the project
+add_subdirectory(ctr_pinn_infer)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ctr_pinn_infer/include)
 
 add_executable(ctr_robot src/robot_node.cpp)
 target_link_libraries(ctr_robot ROBOTlib Qt5::Widgets Qt5::Core Qt5::Concurrent)
@@ -58,15 +65,27 @@ add_executable(qt_gui src/qt_node.cpp)
 target_link_libraries(qt_gui Qt5::Widgets Qt5::Core Qt5::Concurrent)
 ament_target_dependencies(qt_gui rclcpp std_msgs std_srvs rclcpp_action interfaces)
 
-add_executable(forward_kin src/fk_node.cpp)
-target_link_libraries(forward_kin CTRlib)
-ament_target_dependencies(forward_kin rclcpp std_msgs std_srvs interfaces)
-ament_target_dependencies(forward_kin OpenMP Boost BLAS LAPACK Blaze TBB NLopt)
+add_executable(cosserat_fk src/cosserat_fk_node.cpp)
+target_link_libraries(cosserat_fk CTRlib)
+ament_target_dependencies(cosserat_fk rclcpp std_msgs std_srvs interfaces)
+ament_target_dependencies(cosserat_fk OpenMP Boost BLAS LAPACK Blaze TBB NLopt)
+
+add_executable(pinn_fk src/pinn_fk_node.cpp)
+target_link_libraries(pinn_fk CtrPinnInference)
+ament_target_dependencies(pinn_fk rclcpp std_msgs std_srvs interfaces)
+ament_target_dependencies(pinn_fk LAPACK Blaze nlohmann_json Torch)
+
+add_executable(ekf_node src/ekf_node.cpp)
+target_link_libraries(ekf_node CtrPinnInference)
+ament_target_dependencies(ekf_node rclcpp std_msgs std_srvs interfaces)
+ament_target_dependencies(ekf_node LAPACK Blaze nlohmann_json Torch)
 
 install(TARGETS
   ctr_robot
   qt_gui
-  forward_kin
+  cosserat_fk
+  pinn_fk
+  ekf_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY

@@ -7,12 +7,11 @@ def generate_launch_description():
     
     planner_node = ExecuteProcess(
         cmd=[
-            'taskset', '-c', '9',  # This sets the affinity to CPU core 0
-            # 'gnome-terminal', '--',
+            'taskset', '-c', '9', 
             'ros2', 'run', 'planner', 'plan',
             '--ros-args',
             # '-p', 'temp_dir:=/tmp_ctr/path_data/', 
-            '--remap', '__node:=control_node'
+            '--remap', '__node:=planner_node'
         ],
         output='screen',
     )

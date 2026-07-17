@@ -301,11 +301,13 @@ void Cia301Node::OnRpdoWrite(uint16_t idx, uint8_t subidx) noexcept
         int32_t digital_in = rpdo_mapped[DIGITAL_INPUTS][0x00];              // Update current min position limit
         m_digital_in = digital_in;
     }
-    // if (idx == DEVICE_TEMPERATURE && subidx == 0x01) // if RxPDO 3 received ---- info in RxPDO4 -> [1] max position
-    // {
-    //     m_temp_cpu = rpdo_mapped[DEVICE_TEMPERATURE][0x01];              // Update current max position limit
-    //     // m_temp_power = rpdo_mapped[DEVICE_TEMPERATURE][0x02];              // Update current max position limit
-    // }
+    if (idx == DEVICE_TEMPERATURE && subidx == 0x01) // if RxPDO 3 received ---- info in RxPDO4 -> [1] max position
+    {
+        int16_t cpu_temp = rpdo_mapped[DEVICE_TEMPERATURE][0x01]; 
+        m_temp_cpu = cpu_temp; 
+        int16_t power_temp = rpdo_mapped[DEVICE_TEMPERATURE][0x03];             
+        m_temp_power = power_temp;       
+    }
 
     // if RxPDO 4 received
     if (idx == POSITION_LIMIT && subidx == 0x01) // if RxPDO 4 received ---- info in RxPDO4 -> [1] min positon limit
@@ -323,7 +325,7 @@ void Cia301Node::OnRpdoWrite(uint16_t idx, uint8_t subidx) noexcept
     // if Received unknown PDO
     if (!((idx == ACTUAL_TORQUE_FAULHABER_IDX) || (idx == ACTUAL_CURRENT_MAXON_IDX) || (idx == ACTUAL_VELOCITY_FAULHABER_IDX) || 
           (idx == ACTUAL_VELOCITY_MAXON_IDX) || (idx == STATUS_WORD_IDX) || (idx == ACTUAL_POSITION_IDX) || (idx == POSITION_LIMIT) ||
-          (idx == DIGITAL_INPUTS)))
+          (idx == DIGITAL_INPUTS) || (idx == DEVICE_TEMPERATURE)))
     {
         std::stringstream ss;
         ss << "[Node " + m_nodeId << ": unknown PDO - idx: 0x" << std::hex << idx << " subidx: 0x" << std::hex << subidx; // Convert to hex, uppercase letters
@@ -784,13 +786,10 @@ void Cia301Node::SetProfileParams_(const int MaxAcc, const int MaxDcc, const int
                       "ACC: " + std::to_string(MaxAcc) + " [0.01mm/s^2] or [0.1deg/s^2]  |  " +
                       "DCC: " + std::to_string(MaxDcc) + " [0.01mm/s^2] or [0.1deg/s^2]  |  " +
                       "Vel: " + std::to_string(MaxVel) + " [0.01mm/s] or [0.1deg/s]  ");
-        // Wait(AsyncWrite<uint32_t>(0x6065, 00, static_cast<uint32_t>(1000000)));   // Max. Following Error
-        // Wait(AsyncWrite<int32_t>(0x607D, 01, static_cast<int32_t>(-2147483648))); // Min. Position Limit    (PP)
-        // Wait(AsyncWrite<int32_t>(0x607D, 02, static_cast<int32_t>(2147483647)));  // Max. Position Limit    (PP)
+        Wait(AsyncWrite<uint32_t>(0x6080, 00, static_cast<uint32_t>(MaxVel))); // Maximum Motor Speed   (PP & PV)
         Wait(AsyncWrite<uint32_t>(0x6081, 00, static_cast<uint32_t>(MaxVel))); // set profile velocity   (PP)
         Wait(AsyncWrite<uint32_t>(0x6083, 00, static_cast<uint32_t>(MaxAcc))); // set profile acc    (PP & PV)
         Wait(AsyncWrite<uint32_t>(0x6084, 00, static_cast<uint32_t>(MaxDcc))); // set profile dcc    (PP & PV)
-
         // Wait(AsyncWrite<uint32_t>(0x60C5, 00, static_cast<uint32_t>(10000000)));  // set max ACC        (Velocity mode)
         // Wait(AsyncWrite<int32_t>(0x6086, 00, static_cast<uint16_t>(0))); // Max. Position Limit
     }
@@ -1216,7 +1215,7 @@ int32_t Cia301Node::getCpuTemp() const
     return m_temp_cpu;
 }
 
-int32_t Cia301Node::getDriverTemp() const
+int32_t Cia301Node::getWindingTemp() const
 {
     return m_temp_power;
 }

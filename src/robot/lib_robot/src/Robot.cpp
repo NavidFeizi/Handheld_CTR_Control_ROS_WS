@@ -5,10 +5,10 @@ using namespace lely;
 
 std::vector<double> Position_Target_Generator(double t);
 
-CTRobot::CTRobot(bool position_limit)
+CTRobot::CTRobot(bool position_limit, blaze::StaticVector<double, 4UL> max_vel, blaze::StaticVector<double, 4UL> max_acc)
 {
-  m_maxAcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
-  m_maxVel = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
+  m_maxVel = max_vel; // [deg/s] and [mm/s]
+  m_maxAcc = max_acc; // [deg/s^2] and [mm/s^2]
   // m_max_acc = max_acc;             // deg->rev or mm->rev
   // m_max_vel = max_vel;             // deg->rev or mm->rev
   // this->m_sampleTime = sample_time; // commandPeriod [ms], minimum
@@ -16,7 +16,7 @@ CTRobot::CTRobot(bool position_limit)
   this->m_lowerBounds = {-2 * M_PI, 0.0, -2 * M_PI, 0.0};
   this->m_upperBounds = {2 * M_PI, 97.0E-3, 2 * M_PI, 52.0E-3};
   this->m_posOffsets = {0.0, -147.0E-3, 0.0, -77.0E-3};
-  this->m_minClearance = 29.0E-3;
+  this->m_minClearance = 30.0E-3;
   this->m_maxClearance = 70.0E-3;
   this->m_flagPositionLimit = position_limit;
 
@@ -26,7 +26,9 @@ CTRobot::CTRobot(bool position_limit)
 
 /* default constructor */
 CTRobot::CTRobot()
-    : CTRobot(false) {} // Calls parameterized constructor
+    : CTRobot(false,
+              {200.00 * M_PI / 180.00, 10.00 * 1e-3, 200.00 * M_PI / 180.00, 10.00 * 1e-3},
+              {200.00 * M_PI / 180.00, 10.00 * 1e-3, 200.00 * M_PI / 180.00, 10.00 * 1e-3}) {} // Calls parameterized constructor
 
 /* Copy constructor */
 CTRobot::CTRobot(const CTRobot &rhs) : m_inrTubeRot(rhs.m_inrTubeRot),
@@ -37,7 +39,7 @@ CTRobot::CTRobot(const CTRobot &rhs) : m_inrTubeRot(rhs.m_inrTubeRot),
 /* class destructor: disable, and close cotrollers. */
 CTRobot::~CTRobot()
 {
-  m_logger->info("[Master]  Closing");
+  m_logger->info("[CAN Master]  Closing");
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
@@ -156,7 +158,7 @@ void CTRobot::startCANopenNodes()
     {
       // shared_state->signalBootSuccess();
       m_shared_state->m_boot_success = true;
-      m_logger->info("[Master] Nodes Booted Successfully");
+      m_logger->info("[CAN Master] Nodes Booted Successfully");
     }
   }
 
@@ -168,7 +170,7 @@ void CTRobot::startCANopenNodes()
       {
         m_shared_state->m_flag_robot_switched_on = true;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        m_logger->info("[Master] All Nodes Switched ON");
+        m_logger->info("[CAN Master] All Nodes Switched ON");
       }
     }
     else
@@ -177,7 +179,7 @@ void CTRobot::startCANopenNodes()
       {
         m_shared_state->m_flag_robot_switched_on = false;
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        m_logger->info("[Master] At Least One Node Switched OFF");
+        m_logger->info("[CAN Master] At Least One Node Switched OFF");
       }
     }
   }
@@ -192,7 +194,7 @@ void CTRobot::startCANopenNodes()
         m_shared_state->m_flag_operation_enabled = true;
         m_shared_state->m_flag_operation_enabled_2 = true;
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        m_logger->info("[Master] All Nodes Enabled");
+        m_logger->info("[CAN Master] All Nodes Enabled");
       }
     }
     // else if (CTRobot::getDisabledStatus())
@@ -202,7 +204,7 @@ void CTRobot::startCANopenNodes()
     //     m_shared_state->m_flag_operation_enabled = false;
     //     m_shared_state->m_flag_operation_enabled_2 = false;
     //     std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    //     m_logger->info("[Master] All Nodes Disabled");
+    //     m_logger->info("[CAN Master] All Nodes Disabled");
     //   }
     // }
     else
@@ -211,7 +213,7 @@ void CTRobot::startCANopenNodes()
       {
         m_shared_state->m_flag_operation_enabled = false;
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        m_logger->info("[Master] At Least One Node Disabled");
+        m_logger->info("[CAN Master] At Least One Node Disabled");
       }
     }
 
@@ -223,7 +225,7 @@ void CTRobot::startCANopenNodes()
     //     {
     //       m_shared_state->m_encoders_set = true;
     //       std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    //       m_logger->info("[Master] Encoders Set");
+    //       m_logger->info("[CAN Master] Encoders Set");
     //     }
     //   }
     //   else
@@ -259,7 +261,7 @@ void CTRobot::startRobotCommunication(int sample_time)
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  m_logger->info("[Master] Tasks Posted");
+  m_logger->info("[CAN Master] Tasks Posted");
 }
 
 /* enable operation of all joints
@@ -351,6 +353,18 @@ void CTRobot::setEncoders(const blaze::StaticVector<double, 4> val)
   m_inrTubeTrn->setEncoder(val[1]);
   m_mdlTubeRot->setEncoder(val[2]);
   m_mdlTubeTrn->setEncoder(val[3]);
+}
+
+/* set the maximum velocity */
+void CTRobot::setMaxVel(const blaze::StaticVector<double, 4UL> &maxVel)
+{
+  m_maxVel = maxVel;
+}
+
+/* set the maximum acceleration */
+void CTRobot::setMaxAcc(const blaze::StaticVector<double, 4UL> &maxAcc)
+{
+  m_maxAcc = maxAcc;
 }
 
 /*  */
@@ -445,7 +459,7 @@ void CTRobot::setOperationMode(const OpMode mode)
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
   }
   else
-    m_logger->debug("[Master] Requeset operation mode is already set");
+    m_logger->debug("[CAN Master] Requeset operation mode is already set");
 }
 
 /* Gets the current in [mA] unit */
@@ -487,20 +501,20 @@ void CTRobot::getPosLimit(blaze::StaticVector<double, 4> &min, blaze::StaticVect
 }
 
 /* Gets the current absolute position of all actuators in SI unit */
-void CTRobot::getTemperature(blaze::StaticVector<int32_t, 4> &cpu, blaze::StaticVector<int32_t, 4> &driver) const
+void CTRobot::getTemperature(blaze::StaticVector<int32_t, 4> &cpu, blaze::StaticVector<int32_t, 4> &winding) const
 {
   cpu[0] = this->m_inrTubeRot->getCpuTemp();
   cpu[1] = this->m_inrTubeTrn->getCpuTemp();
   cpu[2] = this->m_mdlTubeRot->getCpuTemp();
   cpu[3] = this->m_mdlTubeTrn->getCpuTemp();
 
-  driver[0] = this->m_inrTubeRot->getDriverTemp();
-  driver[1] = this->m_inrTubeTrn->getDriverTemp();
-  driver[2] = this->m_mdlTubeRot->getDriverTemp();
-  driver[3] = this->m_mdlTubeTrn->getDriverTemp();
+  winding[0] = this->m_inrTubeRot->getWindingTemp();
+  winding[1] = this->m_inrTubeTrn->getWindingTemp();
+  winding[2] = this->m_mdlTubeRot->getWindingTemp();
+  winding[3] = this->m_mdlTubeTrn->getWindingTemp();
 }
 
-//
+// get digital inputs
 void CTRobot::getDigitalIn(blaze::StaticVector<std::bitset<32>, 4> &in) const
 {
   in[0] = this->m_inrTubeRot->getDigitalIn();
@@ -558,7 +572,7 @@ void CTRobot::getInterface() const
 //     std::this_thread::sleep_for(std::chrono::milliseconds(5));
 //     this->m_inrTubeTrn->getCurrentAvg(current);
 //   }
-//   m_logger->info("[Master] inner carriage hit back");
+//   m_logger->info("[CAN Master] inner carriage hit back");
 //   CTRobot::setTargetVel({0.0, 0.0, 0.0, 0.0});
 //   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -574,13 +588,13 @@ void CTRobot::getInterface() const
 //   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 //   this->m_inrTubeTrn->getCurrentAvg(current);
 
-//   m_logger->info("[Master] checkpoint_3");
+//   m_logger->info("[CAN Master] checkpoint_3");
 //   while (current < 210.0)
 //   {
 //     std::this_thread::sleep_for(std::chrono::milliseconds(5));
 //     this->m_inrTubeTrn->getCurrentAvg(current);
 //   }
-//   m_logger->info("[Master] inner carriage hit middle carriage");
+//   m_logger->info("[CAN Master] inner carriage hit middle carriage");
 //   CTRobot::setTargetVel({1.0, 0.0, 1.0, 0.0});
 //   std::this_thread::sleep_for(std::chrono::milliseconds(5000));
 //   CTRobot::setTargetVel({0.0, 0.0, 0.0, 0.0});
@@ -589,7 +603,7 @@ void CTRobot::getInterface() const
 //   this->m_inrTubeTrn->setEncoder(pos2 - pos0);
 //   this->m_mdlTubeTrn->setEncoder(pos2 - pos0 + collet_minimum_clearance);
 //   std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-//   m_logger->info("[Master] encoders found");
+//   m_logger->info("[CAN Master] encoders found");
 //   CTRobot::enableOperation(false);
 //   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 // }

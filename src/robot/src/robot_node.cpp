@@ -4,7 +4,6 @@
 #include <string>
 #include <cmath>
 #include <atomic>
-
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -16,14 +15,12 @@
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/srv/config.hpp"
 #include "interfaces/srv/jointstarget.hpp"
-
 #include "Robot.hpp"
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
 
-// Declare your enum class
 enum class CtrlMode : int
 {
   Config = 0x00,
@@ -41,35 +38,86 @@ public:
     m_flag_use_target_action = false;
     m_trans_limit = true;
     m_encoders_set = {1, 1, 1, 1}; /// temoporarly for development
-    // declare_parameters();
+    declare_parameters();
+
+    setMaxVel(m_maxVel);
+    setMaxAcc(m_maxAcc);
     initRosInterfaces();
-    startRobotCommunication(s_sample_time);
+    startRobotCommunication(k_sample_time);
 
     worker_thread_ = std::thread([this]()
                                  {
-      while (true)
-      {
-        std::unique_lock<std::mutex> lock(m_task_mutex);
-        m_task_cv.wait(lock, [this]() -> bool { return this->m_flag_task_ready.load(); });
-    
-        m_cancel_flag = false;
-        m_flag_task_ready = false;  // Reset immediately
-    
-        auto task = m_current_task;
-        lock.unlock();  // Let the task run without holding the mutex
-    
-        if (task) task();
-      } });
+
+                                  while (!m_stop_worker.load())
+        {
+            std::unique_lock<std::mutex> lock(m_task_mutex);
+            m_task_cv.wait(lock, [this]() {
+                return m_flag_task_ready.load() || m_stop_worker.load();
+            });
+
+            if (m_stop_worker.load()) break;
+
+            m_cancel_flag = false;
+            m_flag_task_ready = false;
+
+            auto task = m_current_task;
+            lock.unlock();
+
+            if (task) task();
+        } });
+  }
+
+  ~RobotNode() override
+  {
+    m_stop_worker.store(true);
+    m_flag_task_ready.store(true);
+    m_task_cv.notify_one();
+    if (worker_thread_.joinable())
+      worker_thread_.join();
   }
 
 private:
   // Declare ROS parameters
   void declare_parameters()
   {
-    declare_parameter<double>("Kp", 4.60);
-    declare_parameter<double>("Ki", 2.60);
-    m_kp = get_parameter("Kp").as_double();
-    m_ki = get_parameter("Ki").as_double();
+    // Declare motion limit parameters as vectors
+    declare_parameter<std::vector<double>>("maxVel", {3.0, 0.012, 3.0, 0.012});
+    declare_parameter<std::vector<double>>("maxAcc", {20.0, 0.12, 20.0, 0.12});
+
+    std::vector<double> maxVelVec = get_parameter("maxVel").as_double_array();
+    std::vector<double> maxAccVec = get_parameter("maxAcc").as_double_array();
+
+    // Clamp values to physical limits
+    for (size_t i = 0; i < 4; ++i)
+    {
+      if (maxVelVec[i] > k_velocityPhysicalLimit[i])
+      {
+        m_logger->warn("[RobotNode] maxVel[{}] = {:.4f} exceeds physical limit {:.4f}, clamping to limit",
+                       i, maxVelVec[i], k_velocityPhysicalLimit[i]);
+        maxVelVec[i] = k_velocityPhysicalLimit[i];
+      }
+
+      if (maxAccVec[i] > k_accelerationPhysicalLimit[i])
+      {
+        m_logger->warn("[RobotNode] maxAcc[{}] = {:.4f} exceeds physical limit {:.4f}, clamping to limit",
+                       i, maxAccVec[i], k_accelerationPhysicalLimit[i]);
+        maxAccVec[i] = k_accelerationPhysicalLimit[i];
+      }
+    }
+
+    // Copy to the blaze::StaticVector members
+    for (size_t i = 0; i < 4; ++i)
+    {
+      m_maxVel[i] = maxVelVec[i];
+      m_maxAcc[i] = maxAccVec[i];
+    }
+
+    m_logger->info("[RobotNode] Max Velocities set to: [{}, {}, {}, {}]",
+                   m_maxVel[0], m_maxVel[1], m_maxVel[2], m_maxVel[3]);
+    // declare_parameter<double>("Kp", 4.60);
+    // declare_parameter<double>("Ki", 2.60);
+    // m_kp = get_parameter("Kp").as_double();
+    // m_ki = get_parameter("Ki").as_double();
   }
 
   // Setup ROS interfaces including publishers, subscribers, services, and timers
@@ -113,7 +161,7 @@ private:
     m_enable_service = create_service<interfaces::srv::Config>("robot_enable", std::bind(&RobotNode::enableService_callback, this, _1, _2));
 
     // Low-level control loop timer
-    auto command_sample_time = std::chrono::milliseconds(static_cast<int>(50));
+    auto command_sample_time = std::chrono::milliseconds(static_cast<int>(10));
     m_control_loop_timer = create_wall_timer(command_sample_time, std::bind(&RobotNode::targetCommand_timerCallback, this), m_cbGroup1);
     // Timer to read joint configurations periodically
     m_joints_config_timer = create_wall_timer(10ms, std::bind(&RobotNode::jointsConfig_timerCallback, this), m_cbGroup3);
@@ -121,9 +169,6 @@ private:
     m_read_robot_timer = create_wall_timer(10ms, std::bind(&RobotNode::robotStatus_timerCallback, this), m_cbGroup3);
     // Initialize a timer to check emtracker lifecycle
     m_watchdog_timer_emt = create_wall_timer(100ms, std::bind(&RobotNode::check_emtracker_alive_timerCallback, this), m_callback_group_watchdog_1);
-
-    // Initialize the watchdog timer
-    // m_watchdog_timer_target = this->create_wall_timer(2000ms, std::bind(&RobotNode::check_target_publisher_alive, this), m_cbGroup6);
   }
 
   // Setup ROS parameter callback function to handle dynamic parameter (Kp, Ki) updates - ** TEMP ** - needs to be further developed
@@ -173,16 +218,16 @@ private:
     reached_status = getReachedStatus();
     getPosLimit(m_minCurrentPosLimit, m_maxCurrentPosLimit);
 
-    if ((abs(m_x[1] - s_pos_preEngage[1]) < 0.001) && (abs(m_x[3] - s_pos_preEngage[3]) < 0.001))
+    if ((abs(m_x[1] - k_pos_preEngage[1]) < 0.001) && (abs(m_x[3] - k_pos_preEngage[3]) < 0.001))
       m_flag_readyToEngage = true;
     else
       m_flag_readyToEngage = false;
-    if ((abs(m_x[1] - s_pos_engage[1]) < 0.003) && (abs(m_x[3] - s_pos_engage[3]) < 0.002))
+    if ((abs(m_x[1] - k_pos_engage[1]) < 0.003) && (abs(m_x[3] - k_pos_engage[3]) < 0.002))
       m_flagEngaged = true;
     else
       m_flagEngaged = false;
 
-    m_head_attached = !m_digital_input[3][18];
+    m_head_attached = m_digital_input[3][18];
 
     for (int i = 0; i < 4; i++)
     {
@@ -192,6 +237,8 @@ private:
       msg.reached[i] = reached_status[i];
       msg.min_pos_limit[i] = m_minCurrentPosLimit[i];
       msg.max_pos_limit[i] = m_maxCurrentPosLimit[i];
+      msg.cpu_temp[i] = m_cpu_temp[i];
+      msg.winding_temp[i] = m_winding_temp[i];
     }
 
     msg.head_attached = m_head_attached;
@@ -202,17 +249,19 @@ private:
     msg.engaged = m_flagEngaged;
     msg.locked = m_locked;
 
+    msg.procedure = m_procedure;
+
     m_publisher_status->publish(msg);
 
     // update interface
     auto interface_msg = interfaces::msg::Interface();
-    m_interface_key[0] = !m_digital_input[0][17];
-    m_interface_key[1] = !m_digital_input[0][18];
-    m_interface_key[2] = !m_digital_input[1][17];
-    m_interface_key[3] = !m_digital_input[1][18];
-    m_interface_key[4] = !m_digital_input[2][17];
-    m_interface_key[5] = !m_digital_input[2][18];
-    m_interface_key[6] = !m_digital_input[3][17];
+    m_interface_key[0] = m_digital_input[0][17];
+    m_interface_key[1] = m_digital_input[0][18];
+    m_interface_key[2] = m_digital_input[1][17];
+    m_interface_key[3] = m_digital_input[1][18];
+    m_interface_key[4] = m_digital_input[2][17];
+    m_interface_key[5] = m_digital_input[2][18];
+    m_interface_key[6] = m_digital_input[3][17];
     for (int i = 0; i < 7; i++)
     {
       interface_msg.interface_key[i] = m_interface_key[i];
@@ -228,13 +277,18 @@ private:
     getVel(m_xdot);
     m_current = getCurrent();
 
-    getTemperature(m_cpu_temp, m_driver_temp);
+    getTemperature(m_cpu_temp, m_winding_temp);
     getDigitalIn(m_digital_input);
 
-    minDynamicPosLimit[1] = std::max(s_minStaticLimitAll[1], m_x[3] - s_linear_stage_max_clearance);
-    maxDynamicPosLimit[1] = std::min(s_maxStaticLimitAll[1], m_x[3] - s_linear_stage_min_clearance);
-    minDynamicPosLimit[3] = std::max(s_minStaticLimitAll[3], m_x[1] + s_linear_stage_min_clearance);
-    maxDynamicPosLimit[3] = std::min(s_maxStaticLimitAll[3], m_x[1] + s_linear_stage_max_clearance);
+    minDynamicPosLimit[0] = std::max(k_minStaticLimitAll[0], m_x[2] - k_rotary_stage_max_clearance);
+    maxDynamicPosLimit[0] = std::min(k_maxStaticLimitAll[0], m_x[2] - k_rotary_stage_min_clearance);
+    minDynamicPosLimit[2] = std::max(k_minStaticLimitAll[2], m_x[0] + k_rotary_stage_min_clearance);
+    maxDynamicPosLimit[2] = std::min(k_maxStaticLimitAll[2], m_x[0] + k_rotary_stage_max_clearance);
+
+    minDynamicPosLimit[1] = std::max(k_minStaticLimitAll[1], m_x[3] - k_linear_stage_max_clearance);
+    maxDynamicPosLimit[1] = std::min(k_maxStaticLimitAll[1], m_x[3] - k_linear_stage_min_clearance);
+    minDynamicPosLimit[3] = std::max(k_minStaticLimitAll[3], m_x[1] + k_linear_stage_min_clearance);
+    maxDynamicPosLimit[3] = std::min(k_maxStaticLimitAll[3], m_x[1] + k_linear_stage_max_clearance);
 
     msg.position[0UL] = m_x[0UL];
     msg.position[1UL] = m_x[1UL];
@@ -263,7 +317,7 @@ private:
 
       // joint_space_control_step
       m_x_error = x_des - m_x;
-      m_x_error_int = m_x_error_int + m_x_error * s_sample_time * 1e-3;
+      m_x_error_int = m_x_error_int + m_x_error * k_sample_time * 1e-3;
       q_dot_command = m_x_error * m_kp + m_x_error_int * m_ki + x_dot_des;
 
       // joint_space_control_step(x_des, x_dot_des, q_dot_command);
@@ -284,7 +338,7 @@ private:
       break;
     case CtrlMode::Position:
       setTargetPos(m_x_des);
-      std::cout << "m_x_des sent: " << blaze::trans(m_x_des) << std::endl;
+      // std::cout << "m_x_des sent: " << blaze::trans(m_x_des) << std::endl;
       break;
     }
     if (m_trans_limit)
@@ -300,11 +354,12 @@ private:
   // Subscription callback function to updates the target joint positions and velocities
   void jointSpaceTarget_callback(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
-    
+
     if (!m_flag_manual && !m_flag_use_target_action)
     {
       // m_targpublisher_alive_tmep = true;
-      m_x_des = blaze::StaticVector<double, 4UL>(0.00);
+      m_xdot_des = blaze::StaticVector<double, 4UL>(0.00);
+      m_x_des = m_x;
 
       switch (m_mode)
       {
@@ -313,20 +368,20 @@ private:
         m_xdot_des[1UL] = msg->velocity[1UL];
         m_xdot_des[2UL] = msg->velocity[2UL];
         m_xdot_des[3UL] = msg->velocity[3UL];
-        std::cout << "Vel target received:" << blaze::trans(m_xdot_des) << std::endl;
+        // m_logger->info("[RobotNode] Vel target received: [{:.4f}, {:.4f}, {:.4f}, {:.4f}]",
+        //                m_xdot_des[0], m_xdot_des[1], m_xdot_des[2], m_xdot_des[3]);
         break;
       case CtrlMode::Position:
         m_x_des[0UL] = msg->position[0UL];
         m_x_des[1UL] = msg->position[1UL];
         m_x_des[2UL] = msg->position[2UL];
         m_x_des[3UL] = msg->position[3UL];
-        std::cout << "Pos target received:" << blaze::trans(m_x_des) << std::endl;
+        // m_logger->info("[RobotNode] Pos target received: [{:.4f}, {:.4f}, {:.4f}, {:.4f}]",
+        //                m_x_des[0], m_x_des[1], m_x_des[2], m_x_des[3]);
         break;
       }
-
     }
 
-    
     // std::cout << "CtrlMode:" << m_mode << std::endl;
   }
 
@@ -349,33 +404,35 @@ private:
   }
 
   // Service callback to triger tasks, enable, and control mode section
-  void enableService_callback(const std::shared_ptr<interfaces::srv::Config::Request> request,
-                              std::shared_ptr<interfaces::srv::Config::Response> response)
+  void enableService_callback(const std::shared_ptr<interfaces::srv::Config::Request> request, std::shared_ptr<interfaces::srv::Config::Response> response)
   {
     if (request->command == "toggleEnable")
     {
       m_cancel_flag = true; // Signal cancellation to any running task
-      auto toggle_thread_ = std::thread(&RobotNode::toggleEnable, this);
-      if (toggle_thread_.joinable())
-        toggle_thread_.join();
+      // auto toggle_thread_ = std::thread(&RobotNode::toggleEnable, this);
+      // toggle_thread_.join();
+      RobotNode::toggleEnable();
+      response->success = true;
+      response->message = "Toggled enable";
     }
     else if (request->command == "disable")
     {
       m_cancel_flag = true; // Signal cancellation to any running task
-      auto toggle_thread_ = std::thread(&RobotNode::disable, this);
-      toggle_thread_.join();
+      // auto toggle_thread_ = std::thread(&RobotNode::disable, this);
+      // toggle_thread_.join();
+      RobotNode::disable();
+      response->success = true;
+      response->message = "Disabled";
     }
     else
     {
       response->success = false;
       response->message = "Invalid command";
     }
-    response->success = true;
   }
 
   // Service callback to triger tasks, enable, and control mode section
-  void configService_callback(const std::shared_ptr<interfaces::srv::Config::Request> request,
-                              std::shared_ptr<interfaces::srv::Config::Response> response)
+  void configService_callback(const std::shared_ptr<interfaces::srv::Config::Request> request, std::shared_ptr<interfaces::srv::Config::Response> response)
   {
     std::future<std::string> result_future;
 
@@ -442,6 +499,14 @@ private:
       result_future = dispatchTask([this]()
                                    { return findRotaryHomeAndGoHome(); });
     }
+    else if (request->command == "startProcedure")
+    {
+      startProcedure();
+    }
+    else if (request->command == "endProcedure")
+    {
+      endProcedure();
+    }
     else if (request->command == "engageAndUnlock")
     {
       result_future = dispatchTask([this]()
@@ -458,19 +523,11 @@ private:
       response->message = "Invalid command";
       return;
     }
-
     response->success = true;
     response->message = "Task received";
-
-    // // Wait for result from task
-    // if (result_future.valid()) {
-    //   std::string result = result_future.get();  // Block only this service thread
-    //   response->success = (result == "OK");
-    //   response->message = result;
-    // }
   }
 
-  //
+  // Handle the service response future
   void handle_service_response(const rclcpp::Client<interfaces::srv::Config>::SharedFuture future)
   {
     // Get the result of the future object
@@ -565,13 +622,19 @@ private:
 
   // =============================================== Robot Config/Setup Tasks ====================================== //
   // set robot control mode to config mode
-  void switchToConfigMode()
+  int switchToConfigMode()
   {
+    if (m_procedure)
+    {
+      m_logger->info("[RobotNode] Config mode is not allowed once procedure started");
+      return 1;
+    }
     setTargetVel({0.0, 0.0, 0.0, 0.0});
     m_trans_limit = false; // disable translation limits
     m_mode = CtrlMode::Config;
     m_logger->info("[RobotNode] Selected control mode: Config");
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    return 0;
   }
 
   // set robot control mode
@@ -584,12 +647,10 @@ private:
     else if (mode == CtrlMode::Manual)
     {
       setTargetVel({0.0, 0.0, 0.0, 0.0});
-      blaze::StaticVector<double, 4UL> max_dcc = {200.00 * M_PI / 180.00, 10.00 / 1000.00, 200.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
-      blaze::StaticVector<double, 4UL> max_vel = {100.00 * M_PI / 180.00, 10.00 / 1000.00, 100.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
-      blaze::StaticVector<double, 4UL> negative = {500.0, 500.0, 500.0, 500.0};
-      blaze::StaticVector<double, 4UL> positive = {500.0, 500.0, 500.0, 500.0};
+      blaze::StaticVector<double, 4UL> negative = {1000.0, 1000.0, 1000.0, 1000.0};
+      blaze::StaticVector<double, 4UL> positive = {1000.0, 1000.0, 1000.0, 1000.0};
       setOperationMode(OpMode::VelocityProfile);
-      setProfileParams(max_vel, max_dcc, max_dcc);
+      setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
       setMaxTorque(negative, positive);
       m_mode = CtrlMode::Manual;
       m_logger->info("[RobotNode] Selected Mode: Manual");
@@ -600,16 +661,22 @@ private:
       m_x_des = m_x;
       m_trans_limit = true; // enable translation limits
       setOperationMode(OpMode::PositionProfile);
+      setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
       m_mode = CtrlMode::Position;
       m_logger->info("[RobotNode] Selected Mode: Position");
+      m_procedure = true;
+      m_logger->info("[RobotNode] Procedure Started");
     }
     else if (mode == CtrlMode::Velocity)
     {
       setTargetVel({0.0, 0.0, 0.0, 0.0});
       m_trans_limit = true; // enable translation limits
       setOperationMode(OpMode::VelocityProfile);
+      setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
       m_mode = CtrlMode::Velocity;
       m_logger->info("[RobotNode] Selected Mode: Velocity");
+      m_procedure = true;
+      m_logger->info("[RobotNode] Procedure Started");
     }
   }
 
@@ -621,12 +688,12 @@ private:
       if (enable)
       {
         m_trans_limit = true;
-        m_logger->info("[RobotNode] Translation Limit ON");
+        m_logger->info("[RobotNode] Joints Position Limits ON");
       }
       else
       {
         m_trans_limit = false;
-        m_logger->info("[RobotNode] Translation Limit OFF");
+        m_logger->info("[RobotNode] Joints Position Limits OFF");
       }
     }
     else
@@ -640,15 +707,21 @@ private:
   {
     blaze::StaticVector<bool, 4UL> en_status = getEnableStatus();
     if (en_status[0] || en_status[1] || en_status[2] || en_status[3])
+    {
       enableOperation(false);
+      endProcedure();
+    }
     else
+    {
       enableOperation(true);
+    }
   }
 
   // enable or distable the robot
   void disable()
   {
     enableOperation(false);
+    endProcedure();
   }
 
   // lock the couplings and move the the linear statges to the proximal mechanical limit of the robot to home the linear encoders
@@ -679,7 +752,8 @@ private:
 
     // set control mode and parameters
     m_logger->info("[RobotNode] Finding linear home...");
-    switchToConfigMode();
+    if (switchToConfigMode())
+      return "canceled";
     setOperationMode(OpMode::VelocityProfile);
     setMaxTorque(maxTorqueNegative, maxTorquePositive);
     setProfileParams(maxVel, maxAcc, maxDcc);
@@ -715,7 +789,7 @@ private:
       return "canceled";
     setTargetVel({0.0, 0.0, 0.0, 0.0});
     // set encoders
-    setEncoders({0.0, s_pos_inr_prox_stop, 0.0, s_pos_mdl_prox_stop});
+    setEncoders({0.0, k_pos_inr_prox_stop, 0.0, k_pos_mdl_prox_stop});
     sleep_thread_cancelable(500);
     if (check_cancel())
       return "canceled";
@@ -761,14 +835,15 @@ private:
     constexpr blaze::StaticVector<double, 4UL> maxVel = {60.00 * M_PI / 180.00, 10.00 / 1000.00, 60.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
 
     m_logger->info("[RobotNode] Disengaging collets...");
-    switchToConfigMode();
+    if (switchToConfigMode())
+      return "canceled";
     setOperationMode(OpMode::PositionProfile);
     setProfileParams(maxVel, maxAcc, maxDcc);
     setMaxTorque(maxTorqueNegative, maxTorquePositive);
     enableOperation(true);
     if (check_cancel())
       return "canceled";
-    setTargetPos({m_x[0], s_pos_preEngage[1], m_x[2], s_pos_preEngage[3]});
+    setTargetPos({m_x[0], k_pos_preEngage[1], m_x[2], k_pos_preEngage[3]});
     waitUntilTransReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
@@ -812,7 +887,8 @@ private:
     blaze::StaticVector<double, 4UL> targetPosTemp;
 
     m_logger->info("[RobotNode] Engaging collets...");
-    switchToConfigMode();
+    if (switchToConfigMode())
+      return "canceled";
     setOperationMode(OpMode::PositionProfile);
     setProfileParams(maxVel, maxAcc, maxDcc);
 
@@ -822,7 +898,7 @@ private:
       m_logger->info("[RobotNode] Moving to pre-engage location");
       setMaxTorque(maxTorqueNegative, maxTorquePositive);
       enableOperation(true);
-      targetPosTemp = {m_x[0], s_pos_preEngage[1], m_x[2], s_pos_preEngage[3]};
+      targetPosTemp = {m_x[0], k_pos_preEngage[1], m_x[2], k_pos_preEngage[3]};
       setTargetPos(targetPosTemp);
       waitUntilTransReach(m_cancel_flag);
       if (check_cancel())
@@ -839,7 +915,7 @@ private:
 
       // attemp to engage middle collet - step one - setting translational joint
       m_logger->info("[RobotNode] Engaging middle collet");
-      targetPosTemp = {m_x[0], s_pos_preEngage[1], m_x[2], s_pos_engage[3]};
+      targetPosTemp = {m_x[0], k_pos_preEngage[1], m_x[2], k_pos_engage[3]};
       setTargetPos(targetPosTemp);
       sleep_thread_cancelable(1500);
       if (check_cancel())
@@ -849,14 +925,14 @@ private:
       {
         if (check_cancel())
           return "canceled";
-        targetPosTemp[3] = s_pos_engage[3] - 0.004;
+        targetPosTemp[3] = k_pos_engage[3] - 0.004;
         setTargetPos(targetPosTemp); // back off for 4 mm
         sleep_thread_cancelable(1000);
         targetPosTemp[2] = m_x[2] + 0.07 * M_PI;
         setTargetPos(targetPosTemp); // rotate
         sleep_thread_cancelable(1000);
         targetPosTemp[2] = m_x[2];
-        targetPosTemp[3] = s_pos_engage[3];
+        targetPosTemp[3] = k_pos_engage[3];
         setTargetPos(targetPosTemp); // attemp to engage middle collet again
         sleep_thread_cancelable(1500);
       }
@@ -881,7 +957,7 @@ private:
 
       // attemp to engage inner collet - step one - setting translational joint
       m_logger->info("[RobotNode] Engaging the inner collet");
-      targetPosTemp = {m_x[0], s_pos_engage[1], m_x[2], s_pos_engage[3]};
+      targetPosTemp = {m_x[0], k_pos_engage[1], m_x[2], k_pos_engage[3]};
       setTargetPos(targetPosTemp);
       sleep_thread_cancelable(2000);
       if (check_cancel())
@@ -891,14 +967,14 @@ private:
       {
         if (check_cancel())
           return "canceled";
-        targetPosTemp[1] = s_pos_engage[1] - 0.004;
+        targetPosTemp[1] = k_pos_engage[1] - 0.004;
         setTargetPos(targetPosTemp);
         sleep_thread_cancelable(1000);
         targetPosTemp[0] = m_x[0] + 0.07 * M_PI;
         setTargetPos(targetPosTemp);
         sleep_thread_cancelable(1000);
         targetPosTemp[0] = m_x[0];
-        targetPosTemp[1] = s_pos_engage[1];
+        targetPosTemp[1] = k_pos_engage[1];
         setTargetPos(targetPosTemp);
         sleep_thread_cancelable(1500);
       }
@@ -959,7 +1035,8 @@ private:
     constexpr double mdl_thresh = (maxTorquePositive[2] - current_thresh);
 
     m_logger->info("[RobotNode] Locking collets... ");
-    switchToConfigMode();
+    if (switchToConfigMode())
+      return "canceled";
     setOperationMode(OpMode::PositionProfile);
     setProfileParams(maxVel, maxAcc, maxDcc);
     setMaxTorque(maxTorqueNegative, maxTorquePositive);
@@ -1016,7 +1093,8 @@ private:
     constexpr double mdl_thresh = (maxTorquePositive[2] - current_thresh);
 
     m_logger->info("[RobotNode] Unlocking collets...");
-    switchToConfigMode();
+    if (switchToConfigMode())
+      return "canceled";
     setOperationMode(OpMode::PositionProfile);
     setProfileParams(maxVel, maxAcc, maxDcc);
     setMaxTorque(maxTorqueNegative, maxTorquePositive);
@@ -1093,14 +1171,15 @@ private:
     double best_input = 0.0;
 
     m_logger->info("[RobotNode] Finding rotary joints encoder...");
-    switchToConfigMode();
+    if (switchToConfigMode())
+      return "canceled";
     setOperationMode(OpMode::PositionProfile);
     setProfileParams(maxVel, maxAcc, maxDcc);
     setMaxTorque(maxTorqueNegative, maxTorquePositive);
     enableOperation(true);
 
     // moving to pre-engage postion. This is the most extended positon of the tubes
-    targetPosTemp = {m_x[0], s_pos_preEngage[1], m_x[2], s_pos_preEngage[3]};
+    targetPosTemp = {m_x[0], k_pos_preEngage[1], m_x[2], k_pos_preEngage[3]};
     setTargetPos(targetPosTemp);
     waitUntilReach(m_cancel_flag);
     if (check_cancel())
@@ -1108,7 +1187,7 @@ private:
 
     // rotate the middle tube for 2PI while recoding tip Y position
     m_logger->info("[RobotNode] Middle tube coarse rotation...");
-    targetPosTemp = {m_x[0], s_pos_preEngage[1], m_x[2] + 2 * M_PI, s_pos_preEngage[3]};
+    targetPosTemp = {m_x[0], k_pos_preEngage[1], m_x[2] + 2 * M_PI, k_pos_preEngage[3]};
     setTargetPos(targetPosTemp);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     reach = getReachedStatus();
@@ -1132,7 +1211,7 @@ private:
 
     // rotate the inner tube for 2PI while recoding tip Y position
     m_logger->info("[RobotNode] Inner tube coarse rotation...");
-    targetPosTemp = {m_x[0] + 2 * M_PI, s_pos_preEngage[1], m_x[2], s_pos_preEngage[3]};
+    targetPosTemp = {m_x[0] + 2 * M_PI, k_pos_preEngage[1], m_x[2], k_pos_preEngage[3]};
     setTargetPos(targetPosTemp);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     reach = getReachedStatus();
@@ -1265,7 +1344,7 @@ private:
     m_encoders_set[0] = true;
     m_encoders_set[2] = true;
     m_logger->info("[RobotNode] Rotary joints encoders found");
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 
     std::string res;
     res = "OK";
@@ -1290,7 +1369,7 @@ private:
       return false;
     };
 
-    m_logger->info("Going to Home...");
+    m_logger->info("[RobotNode] Going to Home...");
     constexpr blaze::StaticVector<double, 4UL> maxTorqueNegative = {400.0, 400.0, 400.0, 400.0};
     constexpr blaze::StaticVector<double, 4UL> maxTorquePositive = {400.0, 400.0, 400.0, 400.0};
     constexpr blaze::StaticVector<double, 4UL> maxAcc = {50.00 * M_PI / 180.00, 5.00 / 1000.00, 50.00 * M_PI / 180.00, 5.00 / 1000.00}; // [deg/s^2] and [mm/s^2]
@@ -1303,7 +1382,9 @@ private:
     setProfileParams(maxVel, maxAcc, maxDcc);
     setMaxTorque(maxTorqueNegative, maxTorquePositive);
     enableOperation(true);
-    setTargetPos(s_home_pos);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    setTargetPos(k_home_pos + k_home_pos_margin);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
@@ -1346,7 +1427,8 @@ private:
   {
     m_logger->info("[RobotNode] Find rotary home and go home");
     findRotaryHome();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    m_logger->info("[RobotNode] Triggering homing");
     goHome();
 
     std::string res;
@@ -1354,6 +1436,22 @@ private:
     return res;
   }
 
+  // set the m_procedure flag to false
+  std::string startProcedure()
+  {
+    m_logger->info("[RobotNode] Setting control mode to Position Control");
+    setCtrlMode(static_cast<CtrlMode>(CtrlMode::Position));
+    std::string res;
+    res = "OK";
+    return res;
+  }
+
+  // set the m_procedure flag to false
+  void endProcedure()
+  {
+    m_procedure = false;
+    m_logger->info("[RobotNode] Procedure Ended");
+  }
 
   // Wait in milliseconds
   void sleep_thread_cancelable(const int milliseconds)
@@ -1366,40 +1464,74 @@ private:
     }
   }
 
-  static constexpr double s_inr_active_length = 0.216; // need to be adjusted based on the tube set
-  static constexpr double s_mdl_active_length = 0.132; // need to be adjusted based on the tube set
-  static constexpr double s_otr_active_length = 0.060; // need to be adjusted based on the tube set
+  // tube related constants - may need to be adjusted if the tube set changes
+  static constexpr double k_inr_active_length = 0.216; // need to be adjusted based on the tube set
+  static constexpr double k_mdl_active_length = 0.132; // need to be adjusted based on the tube set
+  static constexpr double k_otr_active_length = 0.060; // need to be adjusted based on the tube set
 
-  static constexpr int s_sample_time = 20; // [ms]
+  static constexpr blaze::StaticVector<double, 4> minDynamicPosLimitInf = {-10 * M_PI, -0.50, -10 * M_PI, -0.50}; // for when the limit is off
+  static constexpr blaze::StaticVector<double, 4> maxDynamicPosLimitInf = {10 * M_PI, 0.50, 10 * M_PI, 0.50};     // for when the limit is off
+  blaze::StaticVector<double, 4> minDynamicPosLimit = {-2.0 * M_PI, 0.001, -1.5 * M_PI, 0.040};                     // for when the limit is on
+  blaze::StaticVector<double, 4> maxDynamicPosLimit = {2.0 * M_PI, 0.088, 1.5 * M_PI, 0.129};                       // for when the limit is on
 
-  static constexpr blaze::StaticVector<double, 4> s_pos_preEngage = {0.0, -0.0660, 0.0, -0.0360};
-  static constexpr blaze::StaticVector<double, 4> s_pos_engage = {0.0, -0.0560, 0.0, -0.0290};
-  static constexpr double s_pos_inr_prox_stop = -0.1670; // need to be adjusted based on the robot design
-  static constexpr double s_pos_mdl_prox_stop = -0.1230; // need to be adjusted based on the robot design
-  static constexpr double s_linear_stage_min_clearance = 0.030;
-  static constexpr double s_linear_stage_max_clearance = s_inr_active_length - s_mdl_active_length;
-  static constexpr blaze::StaticVector<double, 4> s_home_pos = {0.0, s_otr_active_length - s_inr_active_length, 0.0, s_otr_active_length - s_mdl_active_length};
-  static constexpr blaze::StaticVector<double, 4> s_minStaticLimitAll = {-20 * M_PI, s_home_pos[1], 20 * M_PI, s_home_pos[3]};
-  static constexpr blaze::StaticVector<double, 4> s_maxStaticLimitAll = {20 * M_PI, s_pos_preEngage[1], 20 * M_PI, s_pos_preEngage[3]};
+  // robot mechanics related constants -  may need to be adjusted if the robot design changes
+  static constexpr blaze::StaticVector<double, 4UL> k_velocityPhysicalLimit = {3.0, 0.0125, 3.0, 0.0125};
+  static constexpr blaze::StaticVector<double, 4UL> k_accelerationPhysicalLimit = {10.0, 0.10, 10.0, 0.10};
+  static constexpr blaze::StaticVector<double, 4> k_pos_preEngage = {0.0, -0.0640, 0.0, -0.0340};
+  static constexpr blaze::StaticVector<double, 4> k_pos_engage = {0.0, -0.0560, 0.0, -0.0290};
+  static constexpr double k_pos_inr_prox_stop = -0.1670;
+  // static constexpr double k_pos_mdl_prox_stop = -0.1230; // old design
+  static constexpr double k_pos_mdl_prox_stop = -0.1130;
+  static constexpr double k_linear_stage_min_clearance = 0.030;
 
-  blaze::StaticVector<double, 4> minDynamicPosLimitInf = {-40 * M_PI, -0.50, -40 * M_PI, -0.50}; // for when the limit is off
-  blaze::StaticVector<double, 4> maxDynamicPosLimitInf = {40 * M_PI, 0.50, 40 * M_PI, 0.50};     // for when the limit is off
-  blaze::StaticVector<double, 4> minDynamicPosLimit = {-10 * M_PI, 0.001, -10 * M_PI, 0.040};    // for when the limit is on
-  blaze::StaticVector<double, 4> maxDynamicPosLimit = {10 * M_PI, 0.088, 10 * M_PI, 0.129};      // for when the limit is on
+  // driven constants
+  static constexpr double k_linear_stage_max_clearance = k_inr_active_length - k_mdl_active_length;
+  static constexpr double k_rotary_stage_min_clearance = -2.0 * M_PI; // relative limit between the rotary joints
+  static constexpr double k_rotary_stage_max_clearance = 2.0 * M_PI;  // relative limit between the rotary joints
+  static constexpr blaze::StaticVector<double, 4> k_home_pos_margin = {0.0, 0.0002, 0.0, 0.0001};
+  static constexpr blaze::StaticVector<double, 4> k_home_pos = {0.0, k_otr_active_length - k_inr_active_length, 0.0, k_otr_active_length - k_mdl_active_length};
+  static constexpr blaze::StaticVector<double, 4> k_minStaticLimitAll = {-3 * M_PI, k_home_pos[1], -1.5 * M_PI, k_home_pos[3]};
+  static constexpr blaze::StaticVector<double, 4> k_maxStaticLimitAll = {3 * M_PI, k_pos_preEngage[1], 1.5 * M_PI, k_pos_preEngage[3]};
 
-  bool m_flag_manual, m_flag_use_target_action, m_flag_enabled, m_trans_limit = false;
+  // constant
+  static constexpr int k_sample_time = 20; // [ms]
+
+  // member variables
+  std::atomic<bool> m_stop_worker{false};
+  bool m_flag_manual, m_flag_use_target_action, m_trans_limit = false;
   bool m_emtracker_alive, m_targpublisher_alive, m_targpublisher_alive_tmep = false;
   bool m_flag_readyToEngage, m_flagEngaged, m_head_attached = false;
   int m_locked = 0;
   double m_kp, m_ki = 0.00;
-
+  bool m_procedure = false;
   std::array<bool, 7> m_interface_key = {0, 0, 0, 0, 0, 0, 0};
   std::array<bool, 4> m_encoders_set = {0, 0, 0, 0};
-
   CtrlMode m_mode; // controller mode (manual, velocity, position)
+  size_t publisher_count;
+  blaze::StaticVector<double, 4UL> m_x, m_x_des, m_x_error;           // in SI units
+  blaze::StaticVector<double, 4UL> m_xdot, m_xdot_manual, m_xdot_des; // in SI units
+  blaze::StaticVector<double, 4UL> m_x_error_int;                     // in SI units
+  blaze::StaticVector<double, 4UL> m_current;
+  blaze::StaticVector<double, 4UL> m_minCurrentPosLimit = blaze::StaticVector<double, 4UL>(0.0);
+  blaze::StaticVector<double, 4UL> m_maxCurrentPosLimit = blaze::StaticVector<double, 4UL>(0.0);
+  blaze::StaticVector<double, 3UL> m_x_tip;
+  blaze::StaticVector<int32_t, 4UL> m_cpu_temp;
+  blaze::StaticVector<int32_t, 4UL> m_winding_temp;
+  blaze::StaticVector<std::bitset<32>, 4UL> m_digital_input;
+  blaze::StaticVector<double, 4UL> m_maxTorqueNegative;
+  blaze::StaticVector<double, 4UL> m_maxTorquePositive;
+  blaze::StaticVector<double, 4UL> m_maxDcc; // [deg/s^2] and [mm/s^2]
+  blaze::StaticVector<double, 4UL> m_maxVel; // [deg/s] and [mm/s]
+  blaze::StaticVector<double, 4UL> m_maxAcc; // [deg/s^2] and [mm/s^2]
+
+  std::thread worker_thread_;
+  std::mutex m_task_mutex;
+  std::condition_variable m_task_cv;
+  std::function<void()> m_current_task;
+  std::atomic<bool> m_cancel_flag{false};
+  std::atomic<bool> m_flag_task_ready{false};
 
   rclcpp::TimerBase::SharedPtr m_watchdog_timer_emt;
-  rclcpp::TimerBase::SharedPtr m_watchdog_timer_target;
   rclcpp::TimerBase::SharedPtr m_read_robot_timer;
   rclcpp::TimerBase::SharedPtr m_joints_config_timer;
   rclcpp::TimerBase::SharedPtr m_control_loop_timer;
@@ -1414,38 +1546,9 @@ private:
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tool;
   rclcpp::Service<interfaces::srv::Config>::SharedPtr m_config_service;
   rclcpp::Service<interfaces::srv::Config>::SharedPtr m_enable_service;
-
   rclcpp::CallbackGroup::SharedPtr m_cbGroup1, m_cbGroup2, m_cbGroup3, m_cbGroup4, m_cbGroup5, m_cbGroup6, m_cbGroup7, m_cbGroup8;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_watchdog_1;
-
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr m_param_callback_handle;
-
-  size_t publisher_count;
-
-  blaze::StaticVector<double, 4UL> m_x, m_x_des, m_x_error, m_x_abs;                                // in SI units
-  blaze::StaticVector<double, 4UL> m_xdot, m_xdot_manual, m_xdot_des, m_xdot_error, m_xdot_forward; // in SI units
-  blaze::StaticVector<double, 4UL> m_x_error_int;                                                   // in SI units
-  blaze::StaticVector<double, 4UL> m_current;
-  blaze::StaticVector<double, 4UL> m_minCurrentPosLimit = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 4UL> m_maxCurrentPosLimit = blaze::StaticVector<double, 4UL>(0.0);
-  blaze::StaticVector<double, 3UL> m_x_tip;
-
-  blaze::StaticVector<int32_t, 4UL> m_cpu_temp;
-  blaze::StaticVector<int32_t, 4UL> m_driver_temp;
-  blaze::StaticVector<std::bitset<32>, 4UL> m_digital_input;
-
-  blaze::StaticVector<double, 4UL> m_maxTorqueNegative;
-  blaze::StaticVector<double, 4UL> m_maxTorquePositive;
-  blaze::StaticVector<double, 4UL> m_maxDcc; // [deg/s^2] and [mm/s^2]
-  blaze::StaticVector<double, 4UL> m_maxVel; // [deg/s] and [mm/s]
-  blaze::StaticVector<double, 4UL> m_maxAcc; // [deg/s^2] and [mm/s^2]
-
-  std::thread worker_thread_;
-  std::mutex m_task_mutex;
-  std::condition_variable m_task_cv;
-  std::function<void()> m_current_task;
-  std::atomic<bool> m_cancel_flag{false};
-  std::atomic<bool> m_flag_task_ready{false};
 };
 
 int main(int argc, char *argv[])

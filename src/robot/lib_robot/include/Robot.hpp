@@ -122,7 +122,7 @@ class Interface {
 class CTRobot
 {
 public:
-    CTRobot(bool position_limit);
+    CTRobot(bool position_limit, blaze::StaticVector<double, 4UL> maxVel, blaze::StaticVector<double, 4UL> maxAcc);
     CTRobot();
 
     CTRobot(const CTRobot &rhs);
@@ -141,6 +141,8 @@ public:
 
 
     // ============================== Configuration Methods ==============================
+    void setMaxVel(const blaze::StaticVector<double, 4UL> &maxVel);
+    void setMaxAcc(const blaze::StaticVector<double, 4UL> &maxAcc);
     void setMaxTorque(const blaze::StaticVector<double, 4UL> negative,
                       const blaze::StaticVector<double, 4UL> positive);
     void setProfileParams(const blaze::StaticVector<double, 4UL> max_vel,

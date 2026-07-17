@@ -13,7 +13,7 @@
           "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
           "--parallel-workers 8",
           // "--event-handlers console_cohesion+",
-          "--packages-select interfaces emtracker robot igtlink_bridge planner",
+          "--packages-select interfaces emtracker robot igtlink_bridge planner mpc",
         ],
         "group": {
           "kind": "build",

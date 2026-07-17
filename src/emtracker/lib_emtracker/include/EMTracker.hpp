@@ -129,6 +129,10 @@ public:
    */
   void freeze_phantom(bool status);
 
+  /**
+   * @brief Freeze the robot.
+   */
+  void freeze_robot(bool status);
 
   /**
    * @brief Retrieves the tool sensor transformation in the EM tracker frame.
@@ -188,6 +192,9 @@ public:
    */
   void get_probe_transform_in_phantom(quatTransformation &transform);
 
+  
+  int get_sensor_transform_in_em(const std::string &sensor_name, quatTransformation &transform);
+
   /**
    * @brief Retrieves sample time.
    */
@@ -210,10 +217,10 @@ private:
   std::vector<ToolData> enabledTools;
   std::map<std::string, SensorConfig> m_sensorConfigMap;
   std::vector<std::string> srom_paths;
-  bool m_flag_debug, m_flag_record, m_flag_filter, m_flag_freeze_phantom = false;
+  bool m_flag_debug, m_flag_record, m_flag_filter, m_flag_freeze_phantom, m_flag_freeze_robot = false;
   std::string m_reference_trans_csv_path, m_tool_trans_csv_path;
   std::thread m_emThread;
-  std::atomic<bool> stopFlag; // Flag to control the thread
+  std::atomic<bool> stopFlag{false}; // Flag to control the thread
 
   quatTransformation m_transform_0_1;      // Transformation from EM frame to CTR Robot frame (ctr base)
   quatTransformation m_transform_0_2;      // Transformation from EM frame to tool frame
@@ -228,6 +235,14 @@ private:
   quatTransformation m_transform_1_6;      // Transformation CTR Robot frame to Probe
   quatTransformation m_transform_1_2_prev; // transformation from the system frame to the tool tip (not tool sensor)
   quatTransformation m_transform_dot_1_2;  // derivative of Transformation from CTR Robot frame to tool tip frame
+
+  quatTransformation m_transform_0_7;      
+  quatTransformation m_transform_0_8;      
+  quatTransformation m_transform_0_9;      
+  quatTransformation m_transform_1_7;      
+  quatTransformation m_transform_1_8;      
+  quatTransformation m_transform_1_9;      
+
 
   blaze::StaticVector<double, 3UL> m_tran_vel_2_4;
 

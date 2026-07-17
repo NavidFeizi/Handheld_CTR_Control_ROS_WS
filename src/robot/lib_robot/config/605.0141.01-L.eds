@@ -1142,7 +1142,7 @@ ObjectType=0x7
 DataType=0x0005
 AccessType=RW
 HighLimit=4
-DefaultValue=1
+DefaultValue=3
 PDOMapping=0
 
 [1A02sub1]
@@ -1158,7 +1158,7 @@ ParameterName=TxPDO3 mapping entry 2
 ObjectType=7
 DataType=0x0007
 AccessType=RW
-DefaultValue=0x0 
+DefaultValue=0x23260110 
 PDOMapping=0
 
 [1A02sub3]
@@ -1166,7 +1166,7 @@ ParameterName=TxPDO3 mapping entry 3
 ObjectType=7
 DataType=0x0007
 AccessType=RW
-DefaultValue=0x0
+DefaultValue=0x23260310 
 PDOMapping=0
 
 [1A02sub4]
