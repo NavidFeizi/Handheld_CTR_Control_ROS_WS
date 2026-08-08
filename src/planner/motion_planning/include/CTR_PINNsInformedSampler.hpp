@@ -11,7 +11,7 @@
 #include <cmath>
 
 #include "CTR_SamplerUtils.hpp"
-#include "PINNs.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "CTR_StateValidityChecker.hpp"
 
 // A simple PINNs-informed state sampler that biases samples toward the goal

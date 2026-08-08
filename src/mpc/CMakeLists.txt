@@ -27,18 +27,18 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(rclcpp_action REQUIRED)
-find_package(interfaces REQUIRED) 
+find_package(interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(ctr_kinematics_pinn REQUIRED)
+find_package(ctr_common REQUIRED)
 
 # Add subdirectories
-add_subdirectory(ctr_pinn_infer)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ctr_pinn_infer/include)
 add_subdirectory(ctr_mpc)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ctr_mpc/include)
 
 # Define executable and Link libraries
 add_executable(mpc src/mpc_node.cpp)
-target_link_libraries(mpc CtrMpc CtrPinnInference)
+target_link_libraries(mpc CtrMpc ctr_kinematics_pinn::ctr_kinematics_pinn ctr_common::ctr_common)
 ament_target_dependencies(mpc rclcpp std_msgs ament_cmake ament_index_cpp interfaces)
 
 install(TARGETS

@@ -9,7 +9,7 @@
 #include <algorithm> // for std::copy_n
 #include <exception>
 #include <iostream>
-#include "PINNs.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "CTR_StateValidityChecker.hpp"
 #include "CTR_StateSampler.hpp"
 #include "CTR_PINNsInformedStateSamplerInformed.hpp"

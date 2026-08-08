@@ -17,7 +17,9 @@
 #include <fstream>
 #include <filesystem>
 
-#include "ctr_pinn_inference.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
+#include "ctr_common/joint_conventions.hpp"
+#include "ctr_common/runtime_paths.hpp"
 #include <iostream>
 #include <limits>
 #include <chrono>
@@ -51,10 +53,6 @@ std_msgs::msg::Float64MultiArray blazeToMultiArrayMsg(const blaze::StaticMatrix<
 
 template <bool SO = blaze::rowMajor>
 std_msgs::msg::Float64MultiArray blazeToMultiArrayMsg(const blaze::DynamicMatrix<double, SO>& mat);
-
-template <size_t N>
-void clampJointPositions(blaze::StaticVector<double, N> &q, const blaze::StaticVector<double, N> &q_min, const blaze::StaticVector<double, N> &q_max, const rclcpp::Logger &logger);
-
 
 class ForwardKinNode : public rclcpp::Node
 {
@@ -183,7 +181,7 @@ public:
 
     // Initialize the PINN model
     RCLCPP_INFO(this->get_logger(), "Model: %s, Backbone Points: %zu", m_model_name.c_str(), m_backbonePoints);
-    m_ctr_pinns = std::make_shared<PINNs<N>>(m_model_name, 1UL, m_backbonePoints);
+    m_ctr_pinns = std::make_shared<PINNs<N>>(ctr_common::resolveModelsDir(*this).string(), m_model_name, 1UL, m_backbonePoints);
 
     std::tie(m_q_min, m_q_max) = m_ctr_pinns->getInputPosBounds();
 
@@ -198,18 +196,7 @@ public:
   /// Update current joints configuration
   void updateJointsConfig(const interfaces::msg::Jointspace::ConstSharedPtr &msg)
   {
-    // m_q[0UL] = msg->position[1UL];
-    // m_q[1UL] = msg->position[3UL];
-    // m_q[2UL] = 0.00;
-    // m_q[3UL] = msg->position[0UL];
-    // m_q[4UL] = msg->position[2UL];
-    // m_q[5UL] = 0.00;
-
-    m_q[0UL] = msg->position[1UL];
-    m_q[1UL] = msg->position[3UL];
-    m_q[2UL] = msg->position[0UL];
-    m_q[3UL] = msg->position[2UL];
-    // std::cout << "current q:" << blaze::trans(m_q) << std::endl;
+    m_q = ctr_common::wireToPhysics4(msg->position);
   }
 
   /// @brief Update disterbance distal force (m_wf = f)
@@ -230,7 +217,7 @@ public:
     // std::cout << "fk_node --> q: " << blaze::trans(m_q) << std::endl;
 
     // clamp joint positions within limits
-    clampJointPositions(m_q, m_q_min, m_q_max, this->get_logger());
+    ctr_common::clampJointPositions(m_q, m_q_min, m_q_max, this->get_logger());
     
     // just for test
     // // Generate time-varying force input
@@ -329,47 +316,6 @@ public:
 
     return msg;
   }
-
-/// @brief Clamp joint positions with consideration of coupled joints
-template <size_t N>
-void clampJointPositions(blaze::StaticVector<double, N> &q, const blaze::StaticVector<double, N> &q_min, const blaze::StaticVector<double, N> &q_max, const rclcpp::Logger &logger)
-{
-  blaze::StaticVector<double, N> q_max_eff = q_max;
-  blaze::StaticVector<double, N> q_min_eff = q_min;
-
-  if (N == 6)
-  {
-    q_max_eff[1] += q[2];
-    q_min_eff[1] += q[2];
-    q_max_eff[0] += q[1];
-    q_min_eff[0] += q[1];
-    q_max_eff[4] += q[5];
-    q_min_eff[4] += q[5];
-    q_max_eff[3] += q[4];
-    q_min_eff[3] += q[4];
-  }
-  else if (N == 4)
-  {
-    q_max_eff[0] += q[1];
-    q_min_eff[0] += q[1];
-    q_max_eff[2] += q[3];
-    q_min_eff[2] += q[3];
-  }
-  else
-  {
-    RCLCPP_WARN(logger, "clampJointPositions: No coupling handling for N=%zu", N);
-  }
-
-  for (size_t i = 0; i < q.size(); ++i)
-  {
-    double original = q[i];
-    q[i] = std::clamp(q[i], q_min_eff[i], q_max_eff[i]);
-    if (q[i] != original)
-    {
-      // RCLCPP_WARN(logger, "q clamping at joint %zu: %.6f -> %.6f", i, original, q[i]);
-    }
-  }
-}
 
 int main(int argc, char *argv[])
 {

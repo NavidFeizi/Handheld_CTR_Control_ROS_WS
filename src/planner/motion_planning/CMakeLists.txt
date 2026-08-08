@@ -21,7 +21,7 @@ endif()
 
 # Link dependencies
 target_link_libraries(CTR_MPL INTERFACE
-    CtrPinnInference
+    ctr_kinematics_pinn::ctr_kinematics_pinn
     Boost::serialization
     Boost::filesystem
     TBB::tbb

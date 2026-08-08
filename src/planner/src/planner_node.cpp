@@ -29,7 +29,7 @@
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
 
-#include "PINNs.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "Planner.hpp"
 #include <limits>
 
@@ -53,14 +53,22 @@ class PathPlannerNode : public rclcpp::Node
   // Compile-time CTR sizing — declared first so they are visible in the
   // member-function parameter types further down (parameter lists are not part
   // of the complete-class context).
-  const std::string kModelName = "ctr_8x91_0.18_tanh_9K_9K_50K_FP64";
   const static size_t kBackbonePoints = 150UL; // number of discretized backbone points for the planning CTR
   const static size_t kControlInputs = 4UL;    // number of control inputs (actuated tubes)
   const static size_t kBatch = 1UL;
 
+  // Builds the PINN from parameters. Called from the member-initializer list,
+  // which is safe: the rclcpp::Node base is fully constructed before members.
+  static PINNs<kControlInputs> makePinn(rclcpp::Node &node)
+  {
+    const std::string model_name =
+        node.declare_parameter<std::string>("model_name", "ctr_8x91_0.18_tanh_9K_9K_50K_FP64");
+    return PINNs<kControlInputs>(ctr_common::resolveModelsDir(node).string(), model_name, kBatch, kBackbonePoints);
+  }
+
 public:
   // default class constructor
-  PathPlannerNode() : Node("path_planner"), m_ctr_pinn(kModelName, kBatch, kBackbonePoints), m_motionPlan(m_ctr_pinn)
+  PathPlannerNode() : Node("path_planner"), m_ctr_pinn(makePinn(*this)), m_motionPlan(m_ctr_pinn)
   {
     PathPlannerNode::declare_parameters();
     PathPlannerNode::setup_ros_interfaces();

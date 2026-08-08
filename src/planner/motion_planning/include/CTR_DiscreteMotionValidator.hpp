@@ -15,7 +15,7 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
-#include "PINNs.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 
 // 2-tube CTR discrete motion validator.
 // State layout: [β₁, β₂, α₁, α₂]  (indices 0-3)

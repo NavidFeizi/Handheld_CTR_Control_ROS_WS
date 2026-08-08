@@ -41,18 +41,14 @@ find_package(Blaze REQUIRED)
 find_package(TBB REQUIRED)
 find_package(NLopt REQUIRED)      # For cosserat_fk
 
-# Find necessary pinn packages
-find_package(Torch REQUIRED)
-find_package(nlohmann_json REQUIRED)  
+# PINN inference (brings the pinned LibTorch via its exported config)
+find_package(ctr_kinematics_pinn REQUIRED)
+find_package(ctr_common REQUIRED)
 
 set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
 add_subdirectory(lib_robot)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_robot/include)
-
-# Adding the CTR pinn library to the project
-add_subdirectory(ctr_pinn_infer)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ctr_pinn_infer/include)
 
 add_executable(ctr_robot src/robot_node.cpp)
 target_link_libraries(ctr_robot ROBOTlib Qt5::Widgets Qt5::Core Qt5::Concurrent)
@@ -68,14 +64,12 @@ ament_target_dependencies(cosserat_fk rclcpp std_msgs std_srvs interfaces)
 ament_target_dependencies(cosserat_fk OpenMP Boost BLAS LAPACK Blaze TBB NLopt)
 
 add_executable(pinn_fk src/pinn_fk_node.cpp)
-target_link_libraries(pinn_fk CtrPinnInference)
+target_link_libraries(pinn_fk ctr_kinematics_pinn::ctr_kinematics_pinn ctr_common::ctr_common)
 ament_target_dependencies(pinn_fk rclcpp std_msgs std_srvs interfaces)
-ament_target_dependencies(pinn_fk LAPACK Blaze nlohmann_json Torch)
 
 add_executable(ekf_node src/ekf_node.cpp)
-target_link_libraries(ekf_node CtrPinnInference)
+target_link_libraries(ekf_node ctr_kinematics_pinn::ctr_kinematics_pinn ctr_common::ctr_common)
 ament_target_dependencies(ekf_node rclcpp std_msgs std_srvs interfaces)
-ament_target_dependencies(ekf_node LAPACK Blaze nlohmann_json Torch)
 
 install(TARGETS
   ctr_robot

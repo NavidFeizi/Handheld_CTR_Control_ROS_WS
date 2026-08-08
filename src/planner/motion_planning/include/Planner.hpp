@@ -52,7 +52,7 @@
 #include <ompl/base/goals/GoalState.h>
 #include <ompl/base/goals/GoalStates.h>
 // For accessing information about the CTR object for whom we're planning
-#include "PINNs.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 
 // My own classes that I implemented
 #include "CTR_StateSpace.hpp"

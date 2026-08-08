@@ -69,10 +69,9 @@ find_package(tf2_eigen REQUIRED)
 find_package(Eigen3 REQUIRED)
 ament_target_dependencies(plan tf2 tf2_ros geometry_msgs tf2_eigen Eigen3)
 
-# Adding the CTR static Library to the project
-add_subdirectory(ctr_pinn_infer)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ctr_pinn_infer/include)
-target_link_libraries(plan CtrPinnInference)
+# PINN inference (brings the pinned LibTorch via its exported config)
+find_package(ctr_kinematics_pinn REQUIRED)
+target_link_libraries(plan ctr_kinematics_pinn::ctr_kinematics_pinn)
 
 # Adding the motion_planner Library to the project
 add_subdirectory(motion_planning)

@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ctr_kinematics_pinn</name>
+  <version>1.0.0</version>
+  <description>
+    ROS-free TorchScript PINN forward-kinematics / Jacobian / IK inference for
+    the handheld CTR, plus the unified pool of trained models. Merger of the
+    formerly duplicated robot/mpc ctr_pinn_infer copies and the planner's
+    PINNs.hpp fork.
+  </description>
+  <maintainer email="fpedrosa@mirsee.com">Filipe Pedrosa</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

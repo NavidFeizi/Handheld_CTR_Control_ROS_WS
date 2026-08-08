@@ -16,7 +16,9 @@
 #include "interfaces/srv/recording.hpp"
 #include "interfaces/msg/force.hpp"
 
-#include "ctr_pinn_inference.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
+#include "ctr_common/joint_conventions.hpp"
+#include "ctr_common/runtime_paths.hpp"
 #include "mpc.hpp"
 #include "mpc.tpp"
 
@@ -449,7 +451,7 @@ private:
     RCLCPP_INFO(this->get_logger(), "Model: %s", m_model_name.c_str());
 
     // instantiate MPC model object
-    m_mpc_model = std::make_shared<PINNs<N>>(m_model_name, h, backbonePoints);
+    m_mpc_model = std::make_shared<PINNs<N>>(ctr_common::resolveModelsDir(*this).string(), m_model_name, h, backbonePoints);
 
     // instantiate MPC object with disturbance force input
     m_mpc = std::make_shared<MPC<h, N, m>>(
@@ -535,10 +537,7 @@ private:
   void updateJointsPosition(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
     std::lock_guard<std::mutex> lock(m_state_mutex);
-    m_q[2] = msg->position[0]; // alpha_1
-    m_q[0] = msg->position[1]; // beta_1
-    m_q[3] = msg->position[2]; // alpha_2
-    m_q[1] = msg->position[3]; // beta_2
+    m_q = ctr_common::wireToPhysics4(msg->position);
 
     RCLCPP_DEBUG(this->get_logger(), "q: %0.2f, %0.2f, %0.2f, %0.2f", m_q[0], m_q[1], m_q[2], m_q[3]);
   }

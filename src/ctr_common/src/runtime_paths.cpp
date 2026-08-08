@@ -39,4 +39,25 @@ std::filesystem::path resolveDataRoot(rclcpp::Node &node, const std::string &pac
   return root;
 }
 
+std::filesystem::path resolveModelsDir(rclcpp::Node &node)
+{
+  std::string models_dir;
+  if (!node.has_parameter("models_dir"))
+  {
+    models_dir = node.declare_parameter<std::string>("models_dir", "");
+  }
+  else
+  {
+    node.get_parameter("models_dir", models_dir);
+  }
+  if (!models_dir.empty())
+  {
+    return models_dir;
+  }
+
+  return std::filesystem::path(
+             ament_index_cpp::get_package_share_directory("ctr_kinematics_pinn")) /
+         "models";
+}
+
 }  // namespace ctr_common

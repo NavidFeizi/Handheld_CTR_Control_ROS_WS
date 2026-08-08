@@ -12,6 +12,8 @@
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>interfaces</depend>
+  <depend>ctr_kinematics_pinn</depend>
+  <depend>ctr_common</depend>
 
   <exec_depend>ros2launch</exec_depend>
 

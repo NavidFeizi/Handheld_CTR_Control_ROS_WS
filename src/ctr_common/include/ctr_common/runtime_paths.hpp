@@ -18,6 +18,11 @@ namespace ctr_common
 ///      only works in an in-workspace install layout.
 std::filesystem::path resolveDataRoot(rclcpp::Node &node, const std::string &package_name);
 
+/// Resolve the directory holding the trained PINN model pool. Resolution order:
+///   1. node parameter "models_dir" (declared here if absent)
+///   2. the installed share/ctr_kinematics_pinn/models directory
+std::filesystem::path resolveModelsDir(rclcpp::Node &node);
+
 }  // namespace ctr_common
 
 #endif  // CTR_COMMON__RUNTIME_PATHS_HPP_

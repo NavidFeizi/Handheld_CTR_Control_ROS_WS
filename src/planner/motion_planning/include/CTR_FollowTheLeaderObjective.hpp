@@ -17,7 +17,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "PINNs.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 
 // Follow-the-leader (FTL) deployment objective for the CTR.
 //

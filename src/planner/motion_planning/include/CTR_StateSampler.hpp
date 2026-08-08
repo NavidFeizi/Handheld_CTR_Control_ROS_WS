@@ -10,7 +10,7 @@
 #include <iostream>
 #include <algorithm>
 
-#include "PINNs.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "CTR_StateValidityChecker.hpp"
 
 // 2-tube CTR state sampler (Tube 1 innermost, Tube 2 intermediate).

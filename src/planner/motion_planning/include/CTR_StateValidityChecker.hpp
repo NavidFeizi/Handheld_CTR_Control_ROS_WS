@@ -8,7 +8,7 @@
 #include <ompl/base/MotionValidator.h>
 
 // including the CTR class to compute illegal configurations and collisions with the anatomy
-#include "PINNs.hpp"
+#include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include <iostream>
 
 // 2-tube CTR state validity checker.
