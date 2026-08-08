@@ -34,6 +34,11 @@ MasterNode::MasterNode(QWidget *parent)
 
 void MasterNode::sendConfigCommand(const std::string &command, bool use_enable_service)
 {
+    if (!m_services_ready)
+    {
+        RCLCPP_WARN(get_logger(), "Ignoring '%s': robot services are not ready yet", command.c_str());
+        return;
+    }
     auto request = std::make_shared<interfaces::srv::Config::Request>();
     request->command = command;
 
@@ -45,6 +50,11 @@ void MasterNode::sendConfigCommand(const std::string &command, bool use_enable_s
 
 void MasterNode::handleFreezeButtonClicked(QPushButton *freeze_button)
 {
+    if (!m_services_ready)
+    {
+        RCLCPP_WARN(get_logger(), "Ignoring freeze toggle: robot services are not ready yet");
+        return;
+    }
     m_robot_frozen = !m_robot_frozen;
     auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
     request->data = m_robot_frozen;
@@ -406,44 +416,26 @@ void MasterNode::initRosInterfaces()
     m_pub_task_target = create_publisher<interfaces::msg::Taskspace>("task_space/target", 10);
 
     m_robot_config_client = create_client<interfaces::srv::Config>("robot_config");
-    while (!m_robot_config_client->wait_for_service(std::chrono::seconds(1)))
-    {
-        if (!rclcpp::ok())
-        {
-            RCLCPP_ERROR(get_logger(), "Interrupted while waiting for the service. Exiting.");
-            return;
-        }
-        RCLCPP_INFO(get_logger(), "Robot config service not available, waiting ...");
-    }
-
     m_robot_enable_client = create_client<interfaces::srv::Config>("robot_enable");
-    while (!m_robot_enable_client->wait_for_service(std::chrono::seconds(1)))
-    {
-        if (!rclcpp::ok())
-        {
-            RCLCPP_ERROR(get_logger(), "Interrupted while waiting for the service. Exiting.");
-            return;
-        }
-        RCLCPP_INFO(get_logger(), "Robot enable service not available, waiting ...");
-    }
-
     m_planner_client = create_client<interfaces::srv::Planner>("planner/command");
-    while (!m_planner_client->wait_for_service(std::chrono::seconds(1)))
-    {
-        RCLCPP_INFO(get_logger(), "planner/command service not available, waiting ...");
-    }
-
     m_freeze_robot_client = create_client<std_srvs::srv::SetBool>("freeze_robot");
-    while (!m_freeze_robot_client->wait_for_service(std::chrono::seconds(1)))
-    {
-        RCLCPP_INFO(get_logger(), "freeze_robot service not available, waiting ...");
-    }
-
     m_recording_client = create_client<interfaces::srv::Recording>("recording");
-    while (!m_recording_client->wait_for_service(std::chrono::seconds(1)))
-    {
-        RCLCPP_INFO(get_logger(), "recording service not available, waiting ...");
-    }
+
+    // Deferred readiness: the old ctor-blocking wait_for_service loops made
+    // the GUI unstartable until the whole stack was up (hence launch-file
+    // delay gymnastics). A 500 ms timer polls instead; service users are
+    // gated on m_services_ready / service_is_ready().
+    m_readiness_timer = create_wall_timer(500ms, [this]()
+                                          {
+        const bool ready = m_robot_config_client->service_is_ready() &&
+                           m_robot_enable_client->service_is_ready() &&
+                           m_planner_client->service_is_ready() &&
+                           m_freeze_robot_client->service_is_ready() &&
+                           m_recording_client->service_is_ready();
+        if (ready && !m_services_ready.exchange(true))
+            RCLCPP_INFO(get_logger(), "All robot/planner/recorder services are ready");
+        else if (!ready && m_services_ready.exchange(false))
+            RCLCPP_WARN(get_logger(), "A required service went away - controls gated until it returns"); });
 
     //------ EMtracker node interfaces ------//
     m_callback_group_tf2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -765,6 +757,9 @@ void MasterNode::maybeRequestDeploymentReplan()
 
 void MasterNode::control_loop()
 {
+    if (!m_services_ready)
+        return; // robot/planner/recorder services not up yet
+
     // Update automated test state machine
     updateTestStateMachine();
 

@@ -116,6 +116,11 @@ signals:                                              // Functions declared (Qt 
 private slots: // Functions that receive and handle signals - can be connected to signals (Qt specific)
     void sendConfigCommand(const std::string &command, bool use_enable_service)
     {
+        if (!m_services_ready)
+        {
+            RCLCPP_WARN(get_logger(), "Ignoring '%s': robot services are not ready yet", command.c_str());
+            return;
+        }
         auto request = std::make_shared<interfaces::srv::Config::Request>();
         request->command = command;
 
@@ -127,6 +132,11 @@ private slots: // Functions that receive and handle signals - can be connected t
 
     void handleFreezeButtonClicked()
     {
+        if (!m_services_ready)
+        {
+            RCLCPP_WARN(get_logger(), "Ignoring freeze toggle: robot services are not ready yet");
+            return;
+        }
         m_robot_frozen = !m_robot_frozen;
         auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
         request->data = m_robot_frozen;
@@ -681,37 +691,21 @@ private:
         m_connection_check_timer = create_wall_timer(500ms, std::bind(&GuiNode::connectionStatus_timerCallback, this));
 
         m_robot_config_client = create_client<interfaces::srv::Config>("robot_config");
-        while (!m_robot_config_client->wait_for_service(std::chrono::seconds(1)))
-        {
-            if (!rclcpp::ok())
-            {
-                RCLCPP_ERROR(get_logger(), "Interrupted while waiting for the service. Exiting.");
-                return;
-            }
-            RCLCPP_INFO(get_logger(), "Robot config service not available, waiting ...");
-        }
-
         m_robot_enable_client = create_client<interfaces::srv::Config>("robot_enable");
-        while (!m_robot_enable_client->wait_for_service(std::chrono::seconds(1)))
-        {
-            if (!rclcpp::ok())
-            {
-                RCLCPP_ERROR(get_logger(), "Interrupted while waiting for the service. Exiting.");
-                return;
-            }
-            RCLCPP_INFO(get_logger(), "Robot config service not available, waiting ...");
-        }
-
         m_freeze_robot_client = create_client<std_srvs::srv::SetBool>("freeze_robot");
-        while (!m_freeze_robot_client->wait_for_service(std::chrono::seconds(1)))
-        {
-            if (!rclcpp::ok())
-            {
-                RCLCPP_ERROR(get_logger(), "Interrupted while waiting for freeze_robot service. Exiting.");
-                return;
-            }
-            RCLCPP_INFO(get_logger(), "freeze_robot service not available, waiting ...");
-        }
+
+        // Deferred readiness: the old ctor-blocking wait_for_service loops made
+        // the GUI unstartable until the robot node was up. A 500 ms timer polls
+        // instead; button handlers are gated on m_services_ready.
+        m_readiness_timer = create_wall_timer(500ms, [this]()
+                                              {
+            const bool ready = m_robot_config_client->service_is_ready() &&
+                               m_robot_enable_client->service_is_ready() &&
+                               m_freeze_robot_client->service_is_ready();
+            if (ready && !m_services_ready.exchange(true))
+                RCLCPP_INFO(get_logger(), "Robot services are ready");
+            else if (!ready && m_services_ready.exchange(false))
+                RCLCPP_WARN(get_logger(), "A robot service went away - controls gated until it returns"); });
 
         m_igtl_connect_client = create_client<std_srvs::srv::SetBool>("igtl_bridge/connect");
     }
@@ -1051,6 +1045,8 @@ private:
 
     // Qt related variables
     std::atomic<uint32_t> m_keysPressed{0};
+    std::atomic<bool> m_services_ready{false};
+    rclcpp::TimerBase::SharedPtr m_readiness_timer;
     // QLabel *mp_label_1, *mp_label_2, *mp_label_3, *mp_label_4;
     QGroupBox *mp_bulletCtrlmModeGroup;
     QButtonGroup *mp_ctrl_mode_group, *mp_trans_lim_group;

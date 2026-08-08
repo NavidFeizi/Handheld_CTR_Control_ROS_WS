@@ -178,6 +178,8 @@ private:
     
     bool m_closed_loop_enabled = false;
     std::atomic<bool> m_flag_planning{false}; // written by service callbacks, read by control_loop and GUI
+    std::atomic<bool> m_services_ready{false};
+    rclcpp::TimerBase::SharedPtr m_readiness_timer;
     bool m_flag_planner_updated = false;
     std::atomic<bool> m_planner_success{false};
     std::atomic<double> m_planner_ik_error{0.0};
