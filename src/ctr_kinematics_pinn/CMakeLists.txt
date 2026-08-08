@@ -34,6 +34,9 @@ install(TARGETS ctr_kinematics_pinn
   EXPORT export_ctr_kinematics_pinn)
 
 ament_export_targets(export_ctr_kinematics_pinn HAS_LIBRARY_TARGET)
+# The exported link interface names blaze::blaze / nlohmann_json::nlohmann_json;
+# consumers must find_package them before the export file loads.
+ament_export_dependencies(Blaze nlohmann_json LAPACK)
 
 # Downstream find_package(ctr_kinematics_pinn) re-runs the Torch pin so
 # TORCH_LIBRARIES/imported torch targets resolve identically for consumers.

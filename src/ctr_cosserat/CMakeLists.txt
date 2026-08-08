@@ -40,5 +40,8 @@ install(TARGETS ctr_cosserat
   RUNTIME DESTINATION bin)
 
 ament_export_targets(export_ctr_cosserat HAS_LIBRARY_TARGET)
+# STATIC-lib PRIVATE deps surface in the export as $<LINK_ONLY:NLopt::nlopt> etc.;
+# consumers must find_package them before the export file loads.
+ament_export_dependencies(NLopt BLAS LAPACK)
 
 ament_package()
