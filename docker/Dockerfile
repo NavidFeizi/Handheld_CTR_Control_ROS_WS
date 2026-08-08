@@ -68,5 +68,11 @@ RUN git clone --depth 1 https://gitlab.com/lely_industries/lely-core.git /tmp/le
     && make -j"$(nproc)" && make install && ldconfig && rm -rf /tmp/lely
 RUN pip install --break-system-packages --no-cache-dir dcf-tools
 
+# robot/ and mpc/ call find_package(Torch) with no hint; the lab machine resolves it
+# via an ambient system Torch install. Mirror that discoverability with the pinned
+# libtorch (ROS setup.bash prepends to CMAKE_PREFIX_PATH, so ament paths still win).
+# Kept at the end of the file so edits here never invalidate the source-build layers.
+ENV CMAKE_PREFIX_PATH=/usr/local/libtorch
+
 # The robot driver reads $HOME-based paths at runtime; harmless at build time.
 WORKDIR /out
