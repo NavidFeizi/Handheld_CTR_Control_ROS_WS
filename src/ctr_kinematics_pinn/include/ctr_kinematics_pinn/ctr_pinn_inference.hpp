@@ -1116,19 +1116,41 @@ std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<doubl
 template <size_t controlInputs>
 blaze::StaticVector<double, controlInputs> PINNs<controlInputs>::getPrismaticJointRanges() const
 {
-    return {
-        m_dataset_params.beta1_range[0UL], m_dataset_params.beta1_range[1UL],  // min, max
-        m_dataset_params.beta2_range[0UL], m_dataset_params.beta2_range[1UL],  // min, max
-        m_dataset_params.beta3_range[0UL], m_dataset_params.beta3_range[1UL]}; // min, max
+    // Packed as [min, max] pairs per actuated prismatic joint.
+    if constexpr (controlInputs == 4)
+    {
+        // beta1_range stores RELATIVE offsets from beta2 (see getInputPosBounds).
+        return {
+            m_dataset_params.beta2_range[0UL] + m_dataset_params.beta1_range[0UL],
+            m_dataset_params.beta2_range[1UL] + m_dataset_params.beta1_range[1UL],
+            m_dataset_params.beta2_range[0UL], m_dataset_params.beta2_range[1UL]};
+    }
+    else
+    {
+        return {
+            m_dataset_params.beta1_range[0UL], m_dataset_params.beta1_range[1UL],  // min, max
+            m_dataset_params.beta2_range[0UL], m_dataset_params.beta2_range[1UL],  // min, max
+            m_dataset_params.beta3_range[0UL], m_dataset_params.beta3_range[1UL]}; // min, max
+    }
 }
 
 template <size_t controlInputs>
 blaze::StaticVector<double, controlInputs> PINNs<controlInputs>::getRevoluteJointRanges() const
 {
-    return {
-        m_dataset_params.alpha1_range[0UL], m_dataset_params.alpha1_range[1UL],  // min, max
-        m_dataset_params.alpha2_range[0UL], m_dataset_params.alpha2_range[1UL],  // min, max
-        m_dataset_params.alpha3_range[0UL], m_dataset_params.alpha3_range[1UL]}; // min, max
+    // Packed as [min, max] pairs per actuated revolute joint.
+    if constexpr (controlInputs == 4)
+    {
+        return {
+            m_dataset_params.alpha1_range[0UL], m_dataset_params.alpha1_range[1UL],
+            m_dataset_params.alpha2_range[0UL], m_dataset_params.alpha2_range[1UL]};
+    }
+    else
+    {
+        return {
+            m_dataset_params.alpha1_range[0UL], m_dataset_params.alpha1_range[1UL],  // min, max
+            m_dataset_params.alpha2_range[0UL], m_dataset_params.alpha2_range[1UL],  // min, max
+            m_dataset_params.alpha3_range[0UL], m_dataset_params.alpha3_range[1UL]}; // min, max
+    }
 }
 
 template <size_t controlInputs>
