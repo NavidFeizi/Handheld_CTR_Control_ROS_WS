@@ -591,6 +591,27 @@ void EMTracker::Read_Loop()
     // update prev
     m_transform_1_2_prev = m_transform_1_2;
 
+    // Publish a consistent snapshot for the getters (single lock per cycle;
+    // the m_transform_* members above are the read thread's private scratch).
+    {
+      std::lock_guard<std::mutex> lock(m_snapshot_mutex);
+      m_snapshot.em_robot = m_transform_0_1;
+      m_snapshot.em_tool = m_transform_0_2;
+      m_snapshot.em_phantom = m_transform_0_3;
+      m_snapshot.em_usprobe = m_transform_0_4;
+      m_snapshot.em_probe = m_transform_0_6;
+      m_snapshot.robot_tool = m_transform_1_2;
+      m_snapshot.phantom_tool = m_transform_3_2;
+      m_snapshot.robot_tool_dot = m_transform_dot_1_2;
+      m_snapshot.phantom_robot = m_transform_3_1;
+      m_snapshot.robot_probe = m_transform_1_6;
+      m_snapshot.phantom_probe = m_transform_3_6;
+      m_snapshot.em_sensor1 = m_transform_0_7;
+      m_snapshot.em_sensor2 = m_transform_0_8;
+      m_snapshot.em_sensor3 = m_transform_0_9;
+      m_snapshot.sample_time = m_measured_sample_time;
+    }
+
     // Print the transformation if the flag is set
     if (m_flag_debug)
     {
@@ -636,46 +657,51 @@ void EMTracker::set_filter_params(double fc_ref, double fc_tools)
 
 int EMTracker::get_robot_transform_in_em(quatTransformation &transform)
 {
+  const TrackerSnapshot snap = snapshot();
   if (!m_sensorConfigMap["robot"].active)
     return 1;
-  transform.translation = m_transform_0_1.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_0_1.rotation;
+  transform.translation = snap.em_robot.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = snap.em_robot.rotation;
   return 0;
 }
 
 int EMTracker::get_tool_transform_in_em(quatTransformation &transform)
 {
+  const TrackerSnapshot snap = snapshot();
   if (!m_sensorConfigMap["tool"].active)
     return 1;
-  transform.translation = m_transform_0_2.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_0_2.rotation;
+  transform.translation = snap.em_tool.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = snap.em_tool.rotation;
   return 0;
 }
 
 int EMTracker::get_phantom_transform_in_em(quatTransformation &transform)
 {
+  const TrackerSnapshot snap = snapshot();
   if (!m_sensorConfigMap["phantom"].active)
     return 1;
-  transform.translation = m_transform_0_3.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_0_3.rotation;
+  transform.translation = snap.em_phantom.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = snap.em_phantom.rotation;
   return 0;
 }
 
 int EMTracker::get_usprobe_transform_in_em(quatTransformation &transform)
 {
+  const TrackerSnapshot snap = snapshot();
   if (!m_sensorConfigMap["us_probe"].active)
     return 1;
-  transform.translation = m_transform_0_4.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_0_4.rotation;
+  transform.translation = snap.em_usprobe.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = snap.em_usprobe.rotation;
   return 0;
 }
 
 int EMTracker::get_probe_transform_in_em(quatTransformation &transform)
 {
+  const TrackerSnapshot snap = snapshot();
   if (m_sensorConfigMap["probe_1"].active || m_sensorConfigMap["probe_2"].active || m_sensorConfigMap["probe_3"].active)
   {
-    transform.translation = m_transform_0_6.translation * 1.00E-3; // Convert from mm to meters
-    transform.rotation = m_transform_0_6.rotation;
+    transform.translation = snap.em_probe.translation * 1.00E-3; // Convert from mm to meters
+    transform.rotation = snap.em_probe.rotation;
     return 0;
   }
   else
@@ -686,58 +712,65 @@ int EMTracker::get_probe_transform_in_em(quatTransformation &transform)
 
 void EMTracker::get_tool_transform_in_robot(quatTransformation &transform)
 {
-  transform.translation = m_transform_1_2.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_1_2.rotation;
+  const TrackerSnapshot snap = snapshot();
+  transform.translation = snap.robot_tool.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = snap.robot_tool.rotation;
 }
 
 void EMTracker::get_tool_transform_in_phantom(quatTransformation &transform)
 {
-  transform.translation = m_transform_3_2.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_3_2.rotation;
+  const TrackerSnapshot snap = snapshot();
+  transform.translation = snap.phantom_tool.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = snap.phantom_tool.rotation;
 }
 
 void EMTracker::get_tool_transform_in_robot_dot(quatTransformation &transform_dot)
 {
-  transform_dot.translation = m_transform_dot_1_2.translation * 1.00E-3; // Convert from mm to meters
-  transform_dot.rotation = m_transform_dot_1_2.rotation;
+  const TrackerSnapshot snap = snapshot();
+  transform_dot.translation = snap.robot_tool_dot.translation * 1.00E-3; // Convert from mm to meters
+  transform_dot.rotation = snap.robot_tool_dot.rotation;
 }
 
 void EMTracker::get_robot_transform_in_phantom(quatTransformation &transform)
 {
-  transform.translation = m_transform_3_1.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_3_1.rotation;
+  const TrackerSnapshot snap = snapshot();
+  transform.translation = snap.phantom_robot.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = snap.phantom_robot.rotation;
 }
 
 void EMTracker::get_probe_transform_in_robot(quatTransformation &transform)
 {
-  transform.translation = m_transform_1_6.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_1_6.rotation;
+  const TrackerSnapshot snap = snapshot();
+  transform.translation = snap.robot_probe.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = snap.robot_probe.rotation;
 }
 
 void EMTracker::get_probe_transform_in_phantom(quatTransformation &transform)
 {
-  transform.translation = m_transform_3_6.translation * 1.00E-3; // Convert from mm to meters
-  transform.rotation = m_transform_3_6.rotation;
+  const TrackerSnapshot snap = snapshot();
+  transform.translation = snap.phantom_probe.translation * 1.00E-3; // Convert from mm to meters
+  transform.rotation = snap.phantom_probe.rotation;
 }
 
 int EMTracker::get_sensor_transform_in_em(const std::string &sensor_name, quatTransformation &transform)
 {
+  const TrackerSnapshot snap = snapshot();
   if (sensor_name == "sensor_1" && m_sensorConfigMap["sensor_1"].active)
   {
-    transform.translation = m_transform_0_7.translation * 1.00E-3;
-    transform.rotation = m_transform_0_7.rotation;
+    transform.translation = snap.em_sensor1.translation * 1.00E-3;
+    transform.rotation = snap.em_sensor1.rotation;
     return 0;
   }
   else if (sensor_name == "sensor_2" && m_sensorConfigMap["sensor_2"].active)
   {
-    transform.translation = m_transform_0_8.translation * 1.00E-3;
-    transform.rotation = m_transform_0_8.rotation;
+    transform.translation = snap.em_sensor2.translation * 1.00E-3;
+    transform.rotation = snap.em_sensor2.rotation;
     return 0;
   }
   else if (sensor_name == "sensor_3" && m_sensorConfigMap["sensor_3"].active)
   {
-    transform.translation = m_transform_0_9.translation * 1.00E-3;
-    transform.rotation = m_transform_0_9.rotation;
+    transform.translation = snap.em_sensor3.translation * 1.00E-3;
+    transform.rotation = snap.em_sensor3.rotation;
     return 0;
   }
   else
@@ -748,7 +781,8 @@ int EMTracker::get_sensor_transform_in_em(const std::string &sensor_name, quatTr
 
 void EMTracker::get_sample_time(double &sample_time)
 {
-  sample_time = m_measured_sample_time;
+  const TrackerSnapshot snap = snapshot();
+  sample_time = snap.sample_time;
 }
 
 void EMTracker::ToolData2Vector(const ToolData &toolData, std::vector<double> &toolCoord)

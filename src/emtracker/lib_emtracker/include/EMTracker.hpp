@@ -218,7 +218,9 @@ private:
   std::vector<ToolData> enabledTools;
   std::map<std::string, SensorConfig> m_sensorConfigMap;
   std::vector<std::string> srom_paths;
-  bool m_flag_debug, m_flag_record, m_flag_filter, m_flag_freeze_phantom, m_flag_freeze_robot = false;
+  // NOTE: the old single-line declaration initialized ONLY the last flag.
+  bool m_flag_debug = false, m_flag_record = false, m_flag_filter = false;
+  std::atomic<bool> m_flag_freeze_phantom{false}, m_flag_freeze_robot{false}; // toggled by ROS services, read by the read thread
   std::string m_reference_trans_csv_path, m_tool_trans_csv_path;
   std::thread m_emThread;
   std::atomic<bool> stopFlag{false}; // Flag to control the thread
@@ -249,6 +251,23 @@ private:
 
   std::string m_config_Dir;
   double m_measured_sample_time;
+
+  // Consistent view of the read thread's outputs, published once per cycle
+  // under m_snapshot_mutex; the public getters copy it via snapshot().
+  struct TrackerSnapshot
+  {
+    quatTransformation em_robot, em_tool, em_phantom, em_usprobe, em_probe;
+    quatTransformation robot_tool, phantom_tool, robot_tool_dot, phantom_robot, robot_probe, phantom_probe;
+    quatTransformation em_sensor1, em_sensor2, em_sensor3;
+    double sample_time = 0.0;
+  };
+  mutable std::mutex m_snapshot_mutex;
+  TrackerSnapshot m_snapshot;
+  TrackerSnapshot snapshot() const
+  {
+    std::lock_guard<std::mutex> lock(m_snapshot_mutex);
+    return m_snapshot;
+  }
   unsigned int num_landmark;
   int m_num_active_sensors = 0;
   std::vector<quatTransformation> m_sec_transforms;
