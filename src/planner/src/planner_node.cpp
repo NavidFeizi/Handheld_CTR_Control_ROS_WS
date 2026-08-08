@@ -84,6 +84,8 @@ public:
   // Function to declare and initialize parameters - parameters values should be set from the launch file
   void declare_parameters()
   {
+    m_solve_time = this->declare_parameter<double>("solve_time", 3.0); // OMPL solve budget [s]
+
     const std::string output_dir = (ctr_common::resolveDataRoot(*this, m_packageName) / "Shared_Files").string();
     this->declare_parameter<std::string>("temp_dir", output_dir);
     m_tempDir = this->get_parameter("temp_dir").as_string();
@@ -417,7 +419,7 @@ public:
     std::cout << "\nStart state: " << blaze::trans(q_initial) << "Goal state: " << blaze::trans(q_final) << std::endl;
 
     // setting up the planning problem and its definitions
-    constexpr double runTime = 3.00; // Planning time in seconds (2 min)
+    const double runTime = m_solve_time; // Planning time in seconds
 
     // completely silence OMPL's own logging:
     ompl::msg::setLogLevel(ompl::msg::LOG_NONE);
@@ -623,6 +625,7 @@ private:
   size_t count_;
   int m_traj_counter = 0;
   std::string m_tempDir;
+  double m_solve_time = 3.0;
   double m_t_init = 0.00;
   double m_sample_time;
   bool m_flag_new_feedback = true;
