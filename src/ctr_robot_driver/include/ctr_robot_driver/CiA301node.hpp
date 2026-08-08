@@ -40,6 +40,9 @@
 #include <sstream>
 #include <memory>
 #include <bitset>
+#include <deque>
+#include <atomic>
+#include <numeric>
 #include "spdlog/spdlog.h"
 
 #include "ctr_robot_driver/CiA301node.hpp"
@@ -114,12 +117,11 @@ private:
   void OnRpdoWrite(uint16_t idx, uint8_t subidx) noexcept override;
   void OnSync(uint8_t cnt, const time_point &t) noexcept override;
   void TaskTarget() noexcept;
-  void TaskConfig() noexcept;
-  void TaskOperation() noexcept;
 
   // ============================== CiA402 State Machine Methods ==============================
   void SwitchOn();
-  void EnableOp_(const bool enable);
+  // returns false (and sets Flags::ENABLE_FAULT) instead of throwing
+  bool EnableOp_(const bool enable);
   void EnableOperationWithPdo_(const bool enable);
   void ResetFault_();
   void SetMaxTorque_(const double negative, const double positive);
@@ -158,15 +160,18 @@ private:
   int m_isConfiguring = 0;         // 1=set zero, 2=find limit
 
   // ======================== Command and feedback variables ========================
-  double m_targetPosSi;                                                   // in SI unit
-  double m_targetVelSi;                                                   // in SI unit
-  double m_currentPosSi;                                                  // in SI unit
-  double m_currentVelSi;                                                  // in SI unit
-  double m_currentSi;                                                     // in SI unit
-  std::deque<double> m_currentSiHist;                                     // history of current for averating
-  int32_t m_targetPos;                                                    // in motion controller unit (pulse/) not in user defined unit
-  int32_t m_targetPosPrev;                                                // in motion controller unit (pulse/) not in user defined unit
-  int32_t m_targetVel;                                                    // in motion controller unit (pulse/) not in user defined unit
+  // Atomics: the ROS threads write targets / read feedback while the lely
+  // fiber thread does the opposite — plain doubles could tear.
+  std::atomic<double> m_targetPosSi{0.0};                                 // in SI unit
+  std::atomic<double> m_targetVelSi{0.0};                                 // in SI unit
+  std::atomic<double> m_currentPosSi{0.0};                                // in SI unit
+  std::atomic<double> m_currentVelSi{0.0};                                // in SI unit
+  std::atomic<double> m_currentSi{0.0};                                   // in SI unit
+  std::deque<double> m_currentSiHist;                                     // fiber-local history for the current average
+  std::atomic<double> m_currentAvgSi{0.0};                                // maintained average of m_currentSiHist
+  std::atomic<int32_t> m_targetPos{0};                                    // in motion controller unit (pulse/) not in user defined unit
+  int32_t m_targetPosPrev;                                                // fiber-local; in motion controller unit
+  std::atomic<int32_t> m_targetVel{0};                                    // in motion controller unit (pulse/) not in user defined unit
   int32_t m_currentPos;                                                   // in motion controller unit (pulse/) not in user defined unit
   int32_t m_currentVel;                                                   // in motion controller unit (pulse/) not in user defined unit
   int16_t m_current;                                                      // current(Maxon) ot torque(Faulhaber)

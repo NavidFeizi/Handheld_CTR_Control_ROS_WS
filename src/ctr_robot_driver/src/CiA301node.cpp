@@ -279,6 +279,8 @@ void Cia301Node::OnRpdoWrite(uint16_t idx, uint8_t subidx) noexcept
         {
             m_currentSiHist.pop_front();
         }
+        m_currentAvgSi = std::accumulate(m_currentSiHist.begin(), m_currentSiHist.end(), 0.0) /
+                         static_cast<double>(m_currentSiHist.size());
     }
     if (idx == ACTUAL_VELOCITY_MAXON_IDX && subidx == 0) // if RxPDO 2 received ---- info in RxPDO2 -> [1] Actual Velocity
     {
@@ -295,6 +297,8 @@ void Cia301Node::OnRpdoWrite(uint16_t idx, uint8_t subidx) noexcept
         {
             m_currentSiHist.pop_front();
         }
+        m_currentAvgSi = std::accumulate(m_currentSiHist.begin(), m_currentSiHist.end(), 0.0) /
+                         static_cast<double>(m_currentSiHist.size());
     }
 
     // if RxPDO 3 received
@@ -409,7 +413,7 @@ void Cia301Node::SwitchOn()
 /** A member function to enabled / disable the driver operation
     supports CiA402 Application Layer over SDO
     @param enable: true = enable, false = disable*/
-void Cia301Node::EnableOp_(const bool enable)
+bool Cia301Node::EnableOp_(const bool enable)
 {
     logger->debug("[Node " + m_nodeId + "] " + "requested to switch operation to : " + std::to_string(enable));
 
@@ -423,10 +427,14 @@ void Cia301Node::EnableOp_(const bool enable)
     {
         while (!m_statusWord.operation_enabled)
         {
-            if (attempt_count >= max_attempts) // If the loop has run 10 times without enabling the operation, return an error
+            if (attempt_count >= max_attempts) // give up: flag the fault instead of throwing
             {
+                // Throwing here unwound through lely's noexcept fiber entry
+                // points and killed the whole process. The node now degrades:
+                // it stays up with operation disabled and the fault flagged.
                 logger->error("[Node " + m_nodeId + "] Operation not enabled after " + std::to_string(max_attempts) + " attempts - current status: " + m_statusWord.getCiA402StatusMessage());
-                throw std::runtime_error("Error: Operation not enabled after 10 attempts");
+                m_flags.set(Flags::FlagIndex::ENABLE_FAULT, true);
+                return false;
             }
             Wait(AsyncWrite<uint16_t>(CONTROL_WORD_IDX, 0, 0x000F));                 // set the state macine to enabled operation
             m_statusWord.update(Wait(AsyncRead<uint16_t>(STATUS_WORD_IDX, 0x0000))); // get status word on SDO
@@ -461,6 +469,9 @@ void Cia301Node::EnableOp_(const bool enable)
     {
         logger->debug("[Node " + m_nodeId + "] request to disable - alraedy disabled");
     }
+
+    m_flags.set(Flags::FlagIndex::ENABLE_FAULT, false);
+    return true;
 }
 
 /** A member function to enabled / disable the driver operation
@@ -524,7 +535,7 @@ void Cia301Node::TaskTarget() noexcept
                 {
                     if (m_targetPos != m_targetPosPrev)
                     {
-                        tpdo_mapped[TARGET_POSITION_IDX][0] = m_targetPos; // target position
+                        tpdo_mapped[TARGET_POSITION_IDX][0] = m_targetPos.load(); // target position
                         tpdo_mapped[CONTROL_WORD_IDX][0] = m_controlWord.get();
                         tpdo_mapped[TARGET_POSITION_IDX][0].WriteEvent(); // Trigger write events for PDO2.
                         m_targetPosPrev = m_targetPos;
@@ -547,7 +558,7 @@ void Cia301Node::TaskTarget() noexcept
             else if (m_current_operation_mode == OpMode::VelocityProfile) // Velocity Profile mode
             {
                 m_controlWord.enable_operation = 1;                     // set immediately bit (bit 5)
-                tpdo_mapped[TARGET_VELOCITY_IDX][0] = m_targetVel;      // target velocity
+                tpdo_mapped[TARGET_VELOCITY_IDX][0] = m_targetVel.load();      // target velocity
                 tpdo_mapped[CONTROL_WORD_IDX][0] = m_controlWord.get(); // enable
                 tpdo_mapped[TARGET_VELOCITY_IDX][0].WriteEvent();       // Trigger write events for PDO3.
                                                                         // std::cout << "target vel: " << vel << std::endl;
@@ -621,69 +632,6 @@ void Cia301Node::TaskTarget() noexcept
         tpdo_mapped[POSITION_LIMIT][0x01].WriteEvent();    // Trigger write events for PDO4.
 
         Wait(AsyncWait(duration(std::chrono::milliseconds(m_sampleTime - 2))));
-    }
-}
-
-/*  This task is reponsible for changing controller configuration.
-    "Task Target" should be halted using flag_config when this task is actioning*/
-void Cia301Node::TaskConfig() noexcept
-{
-    while (true)
-    {
-        if (m_isConfiguring)
-        {
-            if (m_commandMsg == "set_max_torque")
-            {
-                Cia301Node::SetMaxTorque_(m_set_max_torque[0], m_set_max_torque[1]);
-                m_commandMsg = "";
-            }
-            else if (m_commandMsg == "set_profile_params")
-            {
-                Cia301Node::SetProfileParams_(m_set_profile_acc, m_set_profile_dcc, m_set_profile_vel); // set profile parameters
-                m_commandMsg = "";
-            }
-            else if (m_commandMsg == "set_encoder")
-            {
-                Cia301Node::SetEncoder_(m_set_encoder);
-                m_commandMsg = "";
-            }
-            else if (m_commandMsg == "set_operation_mode")
-            {
-                Cia301Node::SetOperationMode_(m_set_operation_mode);
-                m_commandMsg = "";
-            }
-
-            Wait(AsyncWait(duration(std::chrono::microseconds(m_sampleTime))));
-            m_isConfiguring = false;
-        }
-        Wait(AsyncWait(duration(std::chrono::microseconds(m_sampleTime))));
-    }
-}
-
-/*  This task is reponsible for enable/disable operation*/
-void Cia301Node::TaskOperation() noexcept
-{
-    while (true)
-    {
-        if (m_isConfiguring)
-        {
-            while (m_flag_target_task_processing)
-                Wait(AsyncWait(duration(std::chrono::microseconds(1))));
-            if (m_commandMsg == "enable")
-            {
-                Cia301Node::EnableOp_(true);
-                m_commandMsg = "";
-            }
-            else if (m_commandMsg == "disable")
-            {
-                Cia301Node::EnableOp_(false);
-                m_commandMsg = "";
-            }
-
-            Wait(AsyncWait(duration(std::chrono::microseconds(m_sampleTime))));
-            m_isConfiguring = false;
-        }
-        Wait(AsyncWait(duration(std::chrono::microseconds(m_sampleTime))));
     }
 }
 
@@ -1077,7 +1025,9 @@ void Cia301Node::getCurrent(double &current) const
 /* accessor to moving average of motor current [A]*/
 void Cia301Node::getCurrentAvg(double &current) const
 {
-    current = std::accumulate(m_currentSiHist.begin(), m_currentSiHist.end(), 0.0) / m_currentSiHist.size();
+    // Maintained by the fiber thread at each feedback update; reading the
+    // deque here raced its mutation and divided by zero before any sample.
+    current = m_currentAvgSi.load();
 }
 
 /* accessor toactual motor positon [m] or [rad]*/

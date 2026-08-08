@@ -5,6 +5,8 @@
 #include <string>
 #include <unordered_map>
 #include <bitset>
+#include <atomic>
+#include <array>
 
 #include "ctr_robot_driver/CanEssentials.hpp"
 
@@ -78,6 +80,8 @@ public:
   // bool bit15 : 1;                 // bit 15
 };
 
+// Set/read from both the ROS threads and the lely fiber thread — each flag is
+// an atomic (std::bitset is not thread-safe).
 class Flags {
 public:
     enum class FlagIndex {
@@ -86,19 +90,20 @@ public:
         ENCODER_SET,
         NEW_TARG_READY,
         ENCODER_MEM_READY,
+        ENABLE_FAULT, // EnableOp_ gave up: node stays up, operation not enabled
         FLAG_COUNT
     };
 
 private:
-    std::bitset<static_cast<size_t>(FlagIndex::FLAG_COUNT)> flags;
+    std::array<std::atomic<bool>, static_cast<size_t>(FlagIndex::FLAG_COUNT)> flags{};
 
 public:
     void set(FlagIndex index, bool value) {
-        flags.set(static_cast<size_t>(index), value); // Cast to size_t
+        flags[static_cast<size_t>(index)].store(value);
     }
 
     bool get(FlagIndex index) const {
-        return flags.test(static_cast<size_t>(index)); // Cast to size_t
+        return flags[static_cast<size_t>(index)].load();
     }
 };
 
