@@ -68,4 +68,11 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_csv_path_io test/test_csv_path_io.cpp)
+  target_include_directories(test_csv_path_io PRIVATE include)
+  target_link_libraries(test_csv_path_io ctr_common::ctr_common)
+endif()
+
 ament_package()

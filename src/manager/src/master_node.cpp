@@ -1,6 +1,7 @@
 #include "manager/master_node.hpp"
 
 #include "ctr_common/csv_io.hpp"
+#include "manager/csv_path_io.hpp"
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
 
@@ -1080,27 +1081,13 @@ bool MasterNode::read_path_from_csv(std::vector<blaze::StaticVector<double, 6>> 
         return false;
     }
 
-    init_q_list.clear();
-
-    // The file may be in the legacy 6-column layout [β₁, β₂, β₃, α₁, α₂, α₃]
-    // (β₃/α₃ are the unactuated outer tube, always 0) or the new planner
-    // 4-column layout [β₁, β₂, α₁, α₂] (no header — non-numeric lines are
-    // skipped by the parser). A 4-column row is expanded to the 6-element
-    // layout so the rest of the (6-column) pipeline can consume it unchanged.
-    for (const auto &row : *rows)
+    // Legacy 6-column layout or the planner's 4-column layout; see
+    // manager_csv::parsePathRows for the expansion semantics.
+    size_t bad_rows = 0;
+    init_q_list = manager_csv::parsePathRows(*rows, &bad_rows);
+    if (bad_rows > 0)
     {
-        if (row.size() == 6)
-        {
-            init_q_list.push_back({row[0], row[1], row[2], row[3], row[4], row[5]});
-        }
-        else if (row.size() == 4)
-        {
-            init_q_list.push_back({row[0], row[1], 0.0, row[2], row[3], 0.0});
-        }
-        else
-        {
-            RCLCPP_WARN(get_logger(), "Row does not contain 4 or 6 values (got %zu)", row.size());
-        }
+        RCLCPP_WARN(get_logger(), "%zu rows did not contain 4 or 6 values and were skipped", bad_rows);
     }
 
     RCLCPP_INFO(get_logger(), "Loaded %zu path points from CSV file.", init_q_list.size());
@@ -1144,28 +1131,11 @@ bool MasterNode::getReachStatus()
 
 std::vector<blaze::StaticVector<double, 6>> MasterNode::adjustConfigurationListStepSize(const std::vector<blaze::StaticVector<double, 6>> &q_list_in, double step_size)
 {
-    std::vector<blaze::StaticVector<double, 6>> q_list_out;
-
     if (q_list_in.empty())
     {
         RCLCPP_WARN(this->get_logger(), "Empty list");
-        return q_list_out;
     }
-
-    size_t prev_idx = 0;
-    q_list_out.push_back(q_list_in[0]);
-
-    for (size_t i = 1; i < q_list_in.size(); ++i)
-    {
-        if (std::abs(q_list_in[i][0] - q_list_in[prev_idx][0]) >= step_size)
-        {
-            prev_idx = i;
-            q_list_out.push_back(q_list_in[i]);
-        }
-    }
-    q_list_out.push_back(q_list_in.back());
-
-    return q_list_out;
+    return manager_csv::adjustConfigurationListStepSize(q_list_in, step_size);
 }
 
 void MasterNode::log_position(Eigen::Vector3d position, std::string prefix)
