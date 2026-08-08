@@ -97,4 +97,11 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  # Pure geometry — no OMPL/Torch link needed.
+  ament_add_gtest(test_deployment_schedule test/test_deployment_schedule.cpp)
+  target_include_directories(test_deployment_schedule PRIVATE motion_planning/include)
+endif()
+
 ament_package()

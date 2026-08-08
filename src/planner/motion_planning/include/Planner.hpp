@@ -53,6 +53,7 @@
 #include <ompl/base/goals/GoalStates.h>
 // For accessing information about the CTR object for whom we're planning
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
+#include "DeploymentSchedule.hpp"
 
 // My own classes that I implemented
 #include "CTR_StateSpace.hpp"
@@ -1373,118 +1374,13 @@ template <size_t controlInputs>
 std::vector<typename Planner<controlInputs>::DeploymentCandidate>
 Planner<controlInputs>::buildDeploymentCandidates(const JointVector &q_from, const JointVector &q_to, const double safeStep) const
 {
-	// Per-tube prismatic displacements (2 tubes).
-	std::array<double, 2> disp;
-	for (size_t i = 0; i < 2; ++i)
-		disp[i] = q_to[i] - q_from[i];
-
-	// Sort tube indices by ascending |displacement| to find stopping order.
-	std::array<size_t, 2> stopOrder = {0, 1};
-	std::sort(stopOrder.begin(), stopOrder.end(),
-	          [&](size_t a, size_t b) { return std::abs(disp[a]) < std::abs(disp[b]); });
-
-	// Synchronized: all unfinished tubes advance at equal linear velocity; the
-	// tube with the least remaining travel stops first (zero relative
-	// inter-tube velocity during co-deployment).
-	auto makeSynchronized = [&]() -> Waypoints
-	{
-		Waypoints wps;
-		wps.push_back(q_from);
-		JointVector q_cur(q_from);
-		double accumulated = 0.0; // |displacement| already applied to active tubes
-
-		for (size_t step = 0; step < 2; ++step)
-		{
-			const size_t stopIdx = stopOrder[step];
-			const double subDelta = std::abs(disp[stopIdx]) - accumulated; // remaining travel this sub-phase
-
-			if (subDelta < 1.0e-9)
-			{
-				// Tube has negligible remaining travel — snap and skip this sub-phase.
-				q_cur[stopIdx] = q_to[stopIdx];
-				accumulated = std::abs(disp[stopIdx]);
-				continue;
-			}
-
-			// Subdivide this sub-phase into fine equal increments of size ≤ safeStep.
-			const size_t nIncrements = static_cast<size_t>(std::ceil(subDelta / safeStep));
-			const double inc = subDelta / static_cast<double>(nIncrements); // exact equal increment
-
-			for (size_t n = 1; n <= nIncrements; ++n)
-			{
-				for (size_t k = step; k < 2; ++k)
-				{
-					const size_t idx = stopOrder[k];
-					const double sign = (disp[idx] >= 0.0) ? 1.0 : -1.0;
-					q_cur[idx] += sign * inc;
-				}
-				if (n == nIncrements)
-				{
-					// Snap to exact goal to prevent floating-point drift.
-					q_cur[stopIdx] = q_to[stopIdx];
-				}
-				wps.push_back(q_cur);
-			}
-
-			accumulated = std::abs(disp[stopIdx]);
-		}
-		return wps;
-	};
-
-	// Sequential: deploy tube `first` fully, then the other tube.
-	auto makeSequential = [&](size_t first) -> Waypoints
-	{
-		Waypoints wps;
-		wps.push_back(q_from);
-		JointVector q_cur(q_from);
-		const std::array<size_t, 2> order = {first, 1 - first};
-		for (const size_t tube : order)
-		{
-			const double delta = std::abs(disp[tube]);
-			if (delta < 1.0e-9)
-			{
-				q_cur[tube] = q_to[tube];
-				continue;
-			}
-			const size_t nIncrements = static_cast<size_t>(std::ceil(delta / safeStep));
-			const double inc = delta / static_cast<double>(nIncrements);
-			const double sign = (disp[tube] >= 0.0) ? 1.0 : -1.0;
-			for (size_t n = 1; n <= nIncrements; ++n)
-			{
-				q_cur[tube] += sign * inc;
-				if (n == nIncrements)
-					q_cur[tube] = q_to[tube];
-				wps.push_back(q_cur);
-			}
-		}
-		return wps;
-	};
-
-	// Proportional: tube velocities scaled so both reach the goal together.
-	auto makeProportional = [&]() -> Waypoints
-	{
-		Waypoints wps;
-		wps.push_back(q_from);
-		const double maxDisp = std::max(std::abs(disp[0]), std::abs(disp[1]));
-		if (maxDisp < 1.0e-9)
-			return wps;
-		const size_t nIncrements = static_cast<size_t>(std::ceil(maxDisp / safeStep));
-		JointVector q_cur(q_from);
-		for (size_t n = 1; n <= nIncrements; ++n)
-		{
-			const double t = static_cast<double>(n) / static_cast<double>(nIncrements);
-			for (size_t i = 0; i < 2; ++i)
-				q_cur[i] = q_from[i] + t * disp[i];
-			wps.push_back(q_cur);
-		}
-		return wps;
-	};
-
+	// Geometry lives in DeploymentSchedule.hpp (pure, unit-tested); this
+	// wrapper only maps the extracted candidate type onto the Planner's.
+	auto raw = deployment_schedule::buildDeploymentCandidates<controlInputs>(q_from, q_to, safeStep);
 	std::vector<DeploymentCandidate> candidates;
-	candidates.push_back({"synchronized (least-travel stops first)", makeSynchronized()});
-	candidates.push_back({"sequential (beta1 first)", makeSequential(0)});
-	candidates.push_back({"sequential (beta2 first)", makeSequential(1)});
-	candidates.push_back({"proportional rates", makeProportional()});
+	candidates.reserve(raw.size());
+	for (auto &cand : raw)
+		candidates.push_back({cand.name, std::move(cand.wps)});
 	return candidates;
 }
 
@@ -1517,19 +1413,11 @@ bool Planner<controlInputs>::scheduleIsValid(const Waypoints &wps) const
 template <size_t controlInputs>
 double Planner<controlInputs>::scheduleSweptCost(const Waypoints &wps) const
 {
-	if (wps.size() < 2 || !this->m_ftlObjective)
+	if (!this->m_ftlObjective)
 		return 0.0;
-	const size_t stride = std::max<size_t>(1, wps.size() / 40);
-	double cost = 0.0;
-	size_t prev = 0;
-	for (size_t i = stride; i < wps.size(); i += stride)
-	{
-		cost += this->m_ftlObjective->sweptCost(wps[prev], wps[i]);
-		prev = i;
-	}
-	if (prev != wps.size() - 1)
-		cost += this->m_ftlObjective->sweptCost(wps[prev], wps.back());
-	return cost;
+	return deployment_schedule::scheduleSweptCost<controlInputs>(
+	    wps, [this](const JointVector &a, const JointVector &b)
+	    { return this->m_ftlObjective->sweptCost(a, b); });
 }
 
 template <size_t controlInputs>
