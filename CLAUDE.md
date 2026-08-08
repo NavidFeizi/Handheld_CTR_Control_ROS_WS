@@ -92,4 +92,3 @@ There is no shared library package; physics/inference code is copy-pasted per pa
 
 - `README.md` — dependencies, hardware setup (CAN, EM tracker), homing and operator workflow. Read before touching anything hardware-facing.
 - `SYSTEM_ARCHITECTURE_REFERENCE.md` — data-flow diagrams and the design for dynamic (mid-deployment) replanning based on EKF force updates; `CLAUDE_CTR_DYNAMIC_REPLANNING_PROMPT.md` / `CLAUDE_QUICK_CHAT_PROMPT.md` are the working prompts for that effort.
-- `REFACTORING_GUIDE.md` — in-progress split of the manager master node into ROS logic + Qt GUI (`master_node.cpp` + `master_qt_gui.cpp`).
