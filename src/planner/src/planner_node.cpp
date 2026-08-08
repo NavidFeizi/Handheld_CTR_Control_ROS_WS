@@ -105,7 +105,7 @@ public:
     m_callback_group_sub_2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     auto subs_current_tip = rclcpp::SubscriptionOptions();
     subs_current_tip.callback_group = m_callback_group_sub_2;
-    m_subscription_tip = create_subscription<interfaces::msg::Taskspace>("task_space/feedback/base_tool", 10, std::bind(&PathPlannerNode::updateCurrentX, this, _1), subs_current_q);
+    m_subscription_tip = create_subscription<interfaces::msg::Taskspace>("task_space/feedback/base_tool", 10, std::bind(&PathPlannerNode::updateCurrentX, this, _1), subs_current_tip);
 
     // Subscriber to receive the EKF external tip-force estimate
     m_callback_group_sub_3 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
