@@ -54,8 +54,11 @@ public:
     MPC &operator=(const MPC &) = delete;
 
     // Move allowed
-    MPC(MPC &&) = default;
-    MPC &operator=(MPC &&) = default;
+    // Moves deleted: the defaulted move constructor corrupted the OsqpEigen
+    // solver state (freed garbage in the moved-from destructor). Hold the MPC
+    // in a smart pointer if ownership transfer is needed.
+    MPC(MPC &&) = delete;
+    MPC &operator=(MPC &&) = delete;
 
     //--------------------------------- Class API ---------------------------------//
     /// @brief: Update cost function weights
@@ -88,6 +91,10 @@ public:
     /// @param yref: reference trajectory over horizon (h x m)
     /// @param u_apply: output control to apply at current step (n)
     void step(const VecN &q0, const blaze::StaticVector<double, 3UL> &wf, const MatHM &yref, VecN &u_apply);
+
+    /// Test hook: force the next step() through the full solver re-init path
+    /// (used to verify warm-started and re-initialized solves agree).
+    void forceSolverReinit() { m_solver_ready = false; }
 
 private:
     // std::function<VecM(const VecN &)> m_fwd;

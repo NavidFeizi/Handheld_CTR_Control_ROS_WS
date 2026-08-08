@@ -24,9 +24,15 @@ target_include_directories(CtrMpc INTERFACE
     $<INSTALL_INTERFACE:include>)
 
 # Optimization flags for anything that links to CtrMpc
+# NOTE: -march=native was removed from these INTERFACE options. CtrMpc is
+# header-only, so the flag leaked into every consumer TU — including the
+# inlined OsqpEigen::Solver code, whose Eigen members then had different
+# alignment/padding than the default-flags libOsqpEigen.so. The layout
+# mismatch corrupted the heap on every Solver construction/destruction.
+# -mtune=native keeps the scheduling benefit without changing the ISA/ABI.
 target_compile_options(CtrMpc INTERFACE
-    $<$<CONFIG:Release>:-O3 -march=native  -DNDEBUG>
-    $<$<CONFIG:RelWithDebInfo>:-O3 -march=native  -g -DNDEBUG>)
+    $<$<CONFIG:Release>:-O3 -mtune=native -DNDEBUG>
+    $<$<CONFIG:RelWithDebInfo>:-O3 -mtune=native -g -DNDEBUG>)
 
 # Link deps to the core library (PUBLIC so the Python module inherits)
 target_link_libraries(CtrMpc
