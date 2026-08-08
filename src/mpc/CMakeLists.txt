@@ -51,4 +51,11 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_mpc_qp test/test_mpc_qp.cpp)
+  target_include_directories(test_mpc_qp PRIVATE ctr_mpc/include)
+  target_link_libraries(test_mpc_qp CtrMpc)
+endif()
+
 ament_package()
