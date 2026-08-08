@@ -9,6 +9,7 @@
 #include "interfaces/msg/interface.hpp"
 #include "interfaces/msg/jointspace.hpp"
 #include "interfaces/msg/taskspace.hpp"
+#include "interfaces/msg/force.hpp"
 #include "interfaces/srv/config.hpp"
 #include "interfaces/srv/planner.hpp"
 #include "interfaces/srv/recording.hpp"
@@ -26,6 +27,7 @@
 #include <vector>
 #include <array>
 #include <memory>
+#include <mutex>
 
 // #include "manager/qt_gui.hpp"
 
@@ -123,17 +125,21 @@ private:
     void robotStatus_callback(const interfaces::msg::Status::SharedPtr msg);
     void manualInterface_callback(const interfaces::msg::Interface::SharedPtr msg);
     void updateSimout(const interfaces::msg::Taskspace::SharedPtr msg);
+    void updateForceEstimate(const interfaces::msg::Force::SharedPtr msg);
     void tf2_receive_timer_callback();
     void handle_service_response(const rclcpp::Client<interfaces::srv::Config>::SharedFuture future);
     void handle_planner_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future);
-    
+    void handle_replan_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future);
+
     // Control functions
     void control_loop();
+    void maybeRequestDeploymentReplan();
     void publish_position(const blaze::StaticVector<double, 6>& q);
     void publish_velocity(const blaze::StaticVector<double, 4>& q_dot);
     
     // Utility functions
-    bool read_path_from_csv(std::vector<blaze::StaticVector<double, 6>>& init_q_list, 
+    bool loadPlannedPath();
+    bool read_path_from_csv(std::vector<blaze::StaticVector<double, 6>>& init_q_list,
                                const std::string& fileName);
     void read_targets_from_csv(std::vector<Eigen::Vector3d>& target_list, const std::string& fileName);
     void updateTestStateMachine();
@@ -150,6 +156,9 @@ private:
     static constexpr double k_target_threshold = 0.002;
     static constexpr double k_q_threshold = 0.002;
     static constexpr blaze::StaticVector<double, 4UL> k_input_scale = {1.00, 1.00, 20.0, 20.0};
+    static constexpr double k_force_replan_threshold = 0.12; // N; ‖f_now − f_at_plan‖ that triggers a deployment replan
+    static constexpr double k_replan_cooldown_s = 2.0;       // s between replan requests (EKF ramps at f_dot ≈ 0.1 N/s)
+    static constexpr size_t k_min_remaining_waypoints = 5;   // ≈10 mm at m_insertion_step; below this a replan is not worth the pause
 
     // Member variables
     CtrlMode m_ctrl_mode, m_ctrl_mode_prev;
@@ -175,6 +184,8 @@ private:
     std::vector<blaze::StaticVector<double, 6>> m_q_list;
     std::vector<blaze::StaticVector<double, 6>> m_q_list_adjusted;
     std::vector<blaze::StaticVector<double, 6>> m_q_list_actuated;
+    std::mutex m_deploy_mutex; // guards m_q_list, m_q_list_adjusted, m_q_list_actuated, m_current_config_index
+                               // (written by planner-response callbacks, read/written by the control timer)
     int m_current_config_index = 0;
     double m_insertion_step = 2e-3;
     bool m_deploy_button_held = false;
@@ -210,6 +221,15 @@ private:
     Eigen::Vector3d m_Xd, m_Xd_prev, m_Xd_adj_prev;
     Eigen::Vector3d m_X, m_Xsim;
     Eigen::Vector3d m_tip_position;  // For CSV target error calculation
+
+    // Force-triggered deployment replanning
+    std::mutex m_force_mutex; // guards m_f_est (written by the force subscription)
+    Eigen::Vector3d m_f_est = Eigen::Vector3d::Zero();     // latest EKF tip-force estimate [N]
+    Eigen::Vector3d m_f_at_plan = Eigen::Vector3d::Zero(); // force the ACTIVE waypoint list was planned with
+    Eigen::Vector3d m_f_pending = Eigen::Vector3d::Zero(); // snapshot taken when a planner request is sent
+    bool m_f_at_plan_valid = false;
+    rclcpp::Time m_last_replan_request_time{0, 0, RCL_ROS_TIME};
+    int m_replan_count = 0;
     
     // ROS2 interfaces
     rclcpp::CallbackGroup::SharedPtr m_cbGroup1;
@@ -217,6 +237,7 @@ private:
     rclcpp::Subscription<interfaces::msg::Status>::SharedPtr m_subscription_status;
     rclcpp::Subscription<interfaces::msg::Interface>::SharedPtr m_subscription_interface;
     rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_sim_out;
+    rclcpp::Subscription<interfaces::msg::Force>::SharedPtr m_sub_force;
     rclcpp::Client<interfaces::srv::Config>::SharedPtr m_robot_config_client;
     rclcpp::Client<interfaces::srv::Config>::SharedPtr m_robot_enable_client;
     rclcpp::Client<interfaces::srv::Planner>::SharedPtr m_planner_client;

@@ -326,6 +326,7 @@ void MasterNode::onClosedLoopToggled(bool checked)
     m_closed_loop_enabled = checked;
     if (m_closed_loop_enabled)
     {
+        std::lock_guard<std::mutex> lock(m_deploy_mutex); // slot runs on the Qt thread
         m_q_list_actuated.clear();
         m_q_list_actuated.push_back(blaze::StaticVector<double, 6>({m_q[1], m_q[3], 0.0, m_q[0], m_q[2], 0.0}));
     }
@@ -383,6 +384,8 @@ void MasterNode::initRosInterfaces()
         "manual_interface", 10, std::bind(&MasterNode::manualInterface_callback, this, std::placeholders::_1));
     m_subscription_sim_out = create_subscription<interfaces::msg::Taskspace>(
         "task_space/sim_out", 10, std::bind(&MasterNode::updateSimout, this, std::placeholders::_1));
+    m_sub_force = create_subscription<interfaces::msg::Force>(
+        "task_space/force_estimate", 10, std::bind(&MasterNode::updateForceEstimate, this, std::placeholders::_1));
 
     m_publisher_manual_vel = create_publisher<interfaces::msg::Jointspace>("joint_space/manual_vel", 10);
     m_pub_joint_targ = create_publisher<interfaces::msg::Jointspace>("joint_space/target", 10);
@@ -509,6 +512,12 @@ void MasterNode::updateSimout(const interfaces::msg::Taskspace::SharedPtr msg)
     }
 }
 
+void MasterNode::updateForceEstimate(const interfaces::msg::Force::SharedPtr msg)
+{
+    std::lock_guard<std::mutex> lock(m_force_mutex);
+    m_f_est = Eigen::Vector3d(msg->x, msg->y, msg->z);
+}
+
 void MasterNode::tf2_receive_timer_callback()
 {
     geometry_msgs::msg::TransformStamped tf2_tran;
@@ -594,10 +603,10 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
     
     if ((m_planner_success || bypass_error_check) && m_planner_ik_error < k_ik_error_threshold)
     {
-        if (read_path_from_csv(m_q_list, "plannedPath.csv"))
+        if (loadPlannedPath())
         {
-            m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
-            m_current_config_index = 0;
+            m_f_at_plan = m_f_pending;
+            m_f_at_plan_valid = true;
         }
         else
         {
@@ -612,9 +621,94 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
     emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
 }
 
+// Replan responses are handled separately from full-plan responses: `value`
+// carries the FTL swept cost of the chosen schedule (not an IK error), so the
+// k_ik_error_threshold gate must not apply, and a rejected replan must not
+// overwrite the full-plan status consumed by the GUI and the test state machine.
+void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future)
+{
+    auto response = future.get();
+
+    if (response->success && loadPlannedPath())
+    {
+        m_f_at_plan = m_f_pending;
+        m_f_at_plan_valid = true;
+        RCLCPP_INFO(this->get_logger(), "Replan accepted: %s (FTL cost %.6f) - resuming deployment on the new schedule",
+                    response->message.c_str(), response->value);
+    }
+    else
+    {
+        // Old list, index, and force baseline are retained: deployment resumes on
+        // the previous plan and the cooldown throttles the next attempt.
+        RCLCPP_WARN(this->get_logger(), "Replan rejected (%s) - continuing previous plan", response->message.c_str());
+    }
+
+    m_flag_planning = false;
+    emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
+}
+
 // ============================================================================
 // Control Functions
 // ============================================================================
+
+// Force-drift detector for open-loop deployment: when the EKF force estimate
+// has drifted from the value the active plan was computed with, pause the
+// deployment (m_flag_planning) and ask the planner to re-schedule the
+// remaining prismatic deployment from the current configuration.
+void MasterNode::maybeRequestDeploymentReplan()
+{
+    if (m_flag_planning || m_retracting)
+        return;
+    if (!(m_interface_key[k_forward_button_idx] || m_auto_insert))
+        return; // only while actively inserting
+    if (!getReachStatus())
+        return; // same settle gate as the insertion step
+    if (!m_f_at_plan_valid)
+        return;
+
+    int index;
+    size_t remaining;
+    {
+        std::lock_guard<std::mutex> lock(m_deploy_mutex);
+        if (m_q_list_adjusted.empty() || m_current_config_index < 1)
+            return; // deployment not started yet
+        index = m_current_config_index;
+        remaining = m_q_list_adjusted.size() - 1 - static_cast<size_t>(m_current_config_index);
+    }
+    if (remaining < k_min_remaining_waypoints)
+        return;
+
+    Eigen::Vector3d f;
+    {
+        std::lock_guard<std::mutex> lock(m_force_mutex);
+        f = m_f_est;
+    }
+    const double df = (f - m_f_at_plan).norm();
+    if (df <= k_force_replan_threshold)
+        return;
+    if ((this->now() - m_last_replan_request_time).seconds() < k_replan_cooldown_s)
+        return;
+
+    m_flag_planning = true; // pauses every deployment branch until the response arrives
+    m_last_replan_request_time = this->now();
+    m_f_pending = f;
+    m_replan_count++;
+
+    auto request = std::make_shared<interfaces::srv::Planner::Request>();
+    request->command = "replanDeployment";
+
+    auto response_callback = std::bind(&MasterNode::handle_replan_response, this, std::placeholders::_1);
+    (void)m_planner_client->async_send_request(request, response_callback);
+
+    emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
+    RCLCPP_INFO(this->get_logger(), "Force drift |df| = %.3f N at waypoint %d (%zu remaining) - pausing deployment to replan (#%d)",
+                df, index, remaining, m_replan_count);
+
+    if (m_test_running)
+    {
+        captureRecordingFrame("data"); // event marker; force columns are already recorded
+    }
+}
 
 void MasterNode::control_loop()
 {
@@ -659,6 +753,11 @@ void MasterNode::control_loop()
             // std::cout << "m_reached: " << m_reached << ", !m_flag_planning: " << (!m_flag_planning) << ", target_changed: " << target_changed << ", q_changed: " << q_changed << std::endl;
             if (m_reached && (!m_flag_planning) && (target_changed || q_changed))
             {
+                {
+                    std::lock_guard<std::mutex> lock(m_force_mutex);
+                    m_f_pending = m_f_est; // baseline promoted to m_f_at_plan when the plan is accepted
+                }
+
                 auto request = std::make_shared<interfaces::srv::Planner::Request>();
                 request->command = "generateTrajectory";
                 request->value[0] = Xd[0];
@@ -679,9 +778,12 @@ void MasterNode::control_loop()
     }
     else if (m_procedure && m_high_level_mode == HighLvlCtrMode::Deployment && !m_closed_loop_enabled)
     {
+        maybeRequestDeploymentReplan();
+
         if (!m_flag_planning && (m_interface_key[k_forward_button_idx] || m_auto_insert))
         {
             m_retracting = false;
+            std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
                 RCLCPP_WARN(this->get_logger(), "Adjusted deployment list is empty; cannot send positions.");
@@ -718,6 +820,7 @@ void MasterNode::control_loop()
         else if (!m_flag_planning && (m_interface_key[k_backward_button_idx] || m_auto_retract))
         {
             m_retracting = true;
+            std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
                 RCLCPP_WARN(this->get_logger(), "Adjusted deployment list is empty; cannot send positions.");
@@ -742,6 +845,7 @@ void MasterNode::control_loop()
                     m_auto_retract = false;
                     m_current_config_index = 0;
                     m_q_list_adjusted.clear();
+                    m_f_at_plan_valid = false;
                     RCLCPP_DEBUG(this->get_logger(), "Min deployment index reached: %d", m_current_config_index);
                 }
             }
@@ -761,6 +865,11 @@ void MasterNode::control_loop()
         {
             m_flag_planning = true;
             emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
+
+            {
+                std::lock_guard<std::mutex> lock(m_force_mutex);
+                m_f_pending = m_f_est; // baseline promoted to m_f_at_plan when the plan is accepted
+            }
 
             auto request = std::make_shared<interfaces::srv::Planner::Request>();
             request->command = "generateTrajectory";
@@ -782,6 +891,7 @@ void MasterNode::control_loop()
         if (!m_flag_planning && (m_interface_key[k_forward_button_idx] || m_auto_insert))
         {
             m_retracting = false;
+            std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
                 RCLCPP_WARN(this->get_logger(), "Adjusted deployment list is empty; cannot send positions.");
@@ -819,7 +929,8 @@ void MasterNode::control_loop()
                 {
                     m_auto_insert = false;
                     m_q_list_adjusted.clear();
-                    m_current_config_index = m_q_list_adjusted.size() - 1;
+                    m_f_at_plan_valid = false;
+                    m_current_config_index = 0;
                     RCLCPP_DEBUG(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
                 }
             }
@@ -829,6 +940,7 @@ void MasterNode::control_loop()
         {
             m_retracting = true;
             m_auto_insert = false;
+            std::lock_guard<std::mutex> lock(m_deploy_mutex);
 
             if (getReachStatus())
             {
@@ -846,7 +958,8 @@ void MasterNode::control_loop()
                     m_auto_retract = false;
                     m_q_list_actuated.clear();
                     m_q_list_adjusted.clear();
-                    
+                    m_f_at_plan_valid = false;
+
                     // Delete plannedPath.csv
                     std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
                     ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
@@ -888,6 +1001,19 @@ void MasterNode::publish_velocity(const blaze::StaticVector<double, 4> &q_dot)
 // ============================================================================
 // Utility Functions
 // ============================================================================
+
+// Load the planner's CSV output and swap it in as the active deployment list.
+bool MasterNode::loadPlannedPath()
+{
+    std::lock_guard<std::mutex> lock(m_deploy_mutex);
+    if (read_path_from_csv(m_q_list, "plannedPath.csv"))
+    {
+        m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
+        m_current_config_index = 0;
+        return true;
+    }
+    return false;
+}
 
 bool MasterNode::read_path_from_csv(std::vector<blaze::StaticVector<double, 6>> &init_q_list, const std::string &fileName)
 {
@@ -1265,8 +1391,12 @@ void MasterNode::updateTestStateMachine()
         {
             RCLCPP_WARN(get_logger(), "[Test] Retraction timeout, skipping to next target");
             m_auto_retract = false;
-            m_q_list_adjusted.clear();
-            m_q_list_actuated.clear();
+            {
+                std::lock_guard<std::mutex> lock(m_deploy_mutex);
+                m_q_list_adjusted.clear();
+                m_q_list_actuated.clear();
+            }
+            m_f_at_plan_valid = false;
             m_current_target_index++;
             m_test_state = TestState::SelectingTarget;
             m_test_state_entry_time = current_time;
@@ -1283,8 +1413,12 @@ void MasterNode::updateTestStateMachine()
         m_test_state = TestState::Idle;
         m_auto_insert = false;
         m_auto_retract = false;
-        m_q_list_adjusted.clear();
-        m_q_list_actuated.clear();
+        {
+            std::lock_guard<std::mutex> lock(m_deploy_mutex);
+            m_q_list_adjusted.clear();
+            m_q_list_actuated.clear();
+        }
+        m_f_at_plan_valid = false;
         break;
     }
     }

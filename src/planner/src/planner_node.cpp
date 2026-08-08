@@ -16,6 +16,7 @@
 #include "std_srvs/srv/trigger.hpp"
 #include "interfaces/srv/config.hpp"
 #include "interfaces/srv/planner.hpp"
+#include "interfaces/msg/force.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include "std_msgs/msg/float64_multi_array.hpp"
 
@@ -109,6 +110,12 @@ public:
     subs_current_tip.callback_group = m_callback_group_sub_2;
     m_subscription_tip = create_subscription<interfaces::msg::Taskspace>("task_space/feedback/base_tool", 10, std::bind(&PathPlannerNode::updateCurrentX, this, _1), subs_current_q);
 
+    // Subscriber to receive the EKF external tip-force estimate
+    m_callback_group_sub_3 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    auto subs_force = rclcpp::SubscriptionOptions();
+    subs_force.callback_group = m_callback_group_sub_3;
+    m_subscription_force = create_subscription<interfaces::msg::Force>("task_space/force_estimate", 10, std::bind(&PathPlannerNode::updateForceEstimate, this, _1), subs_force);
+
     // // path planning service
     // m_manual_target_service = create_service<interfaces::srv::Config>("manual_target", std::bind(&PathPlannerNode::planner_callback, this, _1, _2));
 
@@ -125,6 +132,7 @@ public:
   // Update current joints position.
   void updateCurrentQ(const interfaces::msg::Jointspace::ConstSharedPtr &msg)
   {
+    std::lock_guard<std::mutex> lock(m_feedback_mutex);
     m_current_q[0UL] = msg->position[1UL];
     m_current_q[1UL] = msg->position[3UL];
     m_current_q[2UL] = 0.00;
@@ -141,6 +149,15 @@ public:
     m_x[1UL] = msg->p[1UL];
     m_x[2UL] = msg->p[2UL];
     // std::cout << "m_current_x: " << blaze::trans(m_current_q) << std::endl;
+  }
+
+  // Update the EKF external tip-force estimate.
+  void updateForceEstimate(const interfaces::msg::Force::ConstSharedPtr &msg)
+  {
+    std::lock_guard<std::mutex> lock(m_feedback_mutex);
+    m_force_est[0UL] = msg->x;
+    m_force_est[1UL] = msg->y;
+    m_force_est[2UL] = msg->z;
   }
 
   /// listen to ROS2 tf2 message
@@ -235,18 +252,34 @@ public:
 
       try
       {
+        // One consistent snapshot of joint feedback and EKF force for the whole request.
+        blaze::StaticVector<double, 6UL> q_snapshot;
+        blaze::StaticVector<double, 3UL> force;
+        {
+          std::lock_guard<std::mutex> lock(m_feedback_mutex);
+          q_snapshot = m_current_q;
+          force = m_force_est;
+        }
+
         // Map the 6-element current configuration [β₁, β₂, β₃, α₁, α₂, α₃] (tube-3
         // entries are static/zero) down to the 4 actuated inputs [β₁, β₂, α₁, α₂].
-        blaze::StaticVector<double, 4UL> q_initial = {m_current_q[0UL], m_current_q[1UL], m_current_q[3UL], m_current_q[4UL]};
+        blaze::StaticVector<double, 4UL> q_initial = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
         blaze::StaticVector<double, 4UL> q_final = q_initial;
-        error = inverseKin(target, q_final);
+
+        // Safe here: no solve is in flight (mutually exclusive service group).
+        // Propagates to the FTL objective (cache cleared) and informed samplers.
+        m_motionPlan.setCTR_externalForce(force);
+        RCLCPP_INFO(this->get_logger(), "Planning with force estimate: f = [%.4f, %.4f, %.4f] N", force[0UL], force[1UL], force[2UL]);
+
+        error = inverseKin(target, q_final, force);
 
         RCLCPP_INFO(this->get_logger(), "Initial config: q = %.4f, %.4f, %.4f, %.4f", q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL]);
         RCLCPP_INFO(this->get_logger(), "Final config: q = %.4f, %.4f, %.4f, %.4f", q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]);
 
-        bool planning_status = plan(q_initial, q_final);
+        bool planning_status = plan(q_initial, q_final, force);
         if (planning_status)
         {
+          m_target_last = target;
           response->success = true;
           response->value = error;
           response->message = "Path generated successfully.";
@@ -267,6 +300,76 @@ public:
         response->message = e.what();
       }
     }
+    else if (request->command == "replanDeployment")
+    {
+      // Response contract for this command:
+      //   success = new schedule exported to plannedPath.csv
+      //   value   = FTL swept cost of the chosen schedule (NOT an IK error)
+      //   message = schedule name or failure reason
+      blaze::StaticVector<double, 6UL> q_snapshot;
+      blaze::StaticVector<double, 3UL> force;
+      {
+        std::lock_guard<std::mutex> lock(m_feedback_mutex);
+        q_snapshot = m_current_q;
+        force = m_force_est;
+      }
+
+      if (!m_has_active_plan)
+      {
+        response->success = false;
+        response->value = 0.0;
+        response->message = "replanDeployment: no active plan/goal - call generateTrajectory first.";
+        return;
+      }
+
+      try
+      {
+        blaze::StaticVector<double, 4UL> q_now = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
+
+        RCLCPP_INFO(this->get_logger(), "Replan request: f = [%.4f, %.4f, %.4f] N (active plan used f = [%.4f, %.4f, %.4f] N), q_now = [%.4f, %.4f, %.4f, %.4f]",
+                    force[0UL], force[1UL], force[2UL],
+                    m_force_at_plan[0UL], m_force_at_plan[1UL], m_force_at_plan[2UL],
+                    q_now[0UL], q_now[1UL], q_now[2UL], q_now[3UL]);
+
+        // Safe here: no solve is in flight (mutually exclusive service group).
+        m_motionPlan.setCTR_externalForce(force);
+
+        auto start = std::chrono::high_resolution_clock::now();
+        const bool ok = m_motionPlan.planDeployment(q_now, m_q_goal_last);
+        auto end = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+        if (ok)
+        {
+          m_force_at_plan = force;
+          m_motionPlan.writeSolutionToFile(m_tempDir + "/plannedPath.csv");
+          publishTaskSpacePath();
+
+          response->success = true;
+          response->value = m_motionPlan.lastDeploymentCost();
+          response->message = "Deployment replanned: " + m_motionPlan.lastDeploymentScheduleName();
+          RCLCPP_INFO(this->get_logger(), "Replanned deployment in %ld ms: %s (FTL cost %.6f)",
+                      static_cast<long>(elapsed), m_motionPlan.lastDeploymentScheduleName().c_str(), m_motionPlan.lastDeploymentCost());
+        }
+        else
+        {
+          // planDeployment() cleared the solution paths, so nothing stale can be
+          // exported; the previous CSV stays on disk and the master keeps
+          // executing the old plan.
+          response->success = false;
+          response->value = 0.0;
+          response->message = "replanDeployment failed (alpha mismatch, invalid start, or no valid schedule).";
+          RCLCPP_WARN(this->get_logger(), "Deployment replanning failed after %ld ms.", static_cast<long>(elapsed));
+        }
+      }
+      catch (const std::exception &e)
+      {
+        std::cout << "Replanning error: " << e.what() << '\n';
+        response->success = false;
+        response->value = 0.0;
+        response->message = e.what();
+      }
+    }
     else
     {
       response->success = false;
@@ -276,7 +379,7 @@ public:
   }
 
   // Service callback to triget tasks, enable, and control mode section
-  double inverseKin(const blaze::StaticVector<double, 3UL> &target, blaze::StaticVector<double, 4UL> &q)
+  double inverseKin(const blaze::StaticVector<double, 3UL> &target, blaze::StaticVector<double, 4UL> &q, const blaze::StaticVector<double, 3UL> &force)
   {
     // run IK to compute q_final
     constexpr double posTolerance = 5.00E-4;
@@ -284,12 +387,13 @@ public:
 
     std::cout << "\nRunning IK..." << std::endl;
     auto start = std::chrono::high_resolution_clock::now();
-    m_ctr_pinn.posCTRL(q, target, posTolerance);
+    // force-aware IK: uses the force registered via setCTR_externalForce()
+    m_motionPlan.solveInverseKinematics(q, target, posTolerance);
     auto end = std::chrono::high_resolution_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
     std::cout << "IK time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
 
-    m_ctr_pinn.getPosDistal(q, tipPosition);
+    m_ctr_pinn.getPosDistal(q, force, tipPosition);
     std::cout << "CTR target joints are: q = " << blaze::trans(q)
               << "target: " << blaze::trans(target)
               << "tip position (after IK): " << blaze::trans(tipPosition)
@@ -300,7 +404,7 @@ public:
   }
 
   // Service callback to triget tasks, enable, and control mode section
-  bool plan(const blaze::StaticVector<double, 4UL> &q_initial, const blaze::StaticVector<double, 4UL> &q_final)
+  bool plan(const blaze::StaticVector<double, 4UL> &q_initial, const blaze::StaticVector<double, 4UL> &q_final, const blaze::StaticVector<double, 3UL> &force)
   {
     bool planning_status = false;
     // std::cout << "Target: x: " << m_manual_target[0] * 1.00E3 << " |  " << "y: " << m_manual_target[1] * 1.00E3 << " |  " << "z: " << m_manual_target[2] * 1.00E3 << std::endl;
@@ -339,23 +443,25 @@ public:
       m_motionPlan.replan(runTime);
       std::cout << "Not the first plan (replan)" << std::endl;
     }
-    m_motionPlan.writeSolutionToFile(plannedPathFile);
     auto end = std::chrono::high_resolution_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-    std::cout << "Finished planning!! - Saved plan in: " << plannedPathFile << std::endl;
     std::cout << "Planning time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
 
     m_q_initial_prev = q_initial;
 
-    // start = std::chrono::high_resolution_clock::now();
-    publishTaskSpacePath();
-    // m_traj_counter = 0;
-    // end = std::chrono::high_resolution_clock::now();
-    // elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    // std::cout << "FK for taskspace plan gen time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
+    if (planning_status)
+    {
+      // Export and publish only real solutions. On failure the previous CSV stays
+      // on disk, so the master keeps executing the old plan (fallback contract).
+      m_motionPlan.writeSolutionToFile(plannedPathFile);
+      std::cout << "Finished planning!! - Saved plan in: " << plannedPathFile << std::endl;
 
-    // planning_status = 0;
+      m_has_active_plan = true;
+      m_q_goal_last = q_final;
+      m_force_at_plan = force;
+      publishTaskSpacePath(); // FK below uses m_force_at_plan — keep after the update
+    }
+
     return planning_status;
   }
 
@@ -372,6 +478,7 @@ public:
     if (m_q_list.size() == 0)
     {
       RCLCPP_ERROR(get_logger(), "Failed to read planned path or empty CSV");
+      std::lock_guard<std::mutex> lock(m_feedback_mutex);
       m_q = {m_current_q[0UL], m_current_q[1UL], m_current_q[3UL], m_current_q[4UL]};
     }
   
@@ -391,7 +498,8 @@ public:
     // RCLCPP_INFO(get_logger(), "Checkpoint_2");
     for (size_t i = 0; i < m_q_list_adjusted.size(); ++i)
     {
-      m_ctr_pinn.getPosDistal(m_q_list_adjusted[i], tipPosition);
+      // predicted tip under the same force the active plan was computed with
+      m_ctr_pinn.getPosDistal(m_q_list_adjusted[i], m_force_at_plan, tipPosition);
 
       const size_t idx = i * 3UL;
       msg.data[idx] = tipPosition[0UL];
@@ -602,10 +710,13 @@ private:
   std::chrono::time_point<std::chrono::high_resolution_clock> t0, t1;
   blaze::StaticVector<double, 3UL> m_target_position, m_calyxPosition;
   blaze::StaticVector<double, 6UL> m_current_q;
+  blaze::StaticVector<double, 3UL> m_force_est; // latest EKF tip-force estimate [N]
+  std::mutex m_feedback_mutex;                  // guards m_current_q and m_force_est (written on subscriber threads, read on the service thread)
   blaze::StaticVector<double, 4UL> m_rot_phantom_base;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub_1, m_callback_group_sub_2, m_callback_group_sub_3; // Callback group for running subscriber callback function on separate thread
   rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subscription_q;
   rclcpp::Subscription<interfaces::msg::Taskspace>::SharedPtr m_subscription_tip;
+  rclcpp::Subscription<interfaces::msg::Force>::SharedPtr m_subscription_force;
 
   // Subscriber object
   rclcpp::Service<interfaces::srv::Config>::SharedPtr m_manual_target_service;
@@ -646,6 +757,13 @@ private:
   Planner<kControlInputs> m_motionPlan;
 
   blaze::StaticVector<double, 4UL> m_q_initial_prev = {0.00, 0.00, 0.00, 0.00};
+
+  // Context of the last successfully exported plan; "replanDeployment" resumes from it.
+  // Only mutated on the service thread (mutually exclusive group) — no locking needed.
+  bool m_has_active_plan = false;
+  blaze::StaticVector<double, 4UL> m_q_goal_last;   // joint goal of the active plan
+  blaze::StaticVector<double, 3UL> m_target_last;   // task-space target of the active plan
+  blaze::StaticVector<double, 3UL> m_force_at_plan; // force the active plan was computed with
 };
 
 int main(int argc, char *argv[])

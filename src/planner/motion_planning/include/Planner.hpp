@@ -280,6 +280,28 @@ public:
 	// Smaller values produce finer motion resolution at the cost of a larger path.
 	bool planTwoPhase(double runTime, optimalPlanner plannerType, double phase2RangeFactor = 0.2, double phase2LinearStep = 1.0e-3);
 
+	// Analytic re-schedule of the prismatic deployment (Phase 2 only) from
+	// q_start to q_goal under the currently registered external force — call
+	// setCTR_externalForce() first. No OMPL solve is performed, so this is fast
+	// enough for mid-deployment replanning.
+	//
+	// The revolute joints of q_start and q_goal must agree within alphaTol
+	// (radians): the schedules hold alpha constant at the goal values, and a
+	// mismatch beyond alphaTol is rejected (returns false) rather than silently
+	// rotating deployed tubes — that requires a full planTwoPhase().
+	//
+	// On success the winning schedule becomes the solution path in the problem
+	// definition, so writeSolutionToFile()/analyzeSolution() work unchanged. On
+	// failure the solution paths are cleared and the planner status is set
+	// non-EXACT, so a stale previous solution can never be re-exported.
+	// Must not run concurrently with plan()/replan()/planTwoPhase().
+	bool planDeployment(const JointVector &q_start, const JointVector &q_goal, double linearStep = 1.0e-3, double alphaTol = 0.05);
+
+	// Diagnostics for the most recent analytic deployment selection
+	// (planTwoPhase Phase 2 or planDeployment).
+	const std::string &lastDeploymentScheduleName() const { return m_lastScheduleName; }
+	double lastDeploymentCost() const { return m_lastScheduleCost; }
+
 	bool replan(double runTime);
 	ompl::base::PlannerStatus getPlannerStatus() const { return m_solved; }
 	void writeSolutionToFile(const std::string &outputFile);
@@ -301,6 +323,26 @@ private:
 	ompl::base::PlannerPtr allocatePlanner(optimalPlanner plannerType);
 	ompl::base::OptimizationObjectivePtr allocateObjective(planningObjective objectiveType);
 
+	// ----- Phase-2 deployment-schedule machinery (shared by planTwoPhase and planDeployment) -----
+	using Waypoints = std::vector<JointVector>;
+	struct DeploymentCandidate
+	{
+		const char *name;
+		Waypoints wps;
+	};
+	// Builds the four candidate prismatic schedules from q_from to q_to.
+	// q_from supplies the starting β values and the α values held throughout;
+	// q_to supplies the goal β values.
+	std::vector<DeploymentCandidate> buildDeploymentCandidates(const JointVector &q_from, const JointVector &q_to, double safeStep) const;
+	bool scheduleIsValid(const Waypoints &wps) const;
+	double scheduleSweptCost(const Waypoints &wps) const;
+	// Validity-filters and FTL-scores the candidates; lowest cost wins. Returns
+	// nullptr when none is valid and fallbackToSynchronized is false; with the
+	// fallback enabled, the synchronized schedule is returned unvalidated
+	// (planTwoPhase's historical behavior).
+	const Waypoints *selectBestSchedule(const std::vector<DeploymentCandidate> &candidates, bool fallbackToSynchronized,
+	                                    const char *&bestNameOut, double &bestCostOut) const;
+
 	PINNs<controlInputs> &m_CTR_model;
 	blaze::StaticVector<double, 3UL> m_externalForce;
 	ompl::base::StateSpacePtr m_space;
@@ -317,6 +359,8 @@ private:
 	std::shared_ptr<CTR_FollowTheLeaderObjective<controlInputs>> m_ftlObjective;
 	double m_informedTipRadius = 0.005;
 	unsigned int m_informedMaxAttempts = 1000U;
+	std::string m_lastScheduleName;
+	double m_lastScheduleCost = 0.0;
 };
 
 template <size_t controlInputs>
@@ -1243,16 +1287,6 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 	// Restore original goal in pdef (also propagates to motion validator / validity checker).
 	this->resetGoalState(q_goal_orig);
 
-	// Per-tube prismatic displacements from waypoint to goal (2 tubes).
-	std::array<double, 2> disp;
-	for (size_t i = 0; i < 2; ++i)
-		disp[i] = gst->values[i] - q_wp[i];
-
-	// Sort tube indices by ascending |displacement| to find stopping order.
-	std::array<size_t, 2> stopOrder = {0, 1};
-	std::sort(stopOrder.begin(), stopOrder.end(),
-	          [&](size_t a, size_t b) { return std::abs(disp[a]) < std::abs(disp[b]); });
-
 	const double safeStep = std::max(phase2LinearStep, 1.0e-6); // guard against zero/negative
 
 	// ----- Phase 2 as an optimization over deployment schedules -----
@@ -1261,188 +1295,17 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 	// evaluated by the PINN on the LOADED robot (external tip force f_ext
 	// applied), so tip loads / tissue contact shape the chosen deployment
 	// rather than only the forward simulation.
-	using Waypoints = std::vector<blaze::StaticVector<double, controlInputs>>;
-
-	// Synchronized: all unfinished tubes advance at equal linear velocity; the
-	// tube with the least remaining travel stops first (zero relative
-	// inter-tube velocity during co-deployment).
-	auto makeSynchronized = [&]() -> Waypoints
-	{
-		Waypoints wps;
-		wps.push_back(q_wp);
-		blaze::StaticVector<double, controlInputs> q_cur(q_wp);
-		double accumulated = 0.0; // |displacement| already applied to active tubes
-
-		for (size_t step = 0; step < 2; ++step)
-		{
-			const size_t stopIdx = stopOrder[step];
-			const double subDelta = std::abs(disp[stopIdx]) - accumulated; // remaining travel this sub-phase
-
-			if (subDelta < 1.0e-9)
-			{
-				// Tube has negligible remaining travel — snap and skip this sub-phase.
-				q_cur[stopIdx] = gst->values[stopIdx];
-				accumulated = std::abs(disp[stopIdx]);
-				continue;
-			}
-
-			// Subdivide this sub-phase into fine equal increments of size ≤ safeStep.
-			const size_t nIncrements = static_cast<size_t>(std::ceil(subDelta / safeStep));
-			const double inc = subDelta / static_cast<double>(nIncrements); // exact equal increment
-
-			for (size_t n = 1; n <= nIncrements; ++n)
-			{
-				for (size_t k = step; k < 2; ++k)
-				{
-					const size_t idx = stopOrder[k];
-					const double sign = (disp[idx] >= 0.0) ? 1.0 : -1.0;
-					q_cur[idx] += sign * inc;
-				}
-				if (n == nIncrements)
-				{
-					// Snap to exact goal to prevent floating-point drift.
-					q_cur[stopIdx] = gst->values[stopIdx];
-				}
-				wps.push_back(q_cur);
-			}
-
-			accumulated = std::abs(disp[stopIdx]);
-		}
-		return wps;
-	};
-
-	// Sequential: deploy tube `first` fully, then the other tube.
-	auto makeSequential = [&](size_t first) -> Waypoints
-	{
-		Waypoints wps;
-		wps.push_back(q_wp);
-		blaze::StaticVector<double, controlInputs> q_cur(q_wp);
-		const std::array<size_t, 2> order = {first, 1 - first};
-		for (const size_t tube : order)
-		{
-			const double delta = std::abs(disp[tube]);
-			if (delta < 1.0e-9)
-			{
-				q_cur[tube] = gst->values[tube];
-				continue;
-			}
-			const size_t nIncrements = static_cast<size_t>(std::ceil(delta / safeStep));
-			const double inc = delta / static_cast<double>(nIncrements);
-			const double sign = (disp[tube] >= 0.0) ? 1.0 : -1.0;
-			for (size_t n = 1; n <= nIncrements; ++n)
-			{
-				q_cur[tube] += sign * inc;
-				if (n == nIncrements)
-					q_cur[tube] = gst->values[tube];
-				wps.push_back(q_cur);
-			}
-		}
-		return wps;
-	};
-
-	// Proportional: tube velocities scaled so both reach the goal together.
-	auto makeProportional = [&]() -> Waypoints
-	{
-		Waypoints wps;
-		wps.push_back(q_wp);
-		const double maxDisp = std::max(std::abs(disp[0]), std::abs(disp[1]));
-		if (maxDisp < 1.0e-9)
-			return wps;
-		const size_t nIncrements = static_cast<size_t>(std::ceil(maxDisp / safeStep));
-		blaze::StaticVector<double, controlInputs> q_cur(q_wp);
-		for (size_t n = 1; n <= nIncrements; ++n)
-		{
-			const double t = static_cast<double>(n) / static_cast<double>(nIncrements);
-			for (size_t i = 0; i < 2; ++i)
-				q_cur[i] = q_wp[i] + t * disp[i];
-			wps.push_back(q_cur);
-		}
-		return wps;
-	};
-
-	// A schedule is admissible only if every waypoint satisfies the tube
-	// ordering / clearance constraints.
-	auto scheduleIsValid = [&](const Waypoints &wps) -> bool
-	{
-		auto *s = this->m_space->allocState();
-		auto *rv = s->as<StateType>();
-		bool ok = true;
-		for (const auto &q : wps)
-		{
-			for (size_t i = 0; i < controlInputs; ++i)
-				rv->values[i] = q[i];
-			if (!this->m_stateValidityChecker->isValid(s))
-			{
-				ok = false;
-				break;
-			}
-		}
-		this->m_space->freeState(s);
-		return ok;
-	};
-
-	// FTL swept-volume cost of a schedule, evaluated with f_ext. All
-	// candidates are compared at the same coarse discretization (~40 segments)
-	// so PINN inference stays cheap and the comparison is fair.
-	auto scheduleSweptCost = [&](const Waypoints &wps) -> double
-	{
-		if (wps.size() < 2 || !this->m_ftlObjective)
-			return 0.0;
-		const size_t stride = std::max<size_t>(1, wps.size() / 40);
-		double cost = 0.0;
-		size_t prev = 0;
-		for (size_t i = stride; i < wps.size(); i += stride)
-		{
-			cost += this->m_ftlObjective->sweptCost(wps[prev], wps[i]);
-			prev = i;
-		}
-		if (prev != wps.size() - 1)
-			cost += this->m_ftlObjective->sweptCost(wps[prev], wps.back());
-		return cost;
-	};
-
-	struct DeploymentCandidate
-	{
-		const char *name;
-		Waypoints wps;
-	};
-
-	std::vector<DeploymentCandidate> candidates;
-	candidates.push_back({"synchronized (least-travel stops first)", makeSynchronized()});
-	candidates.push_back({"sequential (beta1 first)", makeSequential(0)});
-	candidates.push_back({"sequential (beta2 first)", makeSequential(1)});
-	candidates.push_back({"proportional rates", makeProportional()});
-
-	const Waypoints *bestSchedule = nullptr;
+	//
+	// The synchronized fallback preserves the historical behavior: an already
+	// committed two-phase plan degrades to the clearance-preserving schedule
+	// rather than failing outright.
+	const std::vector<DeploymentCandidate> candidates = this->buildDeploymentCandidates(q_wp, q_goal_orig, safeStep);
 	const char *bestName = "";
 	double bestCost = std::numeric_limits<double>::infinity();
-	for (const auto &cand : candidates)
-	{
-		if (!scheduleIsValid(cand.wps))
-		{
-			std::cout << "[planTwoPhase] Phase 2 candidate '" << cand.name
-			          << "' violates tube-ordering constraints; skipped." << std::endl;
-			continue;
-		}
-		const double cost = scheduleSweptCost(cand.wps);
-		std::cout << "[planTwoPhase] Phase 2 candidate '" << cand.name
-		          << "': FTL swept cost = " << cost << " (with f_ext)." << std::endl;
-		if (cost < bestCost)
-		{
-			bestCost = cost;
-			bestSchedule = &cand.wps;
-			bestName = cand.name;
-		}
-	}
+	const Waypoints *bestSchedule = this->selectBestSchedule(candidates, true, bestName, bestCost);
 
-	if (!bestSchedule)
-	{
-		// All alternatives infeasible — fall back to the synchronized schedule,
-		// which preserves the clearance invariant by construction.
-		bestSchedule = &candidates.front().wps;
-		bestName = candidates.front().name;
-		std::cerr << "[planTwoPhase] WARNING: no valid Phase 2 candidate; using synchronized fallback." << std::endl;
-	}
+	this->m_lastScheduleName = bestName;
+	this->m_lastScheduleCost = bestCost;
 
 	// Helper: allocate a state from q, append a copy to the path, then free it.
 	ompl::geometric::PathGeometric phase2path(this->m_si);
@@ -1501,6 +1364,321 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 	}
 
 	return this->m_solved == ompl::base::PlannerStatus::EXACT_SOLUTION;
+}
+
+// Builds the four candidate prismatic deployment schedules from q_from to q_to.
+// q_from supplies the starting β values and the α values held for every state;
+// q_to supplies the goal β values. All schedules are monotone in β toward the goal.
+template <size_t controlInputs>
+std::vector<typename Planner<controlInputs>::DeploymentCandidate>
+Planner<controlInputs>::buildDeploymentCandidates(const JointVector &q_from, const JointVector &q_to, const double safeStep) const
+{
+	// Per-tube prismatic displacements (2 tubes).
+	std::array<double, 2> disp;
+	for (size_t i = 0; i < 2; ++i)
+		disp[i] = q_to[i] - q_from[i];
+
+	// Sort tube indices by ascending |displacement| to find stopping order.
+	std::array<size_t, 2> stopOrder = {0, 1};
+	std::sort(stopOrder.begin(), stopOrder.end(),
+	          [&](size_t a, size_t b) { return std::abs(disp[a]) < std::abs(disp[b]); });
+
+	// Synchronized: all unfinished tubes advance at equal linear velocity; the
+	// tube with the least remaining travel stops first (zero relative
+	// inter-tube velocity during co-deployment).
+	auto makeSynchronized = [&]() -> Waypoints
+	{
+		Waypoints wps;
+		wps.push_back(q_from);
+		JointVector q_cur(q_from);
+		double accumulated = 0.0; // |displacement| already applied to active tubes
+
+		for (size_t step = 0; step < 2; ++step)
+		{
+			const size_t stopIdx = stopOrder[step];
+			const double subDelta = std::abs(disp[stopIdx]) - accumulated; // remaining travel this sub-phase
+
+			if (subDelta < 1.0e-9)
+			{
+				// Tube has negligible remaining travel — snap and skip this sub-phase.
+				q_cur[stopIdx] = q_to[stopIdx];
+				accumulated = std::abs(disp[stopIdx]);
+				continue;
+			}
+
+			// Subdivide this sub-phase into fine equal increments of size ≤ safeStep.
+			const size_t nIncrements = static_cast<size_t>(std::ceil(subDelta / safeStep));
+			const double inc = subDelta / static_cast<double>(nIncrements); // exact equal increment
+
+			for (size_t n = 1; n <= nIncrements; ++n)
+			{
+				for (size_t k = step; k < 2; ++k)
+				{
+					const size_t idx = stopOrder[k];
+					const double sign = (disp[idx] >= 0.0) ? 1.0 : -1.0;
+					q_cur[idx] += sign * inc;
+				}
+				if (n == nIncrements)
+				{
+					// Snap to exact goal to prevent floating-point drift.
+					q_cur[stopIdx] = q_to[stopIdx];
+				}
+				wps.push_back(q_cur);
+			}
+
+			accumulated = std::abs(disp[stopIdx]);
+		}
+		return wps;
+	};
+
+	// Sequential: deploy tube `first` fully, then the other tube.
+	auto makeSequential = [&](size_t first) -> Waypoints
+	{
+		Waypoints wps;
+		wps.push_back(q_from);
+		JointVector q_cur(q_from);
+		const std::array<size_t, 2> order = {first, 1 - first};
+		for (const size_t tube : order)
+		{
+			const double delta = std::abs(disp[tube]);
+			if (delta < 1.0e-9)
+			{
+				q_cur[tube] = q_to[tube];
+				continue;
+			}
+			const size_t nIncrements = static_cast<size_t>(std::ceil(delta / safeStep));
+			const double inc = delta / static_cast<double>(nIncrements);
+			const double sign = (disp[tube] >= 0.0) ? 1.0 : -1.0;
+			for (size_t n = 1; n <= nIncrements; ++n)
+			{
+				q_cur[tube] += sign * inc;
+				if (n == nIncrements)
+					q_cur[tube] = q_to[tube];
+				wps.push_back(q_cur);
+			}
+		}
+		return wps;
+	};
+
+	// Proportional: tube velocities scaled so both reach the goal together.
+	auto makeProportional = [&]() -> Waypoints
+	{
+		Waypoints wps;
+		wps.push_back(q_from);
+		const double maxDisp = std::max(std::abs(disp[0]), std::abs(disp[1]));
+		if (maxDisp < 1.0e-9)
+			return wps;
+		const size_t nIncrements = static_cast<size_t>(std::ceil(maxDisp / safeStep));
+		JointVector q_cur(q_from);
+		for (size_t n = 1; n <= nIncrements; ++n)
+		{
+			const double t = static_cast<double>(n) / static_cast<double>(nIncrements);
+			for (size_t i = 0; i < 2; ++i)
+				q_cur[i] = q_from[i] + t * disp[i];
+			wps.push_back(q_cur);
+		}
+		return wps;
+	};
+
+	std::vector<DeploymentCandidate> candidates;
+	candidates.push_back({"synchronized (least-travel stops first)", makeSynchronized()});
+	candidates.push_back({"sequential (beta1 first)", makeSequential(0)});
+	candidates.push_back({"sequential (beta2 first)", makeSequential(1)});
+	candidates.push_back({"proportional rates", makeProportional()});
+	return candidates;
+}
+
+// A schedule is admissible only if every waypoint satisfies the tube
+// ordering / clearance constraints.
+template <size_t controlInputs>
+bool Planner<controlInputs>::scheduleIsValid(const Waypoints &wps) const
+{
+	using StateType = ompl::base::RealVectorStateSpace::StateType;
+	auto *s = this->m_space->allocState();
+	auto *rv = s->as<StateType>();
+	bool ok = true;
+	for (const auto &q : wps)
+	{
+		for (size_t i = 0; i < controlInputs; ++i)
+			rv->values[i] = q[i];
+		if (!this->m_stateValidityChecker->isValid(s))
+		{
+			ok = false;
+			break;
+		}
+	}
+	this->m_space->freeState(s);
+	return ok;
+}
+
+// FTL swept-volume cost of a schedule, evaluated with f_ext. All
+// candidates are compared at the same coarse discretization (~40 segments)
+// so PINN inference stays cheap and the comparison is fair.
+template <size_t controlInputs>
+double Planner<controlInputs>::scheduleSweptCost(const Waypoints &wps) const
+{
+	if (wps.size() < 2 || !this->m_ftlObjective)
+		return 0.0;
+	const size_t stride = std::max<size_t>(1, wps.size() / 40);
+	double cost = 0.0;
+	size_t prev = 0;
+	for (size_t i = stride; i < wps.size(); i += stride)
+	{
+		cost += this->m_ftlObjective->sweptCost(wps[prev], wps[i]);
+		prev = i;
+	}
+	if (prev != wps.size() - 1)
+		cost += this->m_ftlObjective->sweptCost(wps[prev], wps.back());
+	return cost;
+}
+
+template <size_t controlInputs>
+const typename Planner<controlInputs>::Waypoints *
+Planner<controlInputs>::selectBestSchedule(const std::vector<DeploymentCandidate> &candidates, const bool fallbackToSynchronized,
+                                           const char *&bestNameOut, double &bestCostOut) const
+{
+	const Waypoints *bestSchedule = nullptr;
+	bestNameOut = "";
+	bestCostOut = std::numeric_limits<double>::infinity();
+	for (const auto &cand : candidates)
+	{
+		if (!this->scheduleIsValid(cand.wps))
+		{
+			std::cout << "[planTwoPhase] Phase 2 candidate '" << cand.name
+			          << "' violates tube-ordering constraints; skipped." << std::endl;
+			continue;
+		}
+		const double cost = this->scheduleSweptCost(cand.wps);
+		std::cout << "[planTwoPhase] Phase 2 candidate '" << cand.name
+		          << "': FTL swept cost = " << cost << " (with f_ext)." << std::endl;
+		if (cost < bestCostOut)
+		{
+			bestCostOut = cost;
+			bestSchedule = &cand.wps;
+			bestNameOut = cand.name;
+		}
+	}
+
+	if (!bestSchedule && fallbackToSynchronized)
+	{
+		// All alternatives infeasible — fall back to the synchronized schedule,
+		// which preserves the clearance invariant by construction.
+		bestSchedule = &candidates.front().wps;
+		bestNameOut = candidates.front().name;
+		std::cerr << "[planTwoPhase] WARNING: no valid Phase 2 candidate; using synchronized fallback." << std::endl;
+	}
+	return bestSchedule;
+}
+
+template <size_t controlInputs>
+bool Planner<controlInputs>::planDeployment(const JointVector &q_start, const JointVector &q_goal, const double linearStep, const double alphaTol)
+{
+	using StateType = ompl::base::RealVectorStateSpace::StateType;
+
+	// The deployment schedules hold alpha constant at the goal values, so the
+	// current revolute angles must already agree with the goal within alphaTol;
+	// correcting a larger mismatch would rotate deployed tubes and requires a
+	// full planTwoPhase().
+	for (size_t i = 2; i < controlInputs; ++i)
+	{
+		const double alphaErr = std::abs(shortestAngleDiff(q_start[i], q_goal[i]));
+		if (alphaErr > alphaTol)
+		{
+			std::cerr << "[planDeployment] Revolute joint " << i - 1 << " is " << alphaErr
+			          << " rad away from its goal (tolerance " << alphaTol
+			          << " rad); a full planTwoPhase() is required." << std::endl;
+			this->m_pdef->clearSolutionPaths();
+			this->m_solved = ompl::base::PlannerStatus::ABORT;
+			return false;
+		}
+	}
+
+	// Hold alpha at the goal values for the whole schedule; the ≤ alphaTol
+	// correction rides on the first commanded waypoint.
+	JointVector q_eff(q_start);
+	for (size_t i = 2; i < controlInputs; ++i)
+		q_eff[i] = q_goal[i];
+
+	// Start validity (β ordering/clearance + |α₂ − α₁| ≤ π). State-space bounds
+	// are deliberately not checked, matching resetStartState(): live joint
+	// feedback may sit marginally outside the dataset bounds.
+	{
+		auto *s = this->m_space->allocState();
+		auto *rv = s->as<StateType>();
+		for (size_t i = 0; i < controlInputs; ++i)
+			rv->values[i] = q_eff[i];
+		const bool startValid = this->m_stateValidityChecker->isValid(s);
+		this->m_space->freeState(s);
+		if (!startValid)
+		{
+			std::cerr << "[planDeployment] Current configuration violates tube-ordering constraints; cannot re-schedule." << std::endl;
+			this->m_pdef->clearSolutionPaths();
+			this->m_solved = ompl::base::PlannerStatus::INVALID_START;
+			return false;
+		}
+	}
+
+	const double safeStep = std::max(linearStep, 1.0e-6);
+
+	Waypoints degenerateSchedule;
+	std::vector<DeploymentCandidate> candidates;
+	const Waypoints *bestSchedule = nullptr;
+	const char *bestName = "already at goal";
+	double bestCost = 0.0;
+
+	if (std::abs(q_goal[0] - q_eff[0]) < 1.0e-9 && std::abs(q_goal[1] - q_eff[1]) < 1.0e-9)
+	{
+		// Prismatic joints are already at the goal — single-state path.
+		degenerateSchedule.push_back(q_eff);
+		bestSchedule = &degenerateSchedule;
+	}
+	else
+	{
+		candidates = this->buildDeploymentCandidates(q_eff, q_goal, safeStep);
+		// No synchronized fallback here (unlike planTwoPhase): commanding a
+		// constraint-violating schedule mid-deployment is worse than keeping the
+		// current plan, so the caller falls back to "continue the old plan".
+		bestSchedule = this->selectBestSchedule(candidates, false, bestName, bestCost);
+		if (!bestSchedule)
+		{
+			std::cerr << "[planDeployment] No valid deployment schedule from the current configuration." << std::endl;
+			this->m_pdef->clearSolutionPaths();
+			this->m_solved = ompl::base::PlannerStatus::ABORT;
+			return false;
+		}
+	}
+
+	// Keep the problem definition consistent with the re-scheduled segment so
+	// writeSolutionToFile()/analyzeSolution() and later plan calls see coherent
+	// endpoints. q_eff passed the same validity check setStartState() applies;
+	// q_goal was already accepted by setGoalState() when the plan was created.
+	this->setStartState(q_eff);
+	this->setGoalState(q_goal);
+
+	ompl::geometric::PathGeometric schedulePath(this->m_si);
+	{
+		auto *s = this->m_space->allocState();
+		auto *rv = s->as<StateType>();
+		for (const auto &q : *bestSchedule)
+		{
+			for (size_t i = 0; i < controlInputs; ++i)
+				rv->values[i] = q[i];
+			schedulePath.append(s); // append() copies the state
+		}
+		this->m_space->freeState(s);
+	}
+
+	this->m_pdef->clearSolutionPaths();
+	this->m_pdef->addSolutionPath(std::make_shared<ompl::geometric::PathGeometric>(schedulePath));
+	this->m_solved = ompl::base::PlannerStatus::EXACT_SOLUTION;
+	this->m_lastScheduleName = bestName;
+	this->m_lastScheduleCost = bestCost;
+
+	std::cout << "[planDeployment] Re-scheduled deployment (" << bestName << "): "
+	          << schedulePath.getStateCount() << " states (step=" << safeStep * 1.0e3
+	          << " mm, FTL swept cost=" << bestCost << ")." << std::endl;
+
+	return true;
 }
 
 template <size_t controlInputs>
