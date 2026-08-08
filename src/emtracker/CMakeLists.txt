@@ -68,4 +68,13 @@ install(FILES
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_butterworth test/test_butterworth.cpp)
+  target_include_directories(test_butterworth PRIVATE lib_emtracker/include)
+  ament_add_gtest(test_rigid_transformation test/test_rigid_transformation.cpp)
+  target_include_directories(test_rigid_transformation PRIVATE lib_emtracker/include)
+  target_link_libraries(test_rigid_transformation EMTlib)
+endif()
+
 ament_package()
