@@ -14,7 +14,8 @@
 #include "interfaces/msg/jointspace.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/srv/config.hpp"
-#include "Robot.hpp"
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include "ctr_robot_driver/Robot.hpp"
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
@@ -38,6 +39,18 @@ public:
     m_trans_limit = true;
     m_encoders_set = {1, 1, 1, 1}; /// temoporarly for development
     declare_parameters();
+
+    // Runtime paths for the CANopen driver (formerly compile-time macros).
+    CTRobot::RuntimePaths paths;
+    paths.canopen_dir = declare_parameter<std::string>("canopen_dir", "");
+    if (paths.canopen_dir.empty())
+    {
+      paths.canopen_dir =
+          ament_index_cpp::get_package_share_directory("ctr_robot_driver") + "/canopen";
+    }
+    paths.can_interface = declare_parameter<std::string>("can_interface", "can0");
+    paths.encoder_memory_dir = declare_parameter<std::string>("encoder_memory_dir", "");
+    setRuntimePaths(paths);
 
     setMaxVel(m_maxVel);
     setMaxAcc(m_maxAcc);

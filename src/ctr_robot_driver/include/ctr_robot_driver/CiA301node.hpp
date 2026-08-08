@@ -42,10 +42,10 @@
 #include <bitset>
 #include "spdlog/spdlog.h"
 
-#include "CiA301node.hpp"
-#include "Robot.hpp"
-#include "CanEssentials.hpp"
-#include "SharedStates.hpp"
+#include "ctr_robot_driver/CiA301node.hpp"
+#include "ctr_robot_driver/Robot.hpp"
+#include "ctr_robot_driver/CanEssentials.hpp"
+#include "ctr_robot_driver/SharedStates.hpp"
 
 using namespace std::chrono_literals;
 using namespace lely;
@@ -69,6 +69,7 @@ public:
              double ProfileAccSI,
              double ProfileVelSI,
              //  double current_threshold,
+             std::string encoderMemoryDir,
              std::shared_ptr<SharedState> sharedState,
              std::shared_ptr<spdlog::logger> shared_logger);
   ~Cia301Node();
@@ -187,6 +188,7 @@ private:
   StatusWord m_statusWord;                   // Status words updates automatically on RPDO1 write
   std::ofstream m_encoderMemFile;            // File to read from / write on encoder memory to keep track of positoin for future start ups
   double m_encoderMem;                       // Loaded previous encoder value from memory file
+  std::string m_encoderMemDir;               // Directory holding the encoder memory files (formerly the EnoderStoreFiles_directory macro)
   bool m_printPdos = false;                  // for tracing debug
   bool m_bit12Prev = false;
   std::string m_commandMsg = "";

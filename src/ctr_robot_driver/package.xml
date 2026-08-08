@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ctr_robot_driver</name>
+  <version>1.0.0</version>
+  <description>
+    ROS-free CANopen motor driver for the handheld CTR (formerly robot/lib_robot):
+    lely-coapp based CiA-301/402 node control of the 4 joint drives, plus the
+    dcfgen-generated CANopen master configuration installed to share/.
+  </description>
+  <maintainer email="fpedrosa@mirsee.com">Filipe Pedrosa</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>spdlog</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <bitset>
 
-#include "CanEssentials.hpp"
+#include "ctr_robot_driver/CanEssentials.hpp"
 
 // Define CANopen Object Dictionary indices
 constexpr uint16_t STATUS_WORD_IDX = 0x6041;

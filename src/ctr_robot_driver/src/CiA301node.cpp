@@ -15,7 +15,7 @@
   and Maxon) using the CANopen protocol. It supports the CiA301 operation layer, and CiA402 device profile .
 */
 
-#include "CiA301node.hpp"
+#include "ctr_robot_driver/CiA301node.hpp"
 
 using namespace std::chrono_literals;
 using namespace lely;
@@ -50,10 +50,12 @@ Cia301Node::Cia301Node(ev_exec_t * /*exec*/,
                        double ProfileVelSI,
                        //    double CurrentThreshold,
                        //    double VelFindLimit,
+                       std::string encoderMemoryDir,
                        std::shared_ptr<SharedState> sharedState,
                        std::shared_ptr<spdlog::logger> shared_logger)
     : FiberDriver(master, NodeID), robot_states(sharedState), logger(shared_logger)
 {
+    this->m_encoderMemDir = std::move(encoderMemoryDir);
     this->m_controller_brand = ControllerBrand;
     this->m_sampleTime = SampleTime;
     this->m_operation_mode = OperationMode;
@@ -154,7 +156,7 @@ void Cia301Node::OnBoot(canopen::NmtState /*st*/, char es, const std::string &wh
         Wait(AsyncWait(duration(std::chrono::milliseconds(50)))); // wait for for a clean log file
 
         if (m_useEncoderMemory)
-            this->ReadEncoderMemFile(EnoderStoreFiles_directory, m_encoderMem, m_encoderMemFile); // read or create the memory file
+            this->ReadEncoderMemFile(m_encoderMemDir, m_encoderMem, m_encoderMemFile); // read or create the memory file
         Wait(AsyncWait(duration(std::chrono::milliseconds(500))));                                // this wait is necessary to give time opening memory files
         m_flags.set(Flags::FlagIndex::ENCODER_MEM_READY, true);
 

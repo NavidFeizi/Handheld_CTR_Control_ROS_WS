@@ -17,6 +17,7 @@
   <depend>ctr_kinematics_pinn</depend>
   <depend>ctr_common</depend>
   <depend>ctr_cosserat</depend>
+  <depend>ctr_robot_driver</depend>
 
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>python3-numpy</exec_depend>

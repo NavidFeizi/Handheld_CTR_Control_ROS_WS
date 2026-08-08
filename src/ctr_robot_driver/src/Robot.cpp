@@ -1,4 +1,4 @@
-#include "Robot.hpp"
+#include "ctr_robot_driver/Robot.hpp"
 
 using namespace std::chrono_literals;
 using namespace lely;
@@ -67,7 +67,7 @@ void CTRobot::startCANopenNodes()
 
   // Create a virtual SocketCAN CAN controller and channel, and do not modify
   // the current CAN bus state or bitrate.
-  io::CanController ctrl("can0");
+  io::CanController ctrl(m_paths.can_interface.c_str());
   io::CanChannel chan(poll, exec);
 
   chan.open(ctrl);
@@ -76,12 +76,10 @@ void CTRobot::startCANopenNodes()
   // means every user-defined callback for a CANopen event will be posted as a
   // task on the event loop, instead of being invoked during the event
   // processing by the stack.
-  std::string master_dcf = "/master.dcf";
-  std::string master_bin = "/master.bin";
   canopen::AsyncMaster master(timer,
                               chan,
-                              CANopenFiles_directory + master_dcf,
-                              CANopenFiles_directory + master_bin,
+                              m_paths.canopen_dir + "/master.dcf",
+                              m_paths.canopen_dir + "/master.bin",
                               7);
 
   // Create a signal handler.
@@ -115,19 +113,19 @@ void CTRobot::startCANopenNodes()
   exec.post([&]()
             { m_inrTubeRot = std::make_shared<Cia301Node>(exec, master, 1, "Faulhaber", m_encodersResolution[0], m_gearRatios[0], m_velocityFactors[0],
                                                           m_sampleTime, operation_mode, m_maxAcc[0], m_maxVel[0],
-                                                          m_shared_state, m_logger); });
+                                                          m_paths.resolvedEncoderMemoryDir(), m_shared_state, m_logger); });
   exec.post([&]()
             { m_inrTubeTrn = std::make_shared<Cia301Node>(exec, master, 2, "Faulhaber", m_encodersResolution[1], m_gearRatios[1], m_velocityFactors[1],
                                                           m_sampleTime, operation_mode, m_maxAcc[1], m_maxVel[1],
-                                                          m_shared_state, m_logger); });
+                                                          m_paths.resolvedEncoderMemoryDir(), m_shared_state, m_logger); });
   exec.post([&]()
             { m_mdlTubeRot = std::make_shared<Cia301Node>(exec, master, 3, "Faulhaber", m_encodersResolution[2], m_gearRatios[2], m_velocityFactors[2],
                                                           m_sampleTime, operation_mode, m_maxAcc[2], m_maxVel[2],
-                                                          m_shared_state, m_logger); });
+                                                          m_paths.resolvedEncoderMemoryDir(), m_shared_state, m_logger); });
   exec.post([&]()
             { m_mdlTubeTrn = std::make_shared<Cia301Node>(exec, master, 4, "Faulhaber", m_encodersResolution[3], m_gearRatios[3], m_velocityFactors[3],
                                                           m_sampleTime, operation_mode, m_maxAcc[3], m_maxVel[3],
-                                                          m_shared_state, m_logger); });
+                                                          m_paths.resolvedEncoderMemoryDir(), m_shared_state, m_logger); });
   {
     std::thread t1([&]()
                    { loop.run(); });
@@ -704,8 +702,8 @@ void CTRobot::initLogger()
   char buffer[80];
   strftime(buffer, sizeof(buffer), "%Y-%m-%d_%H-%M-%S", &tm);
   std::string filename = std::string(buffer) + ".txt"; // Use the formatted time as the filename
-  std::filesystem::create_directories(Log_directory);
-  std::string logDir = Log_directory + filename;
+  std::filesystem::create_directories(m_paths.log_dir);
+  std::string logDir = m_paths.log_dir + filename;
 
   /* instansiate the logger object */
   auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();

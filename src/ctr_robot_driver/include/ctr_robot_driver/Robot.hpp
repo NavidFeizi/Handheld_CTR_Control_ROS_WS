@@ -25,6 +25,7 @@
 #include <lely/ev/future.hpp>
 #include <thread>
 #include <string>
+#include <cstdlib>
 #include <bitset>
 #include <fstream>
 #include <cmath>
@@ -45,10 +46,9 @@
 #include <numeric>
 #include <optional>
 
-#include "CiA301node.hpp"
-#include "CanEssentials.hpp"
-#include "Robot.hpp"
-#include "SharedStates.hpp"
+#include "ctr_robot_driver/CiA301node.hpp"
+#include "ctr_robot_driver/CanEssentials.hpp"
+#include "ctr_robot_driver/SharedStates.hpp"
 
 #include <cstring>
 #include <csignal>
@@ -122,11 +122,32 @@ class Interface {
 class CTRobot
 {
 public:
+    // Runtime locations, formerly baked in as compile-time macros
+    // (CANopenFiles_directory / EnoderStoreFiles_directory / Log_directory).
+    // Set via setRuntimePaths() BEFORE startRobotCommunication().
+    struct RuntimePaths
+    {
+        std::string canopen_dir;        // dir holding master.dcf / master.bin (required)
+        std::string can_interface = "can0";
+        std::string encoder_memory_dir; // empty -> $HOME/Documents/handheld_CTR/encoder_memory/
+        std::string log_dir = "log/Robot/";
+
+        std::string resolvedEncoderMemoryDir() const
+        {
+            if (!encoder_memory_dir.empty())
+                return encoder_memory_dir;
+            const char *home = std::getenv("HOME");
+            return std::string(home != nullptr ? home : ".") + "/Documents/handheld_CTR/encoder_memory/";
+        }
+    };
+
     CTRobot(bool position_limit, blaze::StaticVector<double, 4UL> maxVel, blaze::StaticVector<double, 4UL> maxAcc);
     CTRobot();
 
     CTRobot(const CTRobot &rhs);
     ~CTRobot();
+
+    void setRuntimePaths(RuntimePaths paths) { m_paths = std::move(paths); }
 
     void startRobotCommunication(int sample_time);
     void enableOperation(const bool enable);
@@ -177,6 +198,7 @@ public:
     // bool m_encoders_set;
 
 protected:
+    RuntimePaths m_paths;
     std::shared_ptr<spdlog::logger> m_logger;
     std::shared_ptr<SharedState> m_shared_state;
 
