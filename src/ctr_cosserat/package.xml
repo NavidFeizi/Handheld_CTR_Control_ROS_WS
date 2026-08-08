@@ -8,7 +8,7 @@
     (formerly robot/ctr_library). Boost.odeint integration over Blaze types,
     NLopt-based inverse kinematics.
   </description>
-  <maintainer email="fpedrosa@mirsee.com">Filipe Pedrosa</maintainer>
+  <maintainer email="fpedrosa@uwo.ca">Filipe Pedrosa</maintainer>
   <license>Proprietary</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

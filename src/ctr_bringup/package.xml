@@ -8,7 +8,7 @@
     and GUI, then (+20 s) the OpenIGTLink bridge to 3D Slicer. The timer delays
     let the NDI tracker finish initializing — preserve the ordering.
   </description>
-  <maintainer email="fpedrosa@mirsee.com">Filipe Pedrosa</maintainer>
+  <maintainer email="fpedrosa@uwo.ca">Filipe Pedrosa</maintainer>
   <license>Proprietary</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

@@ -12,60 +12,57 @@
 ```
 Handheld_CTR_Control_ROS_WS/
 ├── src/
-│   ├── interfaces/        # Custom ROS2 messages, services, and actions
-│   ├── controller/
-│   │   └── src/controller_node.cpp           # control
+│   ├── interfaces/           # Custom ROS2 messages and services
+│   ├── ctr_common/           # Shared conventions: joint order, CSV parsing, data-root/model paths
+│   ├── ctr_cosserat/         # ROS-free Cosserat-rod CTR model (static lib)
+│   ├── ctr_kinematics_pinn/  # ROS-free TorchScript PINN inference + unified models/ pool
+│   ├── ctr_robot_driver/     # ROS-free CANopen joint driver (lely) + dcfgen config in share/
+│   ├── ctr_bringup/          # System bring-up launch (EM tracker → robot → IGTL bridge)
 │   ├── emtracker/
+│   │   ├── lib_emtracker/                    # NDI Aurora driver library (+ vendored NDI API)
 │   │   └── src/EMtracker_node.cpp            # track
 │   ├── igtlink_bridge/
 │   │   └── src/igtl_bridge_node.cpp          # bridge
 │   ├── manager/
-│   │   ├── include/                          # Qt/ROS manager headers
+│   │   ├── include/                          # Qt/ROS manager headers (+ csv_path_io.hpp)
 │   │   └── src/
-│   │       ├── manager_node.cpp              # manage
 │   │       ├── recorder_node.cpp             # record
-│   │       ├── procedure_node.cpp            # procedure
-│   │       ├── joint_path_node.cpp           # joint_path
 │   │       ├── master_node.cpp
 │   │       └── master_qt_gui.cpp             # master
 │   ├── mpc/
-│   │   ├── ctr_mpc/                          # MPC library
-│   │   ├── ctr_pinn_infer/                   # shared PINN inference code
-│   │   └── src/
-│   │       ├── mpc_node.cpp                  # mpc
-│   │       └── reference_node.cpp            # reference
+│   │   ├── ctr_mpc/                          # QP MPC library (OSQP)
+│   │   └── src/mpc_node.cpp                  # mpc
 │   ├── planner/
-│   │   ├── motion_planning/                  # planner library
-│   │   ├── ctr_pinn_infer/                   # PINN inference code
+│   │   ├── motion_planning/                  # OMPL planner library (+ DeploymentSchedule.hpp)
 │   │   └── src/planner_node.cpp              # plan
 │   ├── robot/
-│   │   ├── lib_robot/                        # low-level robot/CANopen library
-│   │   ├── ctr_library/                      # CTR kinematics library
-│   │   ├── ctr_pinn_infer/                   # learned forward model
+│   │   ├── include/robot/                    # quat_utils.hpp (EKF helpers)
 │   │   └── src/
-│   │       ├── robot_node.cpp                # ctr_robot
+│   │       ├── robot_node.cpp                # ctr_robot (drives hardware via ICtrJointGroup)
 │   │       ├── qt_node.cpp                   # qt_gui
 │   │       ├── cosserat_fk_node.cpp          # cosserat_fk
 │   │       ├── pinn_fk_node.cpp              # pinn_fk
 │   │       └── ekf_node.cpp                  # ekf_node
-│   └── target_gen/                           # target generation utilities
-├── launch/                                   # top-level system launch files
-├── Input_Files/                              # target and path CSV inputs
-├── Output_Files/                             # logged data and plotting scripts
+│   └── target_gen/                           # target generation utilities (plain Python)
+├── launch/                                   # shim → ctr_bringup's system_bringup.launch.py
+├── docker/                                   # build-verification image + check.sh (see docker/README.md)
+├── Input_Files/                              # target CSV inputs
+├── Output_Files/                             # recorder sessions (new sessions untracked)
 ├── 3DSlicer/                                 # Slicer scenes, transforms, and models
-├── Shared/                                   # shared runtime files
-└── Shared_Files/                             # additional shared path files
+└── Shared_Files/                             # planner ↔ manager path channel (plannedPath.csv)
 ```
 
-
----
+Each package with parameters carries a `config/*_params.yaml` — the single
+source of truth, loaded by its launch file; launch arguments override.
+Runtime data directories resolve via the `data_root` parameter, the
+`CTR_DATA_ROOT` env var, or (fallback) the legacy workspace-layout climb.
 
 ## Dependencies
 
 | Library | Purpose | Minimum version |
 |---------|---------|-----------------|
 | [LibTorch](https://pytorch.org/get-started/locally/) (CPU) | PINN inference & auto-diff Jacobians | 2.9.0 |
-| [OMPL](https://ompl.kavrakilab.org/) | Sampling-based motion planning | 1.6 |
+| [OMPL](https://ompl.kavrakilab.org/) | Sampling-based motion planning | 2.0 (AORRTC) |
 | [Blaze](https://bitbucket.org/blaze-lib/blaze) | Dense/sparse linear algebra | 3.8 |
 | [Boost](https://www.boost.org/) | `serialization`, `filesystem`, `algorithm` | 1.74 |
 | [TBB](https://github.com/oneapi-src/oneTBB) | Parallel neighbour-graph construction | 2021 |
@@ -84,7 +81,7 @@ After downloading LibTorch to `/usr/local/libtorch`, add the following to your `
 export Torch_DIR="/usr/local/libtorch/share/cmake/Torch"
 ```
 
-> **Important:** If you have a system PyTorch package installed alongside a manual LibTorch build, conflicting headers in `/usr/local/include/` can cause subtle compilation errors. The `ctr_pinn_infer/CMakeLists.txt` handles this by pinning `Torch_DIR` explicitly and pre-populating `c10_LIBRARY` — no manual intervention is needed as long as you follow the path conventions above.
+> **Important:** If you have a system PyTorch package installed alongside a manual LibTorch build, conflicting headers in `/usr/local/include/` can cause subtle compilation errors. `ctr_kinematics_pinn/cmake/torch_pin.cmake` handles this by pinning `Torch_DIR` explicitly and pre-populating `c10_LIBRARY`; the pin also runs for every package that `find_package`s `ctr_kinematics_pinn`, so no manual `Torch_DIR` export is required (override the prefix with `-DCTR_TORCH_DIR=` if needed).
 
 ---
 
@@ -92,8 +89,46 @@ export Torch_DIR="/usr/local/libtorch/share/cmake/Torch"
 ## Build Packages Instruction
 
 ```bash
-colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON --packages-select interfaces emtracker robot igtlink_bridge controller manager planner
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 ```
+
+### Compile checks without ROS (Docker)
+
+On a machine without ROS 2, `docker/check.sh` runs the same full colcon build
+inside a `ros:jazzy` container mirroring the lab's `/usr/local` dependency
+layout — see `docker/README.md` for the pinned versions and usage.
+
+### Tests
+
+```bash
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+colcon test --packages-select ctr_common emtracker manager robot ctr_robot_driver mpc planner
+colcon test-result
+```
+
+The suites are hardware-, Torch-, and OMPL-free (joint conventions, CSV
+parsing, Butterworth/rigid transforms, quaternion utils, CiA-402 helpers,
+MPC QP behaviour incl. warm-start equivalence, deployment scheduling).
+
+### Lab-machine smoke checklist (after the 2026-08 refactor)
+
+One-time verification on the real robot, in order:
+
+1. CAN bring-up and homing per the sections below (the driver now reads
+   `master.dcf`/`master.bin` from `share/ctr_robot_driver/canopen`, not the
+   build tree; `canopen_dir`/`can_interface`/`encoder_memory_dir` are
+   parameters of `robot_node`).
+2. EM tracker: first run seeds `$HOME/Documents/handheld_CTR/emtracker_config/`
+   from the installed config; registration results now land there (writable),
+   not in the source tree.
+3. EKF convergence and MPC tracking/cycle time: robot & mpc moved from the
+   ambient system Torch to the pinned LibTorch 2.9.0, the OSQP warm start is
+   now actually used, and `-march=native` no longer leaks into the OSQP ABI.
+4. `f_dot` is single-sourced to 0.2 N/s (production value; robot.py's shadowed
+   0.1 default lost).
+5. Shared_Files round-trip: plan → `plannedPath.csv` (written atomically) →
+   deployment; Slicer's RobotTrajectory command path is functional for the
+   first time (service type fixed).
 ---
 
 
