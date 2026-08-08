@@ -1696,7 +1696,11 @@ void Planner<controlInputs>::writeSolutionToFile(const std::string &outputFile)
 				std::filesystem::create_directories(fileName.parent_path());
 			}
 
-			std::ofstream outFile(fileName, std::ios::out);
+			// Atomic publish: write to a temp file, then rename over the target.
+			// The master node polls this CSV; rename() is atomic on POSIX, so it
+			// can never observe a half-written plan.
+			const std::filesystem::path tmpName = fileName.string() + ".tmp";
+			std::ofstream outFile(tmpName, std::ios::out);
 
 			if (outFile.is_open())
 			{
@@ -1733,6 +1737,7 @@ void Planner<controlInputs>::writeSolutionToFile(const std::string &outputFile)
 				}
 
 				outFile.close();
+				std::filesystem::rename(tmpName, fileName);
 				// Inform the user that the file was successfully written
 				std::cout << "Motion plan successfully written to: "
 						  << std::filesystem::absolute(fileName) << std::endl;

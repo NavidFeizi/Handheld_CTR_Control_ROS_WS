@@ -1034,6 +1034,19 @@ bool MasterNode::loadPlannedPath()
     std::lock_guard<std::mutex> lock(m_deploy_mutex);
     if (read_path_from_csv(m_q_list, "plannedPath.csv"))
     {
+        // Log the file mtime so a stale plan (planner wrote nothing new) is
+        // visible in the logs when diagnosing deployment behaviour.
+        std::error_code ec;
+        const auto csv_path = ctr_common::resolveDataRoot(*this, "manager") / "Shared_Files" / "plannedPath.csv";
+        const auto mtime = std::filesystem::last_write_time(csv_path, ec);
+        if (!ec)
+        {
+            const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::filesystem::file_time_type::clock::now() - mtime)
+                                 .count();
+            RCLCPP_INFO(this->get_logger(), "plannedPath.csv loaded (written %.1f s ago)", age / 1000.0);
+        }
+
         m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
         m_current_config_index = 0;
         return true;

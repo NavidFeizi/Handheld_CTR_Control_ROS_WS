@@ -125,7 +125,12 @@ public:
     // // path planning service
     // m_manual_target_service = create_service<interfaces::srv::Config>("manual_target", std::bind(&PathPlannerNode::planner_callback, this, _1, _2));
 
-    // path planning service
+    // Path planning service. Concurrency contract: the manager keeps at most
+    // ONE outstanding request (m_flag_planning gates the next one), and the
+    // whole write(plannedPath.csv) → respond → manager-read sequence is
+    // strictly ordered by the service round-trip, so the ~3 s OMPL solve runs
+    // inside this callback by design. Do not add a second client without
+    // revisiting that ordering.
     m_command_service = create_service<interfaces::srv::Planner>("planner/command", std::bind(&PathPlannerNode::plannerService_callback, this, _1, _2));
 
     // publisher to send the path
