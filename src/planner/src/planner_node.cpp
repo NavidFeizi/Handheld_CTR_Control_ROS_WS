@@ -14,7 +14,6 @@
 #include "interfaces/srv/config.hpp"
 #include "interfaces/srv/planner.hpp"
 #include "interfaces/msg/force.hpp"
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include "std_msgs/msg/float64_multi_array.hpp"
 
 #include "tf2/exceptions.h"
@@ -25,6 +24,10 @@
 
 #include <fstream>
 #include <filesystem>
+
+#include "ctr_common/csv_io.hpp"
+#include "ctr_common/joint_conventions.hpp"
+#include "ctr_common/runtime_paths.hpp"
 
 #include "PINNs.hpp"
 #include "Planner.hpp"
@@ -44,14 +47,6 @@
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
-
-// Resolved lazily on first use: get_package_share_directory() can throw, which
-// at static-init time (before main) would terminate with no diagnostic.
-static const std::string &PACKAGE_SHARE_DIR()
-{
-  static const std::string dir = ament_index_cpp::get_package_share_directory("planner");
-  return dir;
-}
 
 class PathPlannerNode : public rclcpp::Node
 {
@@ -81,8 +76,7 @@ public:
   // Function to declare and initialize parameters - parameters values should be set from the launch file
   void declare_parameters()
   {
-    std::string workspace_directory = ament_index_cpp::get_package_share_directory(m_packageName);
-    std::string output_dir = workspace_directory + "/../../../../Shared_Files";
+    const std::string output_dir = (ctr_common::resolveDataRoot(*this, m_packageName) / "Shared_Files").string();
     this->declare_parameter<std::string>("temp_dir", output_dir);
     m_tempDir = this->get_parameter("temp_dir").as_string();
     if (!std::filesystem::exists(m_tempDir))
@@ -135,13 +129,7 @@ public:
   void updateCurrentQ(const interfaces::msg::Jointspace::ConstSharedPtr &msg)
   {
     std::lock_guard<std::mutex> lock(m_feedback_mutex);
-    m_current_q[0UL] = msg->position[1UL];
-    m_current_q[1UL] = msg->position[3UL];
-    m_current_q[2UL] = 0.00;
-    m_current_q[3UL] = msg->position[0UL];
-    m_current_q[4UL] = msg->position[2UL];
-    m_current_q[5UL] = 0.00;
-    // std::cout << "m_current_q: " << blaze::trans(m_current_q) << std::endl;
+    m_current_q = ctr_common::wireToPhysics6(msg->position);
   }
 
   // Update current tool (tip) position in the base frame.
@@ -513,18 +501,6 @@ public:
     m_publisher_path->publish(msg);
     RCLCPP_INFO(get_logger(), "Published task-space path with %zu points.", pathSize);
 
-    // readFromCSV(m_JointValues, m_tempDir, "plannedPath");
-    // // Read joint space path from CSV
-    // if (m_JointValues.rows() == 0)
-    // {
-    //   RCLCPP_ERROR(get_logger(), "Failed to read planned path or empty CSV");
-    //   m_q = m_current_q;
-    // }
-    // else
-    // {
-    //   m_q = blaze::trans(blaze::row(m_JointValues, m_JointValues.rows() - 1UL));
-    // }
-
     // // Actuate CTR to current config
     // bool convergence = m_ctr_pinn.actuate_CTR(m_initGuess, m_current_q);
     // if (!convergence)
@@ -576,53 +552,31 @@ public:
 
   void read_path_from_csv(std::vector<blaze::StaticVector<double, kControlInputs>>& init_q_list,  const std::string& fileName)
   {
-      std::filesystem::path ws_dir(PACKAGE_SHARE_DIR());
-      ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
-      std::filesystem::path file_path = ws_dir / "Shared_Files" / fileName;
+      const std::filesystem::path file_path =
+          ctr_common::resolveDataRoot(*this, m_packageName) / "Shared_Files" / fileName;
 
-      std::ifstream file;
-      file.open(file_path, std::ifstream::in);
-      if (!file.is_open())
+      const auto rows = ctr_common::csv::readNumericCsv(file_path);
+      if (!rows)
       {
           RCLCPP_ERROR(get_logger(), "Failed to open file: %s", file_path.c_str());
           return;
       }
 
       init_q_list.clear();
-      std::string line;
 
       // writeSolutionToFile() emits no header; every line is a control-space state.
-      // Read file line by line
-      while (std::getline(file, line))
+      for (const auto &row : *rows)
       {
-          std::istringstream ss(line);
-          std::string value;
-          std::vector<double> row;
-
-          while (std::getline(ss, value, ','))
-          {
-              try
-              {
-                  row.push_back(std::stod(value));
-              }
-              catch (const std::exception& e)
-              {
-                  RCLCPP_WARN(get_logger(), "Failed to parse value: %s", value.c_str());
-              }
-          }
-
           if (row.size() == kControlInputs)
           {
-              blaze::StaticVector<double, kControlInputs> q_point = {row[0], row[1], row[2], row[3]};
-              init_q_list.push_back(q_point);
+              init_q_list.push_back({row[0], row[1], row[2], row[3]});
           }
           else
           {
-              RCLCPP_WARN(get_logger(), "Line does not contain exactly %zu values: %s", kControlInputs, line.c_str());
+              RCLCPP_WARN(get_logger(), "Row does not contain exactly %zu values (got %zu)", kControlInputs, row.size());
           }
       }
 
-      file.close();
       RCLCPP_INFO(get_logger(), "Loaded %zu path points from CSV file.", init_q_list.size());
   }
 
@@ -650,51 +604,6 @@ public:
       q_list_out.push_back(q_list_in.back());
 
       return q_list_out;
-  }
-
-  // function that reads relevant clinical data from CSV files for each case
-  template <typename MatrixType>
-  MatrixType readFromCSV(MatrixType &Mat, const std::string &dir, const std::string &fileName)
-  {
-    // Construct file path and name
-    const std::filesystem::path filePath = dir; //("../../Output_Files/");
-    const std::filesystem::path file = filePath / (fileName + ".csv");
-
-    // Ensure the directory exists
-    std::filesystem::create_directories(filePath);
-
-    // Open the CSV file
-    std::ifstream CSV_file(file, std::ifstream::in);
-    if (!CSV_file.is_open())
-    {
-      throw std::runtime_error("Error opening the CSV file: " + file.string());
-    }
-
-    typedef boost::tokenizer<boost::escaped_list_separator<char>> Tokenizer;
-
-    std::string line;
-
-    size_t row = 0UL, col = 0UL;
-    double value;
-
-    while (std::getline(CSV_file, line))
-    {
-      Tokenizer tokenizer(line);
-      col = 0UL;
-
-      for (Tokenizer::iterator it = tokenizer.begin(); it != tokenizer.end(); ++it)
-      {
-        value = std::stod(*it);
-        Mat(row, col) = value;
-        ++col;
-      }
-      ++row;
-    }
-
-    CSV_file.close();
-    Mat.resize(row, col, true);
-
-    return Mat;
   }
 
 private:
@@ -752,7 +661,6 @@ private:
   const double m_linearActuatorThickness = 30.00E-3; // thickness of the linear actuator stages --> collision avoidance
   const double m_pos_tol = 1.00E-3;
 
-  blaze::HybridMatrix<double, 15000UL, 6UL, blaze::columnMajor> m_JointValues; // Sequence of actuation values
 
   
   PINNs<kControlInputs> m_ctr_pinn;

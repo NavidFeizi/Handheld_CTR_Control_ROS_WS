@@ -13,6 +13,7 @@
   <depend>std_msgs</depend>
   <depend>action_msgs</depend>
   <depend>interfaces</depend>
+  <depend>ctr_common</depend>
 
   <depend>geometry_msgs</depend>
   <depend>tf2</depend>

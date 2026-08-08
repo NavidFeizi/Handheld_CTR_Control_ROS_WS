@@ -42,8 +42,10 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
-find_package(interfaces REQUIRED) 
+find_package(interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(ctr_common REQUIRED)
+target_link_libraries(plan ctr_common::ctr_common)
 ament_target_dependencies(plan rclcpp std_msgs std_srvs interfaces ament_index_cpp)
 
 # Find necessary planner packages
