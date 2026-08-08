@@ -28,6 +28,7 @@
 #include <array>
 #include <memory>
 #include <mutex>
+#include <atomic>
 
 // #include "manager/qt_gui.hpp"
 
@@ -176,10 +177,10 @@ private:
     HighLvlCtrMode m_high_level_mode;
     
     bool m_closed_loop_enabled = false;
-    bool m_flag_planning = false; 
+    std::atomic<bool> m_flag_planning{false}; // written by service callbacks, read by control_loop and GUI
     bool m_flag_planner_updated = false;
-    bool m_planner_success = false;
-    double m_planner_ik_error = 0.0;
+    std::atomic<bool> m_planner_success{false};
+    std::atomic<double> m_planner_ik_error{0.0};
     
     blaze::StaticVector<double, 4> m_com_vel;
     blaze::StaticVector<double, 4UL> m_q, m_q_des, m_q_error, m_q_abs, m_q_prev;
@@ -188,7 +189,7 @@ private:
     blaze::StaticVector<double, 4UL> m_minCurrentPosLimit = blaze::StaticVector<double, 4UL>(0.0);
     blaze::StaticVector<double, 4UL> m_maxCurrentPosLimit = blaze::StaticVector<double, 4UL>(0.0);
     
-    std::array<bool, 7> m_interface_key = {0, 0, 0, 0, 0, 0, 0};
+    std::array<std::atomic<bool>, 7> m_interface_key = {}; // written by the interface subscription, read by control_loop
     std::array<bool, 7> m_interface_key_prev = {0, 0, 0, 0, 0, 0, 0};
     
     std::vector<blaze::StaticVector<double, 6>> m_q_list;
@@ -199,14 +200,14 @@ private:
     int m_current_config_index = 0;
     double m_insertion_step = 2e-3;
     bool m_deploy_button_held = false;
-    bool m_auto_insert = false;
-    bool m_auto_retract = false;
+    std::atomic<bool> m_auto_insert{false};   // GUI thread <-> control_loop
+    std::atomic<bool> m_auto_retract{false};  // GUI thread <-> control_loop
     bool m_retracting = false;
 
     double k_ik_error_threshold = 0.003;
     
     // Automated test variables
-    bool m_test_running = false;
+    std::atomic<bool> m_test_running{false};
     TestState m_test_state = TestState::Idle;
     std::vector<Eigen::Vector3d> m_test_targets;
     size_t m_current_target_index = 0;
@@ -214,14 +215,14 @@ private:
     bool m_target_set = false;
     
     // Manual CSV target selection variables
-    bool m_use_csv_target = false;
+    std::atomic<bool> m_use_csv_target{false};
     std::vector<Eigen::Vector3d> m_csv_targets;
     size_t m_csv_target_index = 0;
     
     bool m_enabled, m_procedure, m_reached, m_encoder = false;
     bool m_engaged, m_ready_to_engage, m_head_attached = false;
     int m_locked;
-    bool m_robot_frozen = false;
+    std::atomic<bool> m_robot_frozen{false};
     bool m_flag_manual, m_flag_use_target_action, m_flag_enabled, m_trans_limit, m_trans_limit_prev = false;
     
     blaze::StaticVector<bool, 4UL> m_enabledJoints, m_encoderJoints, m_reachedJoints;
@@ -230,6 +231,7 @@ private:
     Eigen::Matrix4d m_trans_probe;
     Eigen::Vector3d m_Xd, m_Xd_prev, m_Xd_adj_prev;
     Eigen::Vector3d m_X, m_Xsim;
+    std::mutex m_feedback_mutex; // guards m_X, m_Xsim, m_Xd, m_tip_position, m_q, m_qdot, m_current
     Eigen::Vector3d m_tip_position;  // For CSV target error calculation
 
     // Force-triggered deployment replanning

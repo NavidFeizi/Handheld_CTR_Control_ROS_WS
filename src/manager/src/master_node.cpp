@@ -54,17 +54,16 @@ void MasterNode::handleFreezeButtonClicked(QPushButton *freeze_button)
         auto response = future.get();
         if (response->success)
         {
-            freeze_button->setText(m_robot_frozen ? "Unfreeze Robot" : "Freeze Robot");
-            // Set button color: red when unfrozen (showing "Freeze Robot"), normal when frozen
-            if (m_robot_frozen)
-            {
-                freeze_button->setStyleSheet(""); // Reset to default style when frozen
-            }
-            else
-            {
-                freeze_button->setStyleSheet("background-color: rgb(255, 0, 0); color: white;"); // Red background when unfrozen
-            }
-            RCLCPP_INFO(this->get_logger(), "Robot %s", m_robot_frozen ? "frozen" : "unfrozen");
+            // This callback runs on a ROS executor thread — widget mutations
+            // must be marshalled onto the Qt thread.
+            const bool frozen = m_robot_frozen;
+            QMetaObject::invokeMethod(this, [freeze_button, frozen]()
+                                      {
+                freeze_button->setText(frozen ? "Unfreeze Robot" : "Freeze Robot");
+                // Red background when unfrozen (showing "Freeze Robot"), default when frozen
+                freeze_button->setStyleSheet(frozen ? "" : "background-color: rgb(255, 0, 0); color: white;"); },
+                                      Qt::QueuedConnection);
+            RCLCPP_INFO(this->get_logger(), "Robot %s", frozen ? "frozen" : "unfrozen");
         }
         else
         {
@@ -309,15 +308,21 @@ void MasterNode::updateCsvTargetDisplay()
     }
     
     // Calculate error between current tip and CSV target
-    Eigen::Vector3d error = m_tip_position - m_Xd;
+    Eigen::Vector3d tip, Xd;
+    {
+        std::lock_guard<std::mutex> lock(m_feedback_mutex);
+        tip = m_tip_position;
+        Xd = m_Xd;
+    }
+    Eigen::Vector3d error = tip - Xd;
     
     // Update row 5 for CSV target
     QTableWidget* emt_table = m_gui_manager->getEmtStatusTable();
-    emt_table->setItem(5, 0, new QTableWidgetItem(QString::number(m_Xd[0], 'f', 3)));
-    emt_table->setItem(5, 1, new QTableWidgetItem(QString::number(m_Xd[1], 'f', 3)));
-    emt_table->setItem(5, 2, new QTableWidgetItem(QString::number(m_Xd[2], 'f', 3)));
-    emt_table->setItem(5, 3, new QTableWidgetItem(QString::number(m_Xd.norm(), 'f', 3)));
-    emt_table->setItem(5, 4, new QTableWidgetItem(QString::number(atan2(m_Xd[1], m_Xd[0]), 'f', 3)));
+    emt_table->setItem(5, 0, new QTableWidgetItem(QString::number(Xd[0], 'f', 3)));
+    emt_table->setItem(5, 1, new QTableWidgetItem(QString::number(Xd[1], 'f', 3)));
+    emt_table->setItem(5, 2, new QTableWidgetItem(QString::number(Xd[2], 'f', 3)));
+    emt_table->setItem(5, 3, new QTableWidgetItem(QString::number(Xd.norm(), 'f', 3)));
+    emt_table->setItem(5, 4, new QTableWidgetItem(QString::number(atan2(Xd[1], Xd[0]), 'f', 3)));
     
     // Update row 6 for CSV-Tip error
     emt_table->setItem(6, 0, new QTableWidgetItem(QString::number(error[0], 'f', 3)));
@@ -455,6 +460,7 @@ void MasterNode::initRosInterfaces()
 
 void MasterNode::jointsConfig_timerCallback(const interfaces::msg::Jointspace::SharedPtr msg)
 {
+    std::lock_guard<std::mutex> lock(m_feedback_mutex);
     for (int i = 0; i < 4; i++)
     {
         m_q[i] = msg->position[i];
@@ -491,10 +497,9 @@ void MasterNode::robotStatus_callback(const interfaces::msg::Status::SharedPtr m
 
 void MasterNode::manualInterface_callback(const interfaces::msg::Interface::SharedPtr msg)
 {
-    m_interface_key_prev = m_interface_key;
-
     for (int i = 0; i < 7; i++)
     {
+        m_interface_key_prev[i] = m_interface_key[i].load();
         m_interface_key[i] = msg->interface_key[i];
     }
 
@@ -515,6 +520,7 @@ void MasterNode::manualInterface_callback(const interfaces::msg::Interface::Shar
 
 void MasterNode::updateSimout(const interfaces::msg::Taskspace::SharedPtr msg)
 {
+    std::lock_guard<std::mutex> lock(m_feedback_mutex);
     for (int i = 0; i < 3; i++)
     {
         m_Xsim[i] = msg->p[i];
@@ -561,7 +567,10 @@ void MasterNode::tf2_receive_timer_callback()
     // Update positions
     if (!m_test_running && !m_use_csv_target)
     {
-        m_Xd = m_trans_probe.block<3, 1>(0, 3); // target tip position
+        {
+            std::lock_guard<std::mutex> lock(m_feedback_mutex);
+            m_Xd = m_trans_probe.block<3, 1>(0, 3); // target tip position
+        }
 
         // Publish target position
         auto target_msg = interfaces::msg::Taskspace();
@@ -571,13 +580,17 @@ void MasterNode::tf2_receive_timer_callback()
         m_pub_task_target->publish(target_msg);
     }
 
-    m_X = m_trans_tip.block<3, 1>(0, 3); // Current tip position
-    m_tip_position = m_X;  // Store for CSV target error calculation
-    
-    // Update CSV target display if in CSV mode
+    {
+        std::lock_guard<std::mutex> lock(m_feedback_mutex);
+        m_X = m_trans_tip.block<3, 1>(0, 3); // Current tip position
+        m_tip_position = m_X;                // Store for CSV target error calculation
+    }
+
+    // Update CSV target display if in CSV mode (this timer runs on a ROS
+    // executor thread — widget updates must run on the Qt thread)
     if (m_use_csv_target)
     {
-        updateCsvTargetDisplay();
+        QMetaObject::invokeMethod(this, [this]() { updateCsvTargetDisplay(); }, Qt::QueuedConnection);
     }
 
     emit emtUpdated(m_trans_tip(0, 3), m_trans_tip(1, 3), m_trans_tip(2, 3),
@@ -755,8 +768,14 @@ void MasterNode::control_loop()
     // Update automated test state machine
     updateTestStateMachine();
 
-    Eigen::Vector3d X = m_X;
-    Eigen::Vector3d Xd = m_Xd;
+    // Snapshot the cross-thread feedback state once per cycle
+    Eigen::Vector3d X, Xd, Xsim;
+    {
+        std::lock_guard<std::mutex> lock(m_feedback_mutex);
+        X = m_X;
+        Xd = m_Xd;
+        Xsim = m_Xsim;
+    }
 
     if (m_procedure && m_high_level_mode == HighLvlCtrMode::Planner)
     {
@@ -894,7 +913,7 @@ void MasterNode::control_loop()
     else if (m_procedure && m_high_level_mode == HighLvlCtrMode::Deployment && m_closed_loop_enabled)
     {
         Eigen::Vector3d Xsim_error(0.0, 0.0, 0.0);
-        Xsim_error = X - m_Xsim;
+        Xsim_error = X - Xsim;
         Eigen::Vector3d Xd_adj = Xd - Xsim_error;
         bool target_changed = (Xd_adj - m_Xd_adj_prev).norm() > k_target_threshold;
         bool q_changed = blaze::norm((m_q - m_q_prev) / k_input_scale) > k_q_threshold;
@@ -1223,7 +1242,10 @@ void MasterNode::updateTestStateMachine()
             m_pub_task_target->publish(target_msg);
 
             onCtrlModeClicked(static_cast<int>(HighLvlCtrMode::Planner));
-            m_gui_manager->getPlannerRadioButton()->setChecked(true);
+            // control_loop runs on a ROS executor thread — marshal the widget call
+            QMetaObject::invokeMethod(this, [this]()
+                                      { m_gui_manager->getPlannerRadioButton()->setChecked(true); },
+                                      Qt::QueuedConnection);
             RCLCPP_INFO(get_logger(), "[Test] Switched to Planner mode");
         }
 
@@ -1278,7 +1300,10 @@ void MasterNode::updateTestStateMachine()
         if (m_high_level_mode != HighLvlCtrMode::Deployment)
         {
             onCtrlModeClicked(static_cast<int>(HighLvlCtrMode::Deployment));
-            m_gui_manager->getDeploymentRadioButton()->setChecked(true);
+            // control_loop runs on a ROS executor thread — marshal the widget call
+            QMetaObject::invokeMethod(this, [this]()
+                                      { m_gui_manager->getDeploymentRadioButton()->setChecked(true); },
+                                      Qt::QueuedConnection);
             RCLCPP_INFO(get_logger(), "[Test] Switched to Deployment mode");
         }
 
