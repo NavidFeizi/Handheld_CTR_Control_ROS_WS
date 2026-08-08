@@ -70,14 +70,43 @@ Q_OBJECT // Needed for Qt signals/slots
         initRosInterfaces();
     }
 
+    // Key state is written here (Qt thread) and read by the 20 ms ROS wall
+    // timer (executor thread) — a QSet is not thread-safe, so the 8 tracked
+    // keys live in an atomic bitmask instead.
+    static int keyBit(int qt_key)
+    {
+        switch (qt_key)
+        {
+        case Qt::Key_Right: return 0;
+        case Qt::Key_Left: return 1;
+        case Qt::Key_Up: return 2;
+        case Qt::Key_Down: return 3;
+        case Qt::Key_D: return 4;
+        case Qt::Key_A: return 5;
+        case Qt::Key_W: return 6;
+        case Qt::Key_S: return 7;
+        default: return -1;
+        }
+    }
+
+    static bool keyDown(uint32_t keys, int qt_key)
+    {
+        const int bit = keyBit(qt_key);
+        return bit >= 0 && (keys & (1u << bit)) != 0u;
+    }
+
     void keyPressEvent(QKeyEvent *event) override
     {
-        m_keysPressed.insert(event->key()); // Store pressed key
+        const int bit = keyBit(event->key());
+        if (bit >= 0)
+            m_keysPressed.fetch_or(1u << bit);
     }
 
     void keyReleaseEvent(QKeyEvent *event) override
     {
-        m_keysPressed.remove(event->key()); // Remove key when released
+        const int bit = keyBit(event->key());
+        if (bit >= 0)
+            m_keysPressed.fetch_and(~(1u << bit));
     }
 
 signals:                                              // Functions declared (Qt specific)
@@ -461,22 +490,23 @@ private:
         m_xdot_manual = {0.0, 0.0, 0.0, 0.0};
         
 
-        // Check for active keys and update movement values
-        if (m_keysPressed.contains(Qt::Key_Right))
+        // Check for active keys and update movement values (single atomic read)
+        const uint32_t keys = m_keysPressed.load();
+        if (keyDown(keys, Qt::Key_Right))
             m_xdot_manual[0] = m_xdot_command[0];
-        if (m_keysPressed.contains(Qt::Key_Left))
+        if (keyDown(keys, Qt::Key_Left))
             m_xdot_manual[0] = -1 * m_xdot_command[0];
-        if (m_keysPressed.contains(Qt::Key_Up))
+        if (keyDown(keys, Qt::Key_Up))
             m_xdot_manual[1] = m_xdot_command[1];
-        if (m_keysPressed.contains(Qt::Key_Down))
+        if (keyDown(keys, Qt::Key_Down))
             m_xdot_manual[1] = -1 * m_xdot_command[1];
-        if (m_keysPressed.contains(Qt::Key_D))
+        if (keyDown(keys, Qt::Key_D))
             m_xdot_manual[2] = m_xdot_command[2];
-        if (m_keysPressed.contains(Qt::Key_A))
+        if (keyDown(keys, Qt::Key_A))
             m_xdot_manual[2] = -1 * m_xdot_command[2];
-        if (m_keysPressed.contains(Qt::Key_W))
+        if (keyDown(keys, Qt::Key_W))
             m_xdot_manual[3] = m_xdot_command[3];
-        if (m_keysPressed.contains(Qt::Key_S))
+        if (keyDown(keys, Qt::Key_S))
             m_xdot_manual[3] = -1 * m_xdot_command[3];
         if (m_mode == CtrlMode::Manual)
         {
@@ -1020,7 +1050,7 @@ private:
     bool m_flag_manual, m_flag_use_target_action, m_flag_enabled, m_trans_limit, m_trans_limit_prev = false;
 
     // Qt related variables
-    QSet<int> m_keysPressed;
+    std::atomic<uint32_t> m_keysPressed{0};
     // QLabel *mp_label_1, *mp_label_2, *mp_label_3, *mp_label_4;
     QGroupBox *mp_bulletCtrlmModeGroup;
     QButtonGroup *mp_ctrl_mode_group, *mp_trans_lim_group;
@@ -1031,7 +1061,8 @@ private:
     QPushButton *mp_unlock_button, *mp_lock_button, *mp_freeze_button, *mp_connect_igtl_button;
     QTableWidget *mp_table_joints, *mp_table_robot, *mp_table_interface, *mp_table_cartesian, *mp_table_planner, *mp_table_ekf;
 
-    CtrlMode m_mode, m_mode_prev; // controller mode (manual, velocity, position)
+    std::atomic<CtrlMode> m_mode;
+    CtrlMode m_mode_prev; // controller mode (manual, velocity, position); prev only touched by the key timer
 
     blaze::StaticVector<double, 4> m_com_vel; // Velocity vector
 
