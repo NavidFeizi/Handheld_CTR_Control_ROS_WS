@@ -9,10 +9,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/msg/jointspace.hpp"
-#include "interfaces/action/target.hpp"
-#include "interfaces/action/jointstarget.hpp"
 #include "interfaces/srv/transformation.hpp"
-#include "interfaces/srv/jointstarget.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 

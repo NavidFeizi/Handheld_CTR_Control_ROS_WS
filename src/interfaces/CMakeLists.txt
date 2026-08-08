@@ -20,14 +20,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Jointspace.msg"
   "msg/Force.msg"
   "msg/EKFResidual.msg"
-  "msg/Robotbackbone.msg"
   "srv/Recording.srv"
   "srv/Planner.srv"
   "srv/Config.srv"
   "srv/Transformation.srv"
-  "srv/Jointstarget.srv"
-  "action/Jointstarget.action"
-  "action/Target.action"
 )
 
 if(BUILD_TESTING)

@@ -14,7 +14,6 @@
 #include "interfaces/msg/jointspace.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/srv/config.hpp"
-#include "interfaces/srv/jointstarget.hpp"
 #include "Robot.hpp"
 
 using namespace std::chrono_literals;
