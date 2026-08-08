@@ -34,9 +34,10 @@ RUN (wget -qO /tmp/libtorch.zip "https://download.pytorch.org/libtorch/cpu/libto
      || wget -qO /tmp/libtorch.zip "https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.9.0%2Bcpu.zip") \
     && unzip -q /tmp/libtorch.zip -d /usr/local && rm /tmp/libtorch.zip
 
-# OMPL 1.6.0 from source → /usr/local (config lands at /usr/local/share/ompl/cmake,
-# the path hardcoded in planner/motion_planning/CMakeLists.txt).
-RUN git clone --depth 1 --branch 1.6.0 https://github.com/ompl/ompl.git /tmp/ompl \
+# OMPL 2.0.1 from source → /usr/local (config lands at /usr/local/share/ompl/cmake,
+# the path hardcoded in planner/motion_planning/CMakeLists.txt). 2.0.x is required:
+# Planner.hpp includes AORRTC.h, which first shipped in OMPL 2.0.0.
+RUN git clone --depth 1 --branch 2.0.1 https://github.com/ompl/ompl.git /tmp/ompl \
     && cmake -S /tmp/ompl -B /tmp/ompl/build -DCMAKE_BUILD_TYPE=Release \
          -DOMPL_BUILD_PYBINDINGS=OFF -DOMPL_BUILD_DEMOS=OFF -DOMPL_BUILD_TESTS=OFF -DOMPL_REGISTRATION=OFF \
     && cmake --build /tmp/ompl/build -j"$(nproc)" \
@@ -68,11 +69,25 @@ RUN git clone --depth 1 https://gitlab.com/lely_industries/lely-core.git /tmp/le
     && make -j"$(nproc)" && make install && ldconfig && rm -rf /tmp/lely
 RUN pip install --break-system-packages --no-cache-dir dcf-tools
 
+# --- Lab-parity shims. Kept at the end of the file so edits here never invalidate
+# --- the expensive source-build layers above.
+
 # robot/ and mpc/ call find_package(Torch) with no hint; the lab machine resolves it
 # via an ambient system Torch install. Mirror that discoverability with the pinned
 # libtorch (ROS setup.bash prepends to CMAKE_PREFIX_PATH, so ament paths still win).
-# Kept at the end of the file so edits here never invalidate the source-build layers.
 ENV CMAKE_PREFIX_PATH=/usr/local/libtorch
+
+# planner's `plan` target pulls ompl via ament_target_dependencies, which ignores the
+# ompl::ompl imported target — on the lab machine `#include <ompl/...>` only resolves
+# because headers sit flat in /usr/local/include (default search path). OMPL installs
+# them under a versioned include/ompl-X.Y/ dir, so mirror the lab layout with a symlink.
+RUN ln -s "$(ls -d /usr/local/include/ompl-*)/ompl" /usr/local/include/ompl
+
+# check.sh copies the read-only-mounted workspace into a volume with rsync before
+# building: lib_robot's POST_BUILD dcfgen step writes master.dcf/.bin into the source
+# tree (works on the lab machine, impossible on a :ro mount).
+RUN apt-get update && apt-get install -y --no-install-recommends rsync \
+    && rm -rf /var/lib/apt/lists/*
 
 # The robot driver reads $HOME-based paths at runtime; harmless at build time.
 WORKDIR /out
