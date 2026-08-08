@@ -126,10 +126,10 @@ private:
 
     m_logger->info("[RobotNode] Max Velocities set to: [{}, {}, {}, {}]",
                    m_maxVel[0], m_maxVel[1], m_maxVel[2], m_maxVel[3]);
-    // declare_parameter<double>("Kp", 4.60);
-    // declare_parameter<double>("Ki", 2.60);
-    // m_kp = get_parameter("Kp").as_double();
-    // m_ki = get_parameter("Ki").as_double();
+    declare_parameter<double>("Kp", 30.0);
+    declare_parameter<double>("Ki", 5.0);
+    m_kp = get_parameter("Kp").as_double();
+    m_ki = get_parameter("Ki").as_double();
   }
 
   // Setup ROS interfaces including publishers, subscribers, services, and timers
@@ -1514,7 +1514,7 @@ private:
   bool m_emtracker_alive, m_targpublisher_alive, m_targpublisher_alive_tmep = false;
   bool m_flag_readyToEngage, m_flagEngaged, m_head_attached = false;
   int m_locked = 0;
-  double m_kp, m_ki = 0.00;
+  double m_kp = 0.00, m_ki = 0.00;
   bool m_procedure = false;
   std::array<bool, 7> m_interface_key = {0, 0, 0, 0, 0, 0, 0};
   std::array<bool, 4> m_encoders_set = {0, 0, 0, 0};
