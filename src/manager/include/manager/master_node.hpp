@@ -155,9 +155,11 @@ private:
     static constexpr double k_target_threshold = 0.002;
     static constexpr double k_q_threshold = 0.002;
     static constexpr blaze::StaticVector<double, 4UL> k_input_scale = {1.00, 1.00, 20.0, 20.0};
-    static constexpr double k_force_replan_threshold = 0.12; // N; ‖f_now − f_at_plan‖ that triggers a deployment replan
-    static constexpr double k_replan_cooldown_s = 2.0;       // s between replan requests (EKF ramps at f_dot ≈ 0.1 N/s)
-    static constexpr size_t k_min_remaining_waypoints = 5;   // ≈10 mm at m_insertion_step; below this a replan is not worth the pause
+    // Replanning tunables — declared as ROS parameters in the constructor
+    double m_force_replan_threshold = 0.12; // N; ‖f_now − f_at_plan‖ that triggers a deployment replan
+    double m_replan_cooldown_s = 2.0;       // s between replan requests (EKF ramps at f_dot ≈ 0.1 N/s)
+    size_t m_min_remaining_waypoints = 5;   // ≈10 mm at m_insertion_step; below this a replan is not worth the pause
+    std::string m_targets_csv = "random_interior_points.csv"; // target list in Input_Files/
 
     // Member variables
     CtrlMode m_ctrl_mode, m_ctrl_mode_prev;

@@ -14,6 +14,14 @@ MasterNode::MasterNode(QWidget *parent)
     : QWidget(parent), rclcpp::Node("master_node"), m_gui_manager(std::make_unique<QtGuiManager>(this))
 {
     std::cout << "Initializing MasterNode..." << std::endl;
+
+    // Replanning tunables and target-list source (defaults preserve the old constexprs)
+    m_force_replan_threshold = declare_parameter<double>("force_replan_threshold", m_force_replan_threshold);
+    m_replan_cooldown_s = declare_parameter<double>("replan_cooldown_s", m_replan_cooldown_s);
+    m_min_remaining_waypoints =
+        static_cast<size_t>(declare_parameter<int>("min_remaining_waypoints", static_cast<int>(m_min_remaining_waypoints)));
+    m_targets_csv = declare_parameter<std::string>("targets_csv", m_targets_csv);
+
     m_gui_manager->initializeGui();
     initRosInterfaces();
     onCtrlModeClicked(static_cast<int>(HighLvlCtrMode::Planner));
@@ -120,11 +128,11 @@ void MasterNode::handleTestButtonClicked()
         RCLCPP_INFO(this->get_logger(), "=== Starting Automated Test ===");
 
         // Load targets from random_interior_points.csv
-        read_targets_from_csv(m_test_targets, "random_interior_points.csv");
+        read_targets_from_csv(m_test_targets, m_targets_csv);
 
         if (m_test_targets.empty())
         {
-            RCLCPP_ERROR(this->get_logger(), "Failed to load targets from random_interior_points.csv");
+            RCLCPP_ERROR(this->get_logger(), "Failed to load targets from %s", m_targets_csv.c_str());
             return;
         }
 
@@ -188,11 +196,11 @@ void MasterNode::handleToggleTargetModeClicked()
         RCLCPP_INFO(this->get_logger(), "=== Switching to CSV Target Mode ===");
         
         // Load targets from random_interior_points.csv
-        read_targets_from_csv(m_csv_targets, "random_interior_points.csv");
+        read_targets_from_csv(m_csv_targets, m_targets_csv);
         
         if (m_csv_targets.empty())
         {
-            RCLCPP_ERROR(this->get_logger(), "Failed to load targets from random_interior_points.csv");
+            RCLCPP_ERROR(this->get_logger(), "Failed to load targets from %s", m_targets_csv.c_str());
             m_use_csv_target = false;
             m_gui_manager->getToggleTargetModeButton()->setText("Toggle: Probe Mode");
             return;
@@ -676,7 +684,7 @@ void MasterNode::maybeRequestDeploymentReplan()
         index = m_current_config_index;
         remaining = m_q_list_adjusted.size() - 1 - static_cast<size_t>(m_current_config_index);
     }
-    if (remaining < k_min_remaining_waypoints)
+    if (remaining < m_min_remaining_waypoints)
         return;
 
     Eigen::Vector3d f;
@@ -685,9 +693,9 @@ void MasterNode::maybeRequestDeploymentReplan()
         f = m_f_est;
     }
     const double df = (f - m_f_at_plan).norm();
-    if (df <= k_force_replan_threshold)
+    if (df <= m_force_replan_threshold)
         return;
-    if ((this->now() - m_last_replan_request_time).seconds() < k_replan_cooldown_s)
+    if ((this->now() - m_last_replan_request_time).seconds() < m_replan_cooldown_s)
         return;
 
     m_flag_planning = true; // pauses every deployment branch until the response arrives

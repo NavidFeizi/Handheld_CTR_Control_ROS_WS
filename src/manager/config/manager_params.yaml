@@ -1,0 +1,14 @@
+# Single source of truth for manager-package node parameters.
+# The launch file loads this first; launch arguments override.
+master_node:
+  ros__parameters:
+    force_replan_threshold: 0.12   # N; ||f_now - f_at_plan|| that triggers a deployment replan
+    replan_cooldown_s: 2.0         # s between replan requests
+    min_remaining_waypoints: 5     # below this a replan is not worth the pause
+    targets_csv: "random_interior_points.csv"  # target list in <data_root>/Input_Files/
+    data_root: ""                  # empty -> env CTR_DATA_ROOT -> legacy workspace climb
+
+recorder_node:
+  ros__parameters:
+    sample_time: 0.025
+    data_root: ""
