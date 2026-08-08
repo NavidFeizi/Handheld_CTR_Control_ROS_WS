@@ -26,4 +26,12 @@ install(TARGETS ctr_common
 ament_export_targets(export_ctr_common HAS_LIBRARY_TARGET)
 ament_export_dependencies(rclcpp ament_index_cpp)
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_joint_conventions test/test_joint_conventions.cpp)
+  target_link_libraries(test_joint_conventions ctr_common)
+  ament_add_gtest(test_csv_io test/test_csv_io.cpp)
+  target_link_libraries(test_csv_io ctr_common)
+endif()
+
 ament_package()
