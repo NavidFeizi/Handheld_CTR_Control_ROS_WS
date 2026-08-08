@@ -48,6 +48,7 @@
 #include <numeric>
 #include <optional>
 
+#include "ctr_robot_driver/ICtrJointGroup.hpp"
 #include "ctr_robot_driver/CiA301node.hpp"
 #include "ctr_robot_driver/CanEssentials.hpp"
 #include "ctr_robot_driver/SharedStates.hpp"
@@ -121,7 +122,7 @@ class Interface {
 
 };
 
-class CTRobot
+class CTRobot final : public ICtrJointGroup
 {
 public:
     // Runtime locations, formerly baked in as compile-time macros
@@ -155,8 +156,15 @@ public:
 
     // returns false if the CANopen nodes never boot (after bounded retries)
     bool startRobotCommunication(int sample_time);
+    // ICtrJointGroup lifecycle
+    bool connect(int sample_time_ms) override
+    {
+        m_connected = startRobotCommunication(sample_time_ms);
+        return m_connected;
+    }
+    bool isConnected() const override { return m_connected; }
     // stops the monitor loop, deconfigures the nodes, joins both threads
-    void shutdown();
+    void shutdown() override;
     void enableOperation(const bool enable);
 
     // ========================== Command and Feedback Methods ===========================
@@ -238,6 +246,7 @@ private:
     std::atomic<bool> m_monitor_stop{false};
     std::atomic<bool> m_boot_failed{false};
     std::atomic<bool> m_can_running{false};
+    std::atomic<bool> m_connected{false};
     std::function<void()> m_request_can_shutdown; // set by the CAN thread before loop.run()
     std::function<void()> m_request_master_reset;
 

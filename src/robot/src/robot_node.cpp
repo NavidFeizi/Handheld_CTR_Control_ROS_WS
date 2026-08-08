@@ -29,7 +29,7 @@ enum class CtrlMode : int
   Velocity = 0x03,
 };
 
-class RobotNode : public rclcpp::Node, public CTRobot
+class RobotNode : public rclcpp::Node
 {
 
 public:
@@ -50,15 +50,17 @@ public:
     }
     paths.can_interface = declare_parameter<std::string>("can_interface", "can0");
     paths.encoder_memory_dir = declare_parameter<std::string>("encoder_memory_dir", "");
-    setRuntimePaths(paths);
 
-    setMaxVel(m_maxVel);
-    setMaxAcc(m_maxAcc);
+    auto robot = std::make_unique<CTRobot>();
+    robot->setRuntimePaths(paths);
+    m_robot = std::move(robot);
+
+    m_robot->setMaxVel(m_maxVel);
+    m_robot->setMaxAcc(m_maxAcc);
     initRosInterfaces();
-    if (!startRobotCommunication(k_sample_time))
-    {
-      RCLCPP_FATAL(get_logger(), "CANopen bring-up failed after retries - node stays up, hardware unavailable");
-    }
+    // Hardware bring-up happens in initHardware(), called from main() before
+    // the executor spins — same ordering as before, but construction can no
+    // longer deadlock on absent hardware.
 
     worker_thread_ = std::thread([this]()
                                  {
@@ -80,6 +82,17 @@ public:
 
             if (task) task();
         } });
+  }
+
+  // Bring up the CAN hardware. Called from main() BEFORE the executor spins.
+  bool initHardware()
+  {
+    if (!m_robot->connect(k_sample_time))
+    {
+      RCLCPP_FATAL(get_logger(), "CANopen bring-up failed after retries - node stays up, hardware unavailable");
+      return false;
+    }
+    return true;
   }
 
   ~RobotNode() override
@@ -223,15 +236,17 @@ private:
   // Timer callback function to read the current joint configurations and publish them
   void robotStatus_timerCallback()
   {
+    if (!m_robot->isConnected())
+      return; // hardware not (yet) up
     auto msg = interfaces::msg::Status();
 
     blaze::StaticVector<bool, 4UL> reached_status;
     blaze::StaticVector<bool, 4UL> encoder_status;
     blaze::StaticVector<bool, 4UL> en_status;
-    en_status = getEnableStatus();
-    encoder_status = getEncoderStatus();
-    reached_status = getReachedStatus();
-    getPosLimit(m_minCurrentPosLimit, m_maxCurrentPosLimit);
+    en_status = m_robot->getEnableStatus();
+    encoder_status = m_robot->getEncoderStatus();
+    reached_status = m_robot->getReachedStatus();
+    m_robot->getPosLimit(m_minCurrentPosLimit, m_maxCurrentPosLimit);
 
     if ((abs(m_x[1] - k_pos_preEngage[1]) < 0.001) && (abs(m_x[3] - k_pos_preEngage[3]) < 0.001))
       m_flag_readyToEngage = true;
@@ -287,13 +302,15 @@ private:
   // Timer callback function to read the current joint configurations and publish them
   void jointsConfig_timerCallback()
   {
+    if (!m_robot->isConnected())
+      return; // hardware not (yet) up
     auto msg = interfaces::msg::Jointspace();
-    getPos(m_x);
-    getVel(m_xdot);
-    m_current = getCurrent();
+    m_robot->getPos(m_x);
+    m_robot->getVel(m_xdot);
+    m_current = m_robot->getCurrent();
 
-    getTemperature(m_cpu_temp, m_winding_temp);
-    getDigitalIn(m_digital_input);
+    m_robot->getTemperature(m_cpu_temp, m_winding_temp);
+    m_robot->getDigitalIn(m_digital_input);
 
     minDynamicPosLimit[0] = std::max(k_minStaticLimitAll[0], m_x[2] - k_rotary_stage_max_clearance);
     maxDynamicPosLimit[0] = std::min(k_maxStaticLimitAll[0], m_x[2] - k_rotary_stage_min_clearance);
@@ -343,26 +360,28 @@ private:
   // Set the target position/velocity in the robot - Depreciated
   void targetCommand_timerCallback()
   {
+    if (!m_robot->isConnected())
+      return; // hardware not (yet) up
     switch (m_mode)
     {
     case CtrlMode::Manual:
-      setTargetVel(m_xdot_manual);
+      m_robot->setTargetVel(m_xdot_manual);
       break;
     case CtrlMode::Velocity:
-      setTargetVel(m_xdot_des);
+      m_robot->setTargetVel(m_xdot_des);
       break;
     case CtrlMode::Position:
-      setTargetPos(m_x_des);
+      m_robot->setTargetPos(m_x_des);
       // std::cout << "m_x_des sent: " << blaze::trans(m_x_des) << std::endl;
       break;
     }
     if (m_trans_limit)
     {
-      setPosLimit(minDynamicPosLimit, maxDynamicPosLimit);
+      m_robot->setPosLimit(minDynamicPosLimit, maxDynamicPosLimit);
     }
     else
     {
-      setPosLimit(minDynamicPosLimitInf, maxDynamicPosLimitInf);
+      m_robot->setPosLimit(minDynamicPosLimitInf, maxDynamicPosLimitInf);
     }
   }
 
@@ -644,7 +663,7 @@ private:
       m_logger->info("[RobotNode] Config mode is not allowed once procedure started");
       return 1;
     }
-    setTargetVel({0.0, 0.0, 0.0, 0.0});
+    m_robot->setTargetVel({0.0, 0.0, 0.0, 0.0});
     m_trans_limit = false; // disable translation limits
     m_mode = CtrlMode::Config;
     m_logger->info("[RobotNode] Selected control mode: Config");
@@ -661,22 +680,22 @@ private:
     }
     else if (mode == CtrlMode::Manual)
     {
-      setTargetVel({0.0, 0.0, 0.0, 0.0});
+      m_robot->setTargetVel({0.0, 0.0, 0.0, 0.0});
       blaze::StaticVector<double, 4UL> negative = {1000.0, 1000.0, 1000.0, 1000.0};
       blaze::StaticVector<double, 4UL> positive = {1000.0, 1000.0, 1000.0, 1000.0};
-      setOperationMode(OpMode::VelocityProfile);
-      setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
-      setMaxTorque(negative, positive);
+      m_robot->setOperationMode(OpMode::VelocityProfile);
+      m_robot->setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
+      m_robot->setMaxTorque(negative, positive);
       m_mode = CtrlMode::Manual;
       m_logger->info("[RobotNode] Selected Mode: Manual");
     }
     else if (mode == CtrlMode::Position)
     {
-      setTargetVel({0.0, 0.0, 0.0, 0.0});
+      m_robot->setTargetVel({0.0, 0.0, 0.0, 0.0});
       m_x_des = m_x;
       m_trans_limit = true; // enable translation limits
-      setOperationMode(OpMode::PositionProfile);
-      setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
+      m_robot->setOperationMode(OpMode::PositionProfile);
+      m_robot->setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
       m_mode = CtrlMode::Position;
       m_logger->info("[RobotNode] Selected Mode: Position");
       m_procedure = true;
@@ -684,10 +703,10 @@ private:
     }
     else if (mode == CtrlMode::Velocity)
     {
-      setTargetVel({0.0, 0.0, 0.0, 0.0});
+      m_robot->setTargetVel({0.0, 0.0, 0.0, 0.0});
       m_trans_limit = true; // enable translation limits
-      setOperationMode(OpMode::VelocityProfile);
-      setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
+      m_robot->setOperationMode(OpMode::VelocityProfile);
+      m_robot->setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
       m_mode = CtrlMode::Velocity;
       m_logger->info("[RobotNode] Selected Mode: Velocity");
       m_procedure = true;
@@ -720,22 +739,22 @@ private:
   // enable or distable the robot
   void toggleEnable()
   {
-    blaze::StaticVector<bool, 4UL> en_status = getEnableStatus();
+    blaze::StaticVector<bool, 4UL> en_status = m_robot->getEnableStatus();
     if (en_status[0] || en_status[1] || en_status[2] || en_status[3])
     {
-      enableOperation(false);
+      m_robot->enableOperation(false);
       endProcedure();
     }
     else
     {
-      enableOperation(true);
+      m_robot->enableOperation(true);
     }
   }
 
   // enable or distable the robot
   void disable()
   {
-    enableOperation(false);
+    m_robot->enableOperation(false);
     endProcedure();
   }
 
@@ -769,47 +788,47 @@ private:
     m_logger->info("[RobotNode] Finding linear home...");
     if (switchToConfigMode())
       return "canceled";
-    setOperationMode(OpMode::VelocityProfile);
-    setMaxTorque(maxTorqueNegative, maxTorquePositive);
-    setProfileParams(maxVel, maxAcc, maxDcc);
+    m_robot->setOperationMode(OpMode::VelocityProfile);
+    m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
+    m_robot->setProfileParams(maxVel, maxAcc, maxDcc);
     // move linear joints with constant velocity
-    setTargetVel(target_vel);
-    enableOperation(true);
+    m_robot->setTargetVel(target_vel);
+    m_robot->enableOperation(true);
     // monitor linear joint currents to detect mechanical limits
     while (!flag_inr_encoder_set || !flag_mdl_encoder_set)
     {
       if (check_cancel())
         return "canceled";
-      current = getCurrent();
+      current = m_robot->getCurrent();
       if (current[1] <= inr_thresh && !flag_inr_encoder_set)
       {
         m_logger->info("[RobotNode] inner carriage hit mechanical limit");
         target_vel[1] = 0.0;
-        setTargetVel(target_vel);
+        m_robot->setTargetVel(target_vel);
         flag_inr_encoder_set = true;
       }
       if (current[3] <= mdl_thresh && !flag_mdl_encoder_set)
       {
         m_logger->info("[RobotNode] middle carriage hit mechanical limit");
         target_vel[3] = 0.0;
-        setTargetVel(target_vel);
+        m_robot->setTargetVel(target_vel);
         flag_mdl_encoder_set = true;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     // rotate rotary joints to make sure couplings are engaged
-    setTargetVel({2.0, 0.0, 2.0, 0.0});
+    m_robot->setTargetVel({2.0, 0.0, 2.0, 0.0});
     sleep_thread_cancelable(4000);
     if (check_cancel())
       return "canceled";
-    setTargetVel({0.0, 0.0, 0.0, 0.0});
+    m_robot->setTargetVel({0.0, 0.0, 0.0, 0.0});
     // set encoders
-    setEncoders({0.0, k_pos_inr_prox_stop, 0.0, k_pos_mdl_prox_stop});
+    m_robot->setEncoders({0.0, k_pos_inr_prox_stop, 0.0, k_pos_mdl_prox_stop});
     sleep_thread_cancelable(500);
     if (check_cancel())
       return "canceled";
-    enableOperation(false);
-    setTargetPos(m_x);
+    m_robot->enableOperation(false);
+    m_robot->setTargetPos(m_x);
     m_encoders_set[1] = true;
     m_encoders_set[3] = true;
     m_logger->info("[RobotNode] linear joints encoders found");
@@ -852,14 +871,14 @@ private:
     m_logger->info("[RobotNode] Disengaging collets...");
     if (switchToConfigMode())
       return "canceled";
-    setOperationMode(OpMode::PositionProfile);
-    setProfileParams(maxVel, maxAcc, maxDcc);
-    setMaxTorque(maxTorqueNegative, maxTorquePositive);
-    enableOperation(true);
+    m_robot->setOperationMode(OpMode::PositionProfile);
+    m_robot->setProfileParams(maxVel, maxAcc, maxDcc);
+    m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
+    m_robot->enableOperation(true);
     if (check_cancel())
       return "canceled";
-    setTargetPos({m_x[0], k_pos_preEngage[1], m_x[2], k_pos_preEngage[3]});
-    waitUntilTransReach(m_cancel_flag);
+    m_robot->setTargetPos({m_x[0], k_pos_preEngage[1], m_x[2], k_pos_preEngage[3]});
+    m_robot->waitUntilTransReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
     m_logger->info("[RobotNode] Collets disengaged");
@@ -904,18 +923,18 @@ private:
     m_logger->info("[RobotNode] Engaging collets...");
     if (switchToConfigMode())
       return "canceled";
-    setOperationMode(OpMode::PositionProfile);
-    setProfileParams(maxVel, maxAcc, maxDcc);
+    m_robot->setOperationMode(OpMode::PositionProfile);
+    m_robot->setProfileParams(maxVel, maxAcc, maxDcc);
 
     // if the stages are not in pre-engae mode, move to pre-engage mode first
     if (!m_flag_readyToEngage)
     {
       m_logger->info("[RobotNode] Moving to pre-engage location");
-      setMaxTorque(maxTorqueNegative, maxTorquePositive);
-      enableOperation(true);
+      m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
+      m_robot->enableOperation(true);
       targetPosTemp = {m_x[0], k_pos_preEngage[1], m_x[2], k_pos_preEngage[3]};
-      setTargetPos(targetPosTemp);
-      waitUntilTransReach(m_cancel_flag);
+      m_robot->setTargetPos(targetPosTemp);
+      m_robot->waitUntilTransReach(m_cancel_flag);
       if (check_cancel())
         return "canceled";
     }
@@ -925,40 +944,40 @@ private:
     {
       maxTorqueNegative = {350.0, 250.0, 350.0, 250.0};
       maxTorquePositive = {350.0, 250.0, 350.0, 250.0};
-      setMaxTorque(maxTorqueNegative, maxTorquePositive);
-      enableOperation(true);
+      m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
+      m_robot->enableOperation(true);
 
       // attemp to engage middle collet - step one - setting translational joint
       m_logger->info("[RobotNode] Engaging middle collet");
       targetPosTemp = {m_x[0], k_pos_preEngage[1], m_x[2], k_pos_engage[3]};
-      setTargetPos(targetPosTemp);
+      m_robot->setTargetPos(targetPosTemp);
       sleep_thread_cancelable(1500);
       if (check_cancel())
         return "canceled";
       // if it doesn't each the target, back of, rotate, and try again.
-      while (!getReachedStatus()[3])
+      while (!m_robot->getReachedStatus()[3])
       {
         if (check_cancel())
           return "canceled";
         targetPosTemp[3] = k_pos_engage[3] - 0.004;
-        setTargetPos(targetPosTemp); // back off for 4 mm
+        m_robot->setTargetPos(targetPosTemp); // back off for 4 mm
         sleep_thread_cancelable(1000);
         targetPosTemp[2] = m_x[2] + 0.07 * M_PI;
-        setTargetPos(targetPosTemp); // rotate
+        m_robot->setTargetPos(targetPosTemp); // rotate
         sleep_thread_cancelable(1000);
         targetPosTemp[2] = m_x[2];
         targetPosTemp[3] = k_pos_engage[3];
-        setTargetPos(targetPosTemp); // attemp to engage middle collet again
+        m_robot->setTargetPos(targetPosTemp); // attemp to engage middle collet again
         sleep_thread_cancelable(1500);
       }
       targetPosTemp = m_x;
-      setTargetPos(targetPosTemp);
+      m_robot->setTargetPos(targetPosTemp);
       m_logger->debug("Engaing middle coller step one done");
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
       // attemp to engage middle collet - step two - slightly locking the collet so always continue from same config
       targetPosTemp[2] = targetPosTemp[2] + 20.0 * M_PI; // rotate collet to lock
-      setTargetPos(targetPosTemp);
+      m_robot->setTargetPos(targetPosTemp);
       // monitor current
       while (!(m_current[2] > (maxTorquePositive[2] - current_thresh)))
       {
@@ -966,49 +985,49 @@ private:
           return "canceled";
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
       }
-      setTargetPos(m_x);
+      m_robot->setTargetPos(m_x);
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
       m_logger->info("[RobotNode] Middle collet engaged");
 
       // attemp to engage inner collet - step one - setting translational joint
       m_logger->info("[RobotNode] Engaging the inner collet");
       targetPosTemp = {m_x[0], k_pos_engage[1], m_x[2], k_pos_engage[3]};
-      setTargetPos(targetPosTemp);
+      m_robot->setTargetPos(targetPosTemp);
       sleep_thread_cancelable(2000);
       if (check_cancel())
         return "canceled";
       // if it doesn't each the target, back of, rotate, and try again.
-      while (!getReachedStatus()[1])
+      while (!m_robot->getReachedStatus()[1])
       {
         if (check_cancel())
           return "canceled";
         targetPosTemp[1] = k_pos_engage[1] - 0.004;
-        setTargetPos(targetPosTemp);
+        m_robot->setTargetPos(targetPosTemp);
         sleep_thread_cancelable(1000);
         targetPosTemp[0] = m_x[0] + 0.07 * M_PI;
-        setTargetPos(targetPosTemp);
+        m_robot->setTargetPos(targetPosTemp);
         sleep_thread_cancelable(1000);
         targetPosTemp[0] = m_x[0];
         targetPosTemp[1] = k_pos_engage[1];
-        setTargetPos(targetPosTemp);
+        m_robot->setTargetPos(targetPosTemp);
         sleep_thread_cancelable(1500);
       }
       targetPosTemp = m_x;
-      setTargetPos(targetPosTemp);
+      m_robot->setTargetPos(targetPosTemp);
       m_logger->debug("Engaing inner coller step one done");
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
       // attemp to engage middle collet - step two - slightly locking the collet so always continue from same config
       targetPosTemp = m_x;
       targetPosTemp[0] = targetPosTemp[0] + 20.0 * M_PI;
-      setTargetPos(targetPosTemp);
+      m_robot->setTargetPos(targetPosTemp);
       while (!(m_current[0] > (maxTorquePositive[0] - current_thresh)))
       {
         if (check_cancel())
           return "canceled";
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
       }
-      setTargetPos(m_x);
+      m_robot->setTargetPos(m_x);
       m_logger->info("[RobotNode] Inner collet engaged");
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
       m_logger->info("[RobotNode] Both collets engaged");
@@ -1052,23 +1071,23 @@ private:
     m_logger->info("[RobotNode] Locking collets... ");
     if (switchToConfigMode())
       return "canceled";
-    setOperationMode(OpMode::PositionProfile);
-    setProfileParams(maxVel, maxAcc, maxDcc);
-    setMaxTorque(maxTorqueNegative, maxTorquePositive);
-    enableOperation(true);
-    setTargetPos(m_x + motion);
+    m_robot->setOperationMode(OpMode::PositionProfile);
+    m_robot->setProfileParams(maxVel, maxAcc, maxDcc);
+    m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
+    m_robot->enableOperation(true);
+    m_robot->setTargetPos(m_x + motion);
     sleep_thread_cancelable(500);
     if (check_cancel())
       return "canceled";
-    reach = getReachedStatus();
+    reach = m_robot->getReachedStatus();
     while (!(m_current[0] > inr_thresh) || !reach[1] || !(m_current[2] > mdl_thresh) || !reach[3])
     {
       if (check_cancel())
         return "canceled";
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      reach = getReachedStatus();
+      reach = m_robot->getReachedStatus();
     }
-    setTargetPos(m_x);
+    m_robot->setTargetPos(m_x);
     m_logger->info("[RobotNode] Collets locked");
     m_locked = 1;
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -1110,19 +1129,19 @@ private:
     m_logger->info("[RobotNode] Unlocking collets...");
     if (switchToConfigMode())
       return "canceled";
-    setOperationMode(OpMode::PositionProfile);
-    setProfileParams(maxVel, maxAcc, maxDcc);
-    setMaxTorque(maxTorqueNegative, maxTorquePositive);
-    enableOperation(true);
-    setTargetPos(m_x + motion);
+    m_robot->setOperationMode(OpMode::PositionProfile);
+    m_robot->setProfileParams(maxVel, maxAcc, maxDcc);
+    m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
+    m_robot->enableOperation(true);
+    m_robot->setTargetPos(m_x + motion);
     sleep_thread_cancelable(500);
-    reach = getReachedStatus();
+    reach = m_robot->getReachedStatus();
     while (!reach[0] || !reach[1] || !reach[2] || !reach[3])
     {
       if (check_cancel())
         return "canceled";
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      reach = getReachedStatus();
+      reach = m_robot->getReachedStatus();
     }
     m_logger->info("[RobotNode] Collets unlocked");
     m_locked = -1;
@@ -1188,24 +1207,24 @@ private:
     m_logger->info("[RobotNode] Finding rotary joints encoder...");
     if (switchToConfigMode())
       return "canceled";
-    setOperationMode(OpMode::PositionProfile);
-    setProfileParams(maxVel, maxAcc, maxDcc);
-    setMaxTorque(maxTorqueNegative, maxTorquePositive);
-    enableOperation(true);
+    m_robot->setOperationMode(OpMode::PositionProfile);
+    m_robot->setProfileParams(maxVel, maxAcc, maxDcc);
+    m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
+    m_robot->enableOperation(true);
 
     // moving to pre-engage postion. This is the most extended positon of the tubes
     targetPosTemp = {m_x[0], k_pos_preEngage[1], m_x[2], k_pos_preEngage[3]};
-    setTargetPos(targetPosTemp);
-    waitUntilReach(m_cancel_flag);
+    m_robot->setTargetPos(targetPosTemp);
+    m_robot->waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
 
     // rotate the middle tube for 2PI while recoding tip Y position
     m_logger->info("[RobotNode] Middle tube coarse rotation...");
     targetPosTemp = {m_x[0], k_pos_preEngage[1], m_x[2] + 2 * M_PI, k_pos_preEngage[3]};
-    setTargetPos(targetPosTemp);
+    m_robot->setTargetPos(targetPosTemp);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    reach = getReachedStatus();
+    reach = m_robot->getReachedStatus();
     data.clear();
     while (!(reach[0] && reach[1] && reach[2] && reach[3]))
     {
@@ -1213,23 +1232,23 @@ private:
         return "canceled";
       data.push_back({m_x[2], m_x_tip[1]});
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      reach = getReachedStatus();
+      reach = m_robot->getReachedStatus();
     }
     // find the config leading to minimum Y and move to that config
     find_min(data, best_input, min_output);
     m_logger->debug("[RobotNode] Minimum Y for middle tube: q = {:.2f} | tip y = {:.5f}", best_input, min_output);
     targetPosTemp[2] = best_input;
-    setTargetPos(targetPosTemp);
-    waitUntilReach(m_cancel_flag);
+    m_robot->setTargetPos(targetPosTemp);
+    m_robot->waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
 
     // rotate the inner tube for 2PI while recoding tip Y position
     m_logger->info("[RobotNode] Inner tube coarse rotation...");
     targetPosTemp = {m_x[0] + 2 * M_PI, k_pos_preEngage[1], m_x[2], k_pos_preEngage[3]};
-    setTargetPos(targetPosTemp);
+    m_robot->setTargetPos(targetPosTemp);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    reach = getReachedStatus();
+    reach = m_robot->getReachedStatus();
     data.clear();
     while (!(reach[0] && reach[1] && reach[2] && reach[3]))
     {
@@ -1237,30 +1256,30 @@ private:
         return "canceled";
       data.push_back({m_x[0], m_x_tip[1]});
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      reach = getReachedStatus();
+      reach = m_robot->getReachedStatus();
     }
     // find the config leading to minimum Y and move to that config
     find_min(data, best_input, min_output);
     m_logger->debug("[RobotNode] Minimum Y for inner tube: q = {:.2f} | tip y = {:.5f}", best_input, min_output);
     targetPosTemp[0] = best_input;
-    setTargetPos(targetPosTemp);
-    waitUntilReach(m_cancel_flag);
+    m_robot->setTargetPos(targetPosTemp);
+    m_robot->waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
 
     // now repeat the process for double sided shorter range of motion for fine tuning
     // first for the inner tube
     targetPosTemp[0] += M_PI / 2;
-    setTargetPos(targetPosTemp);
-    waitUntilReach(m_cancel_flag);
+    m_robot->setTargetPos(targetPosTemp);
+    m_robot->waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
     // moving in negative direction and recording tip position
     m_logger->info("[RobotNode] Inner tube fine positive rotation...");
     targetPosTemp[0] -= M_PI;
-    setTargetPos(targetPosTemp);
+    m_robot->setTargetPos(targetPosTemp);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    reach = getReachedStatus();
+    reach = m_robot->getReachedStatus();
     data.clear();
     while (!(reach[0] && reach[1] && reach[2] && reach[3]))
     {
@@ -1268,16 +1287,16 @@ private:
         return "canceled";
       data.push_back({m_x[0], m_x_tip[1]});
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      reach = getReachedStatus();
+      reach = m_robot->getReachedStatus();
     }
     find_min(data, best_input, min_output);
     double input = best_input;
     // moving in positive direction and recording tip position
     m_logger->info("[RobotNode] Inner tube fine negative rotation...");
     targetPosTemp[0] += M_PI;
-    setTargetPos(targetPosTemp);
+    m_robot->setTargetPos(targetPosTemp);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    reach = getReachedStatus();
+    reach = m_robot->getReachedStatus();
     data.clear();
     while (!(reach[0] && reach[1] && reach[2] && reach[3]))
     {
@@ -1285,7 +1304,7 @@ private:
         return "canceled";
       data.push_back({m_x[0], m_x_tip[1]});
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      reach = getReachedStatus();
+      reach = m_robot->getReachedStatus();
     }
     find_min(data, best_input, min_output);
     input += best_input;
@@ -1293,8 +1312,8 @@ private:
     m_logger->debug("[RobotNode] Minimum Y for inner tube: q = {:.2f}", input);
     // computing the averagte of minimum config for both sides
     targetPosTemp[0] = input;
-    setTargetPos(targetPosTemp);
-    waitUntilReach(m_cancel_flag);
+    m_robot->setTargetPos(targetPosTemp);
+    m_robot->waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
     m_logger->info("[RobotNode] Inner tube is in minimum Y posoition");
@@ -1302,16 +1321,16 @@ private:
     // then for the middle tube
     m_logger->debug("[RobotNode] Round 2 - repeat for fine tunnig");
     targetPosTemp[2] += M_PI / 3;
-    setTargetPos(targetPosTemp);
-    waitUntilReach(m_cancel_flag);
+    m_robot->setTargetPos(targetPosTemp);
+    m_robot->waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
     // moving in negative direction and recording tip position
     m_logger->info("[RobotNode] Middle tube fine negative rotation...");
     targetPosTemp[2] -= 2 * M_PI / 3;
-    setTargetPos(targetPosTemp);
+    m_robot->setTargetPos(targetPosTemp);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    reach = getReachedStatus();
+    reach = m_robot->getReachedStatus();
     data.clear();
     while (!(reach[0] && reach[1] && reach[2] && reach[3]))
     {
@@ -1319,16 +1338,16 @@ private:
         return "canceled";
       data.push_back({m_x[2], m_x_tip[1]});
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      reach = getReachedStatus();
+      reach = m_robot->getReachedStatus();
     }
     find_min(data, best_input, min_output);
     input = best_input;
     // moving in positive direction and recording tip position
     m_logger->info("[RobotNode] Middle tube fine positive rotation...");
     targetPosTemp[2] += 2 * M_PI / 3;
-    setTargetPos(targetPosTemp);
+    m_robot->setTargetPos(targetPosTemp);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    reach = getReachedStatus();
+    reach = m_robot->getReachedStatus();
     data.clear();
     while (!(reach[0] && reach[1] && reach[2] && reach[3]))
     {
@@ -1336,7 +1355,7 @@ private:
         return "canceled";
       data.push_back({m_x[2], m_x_tip[1]});
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      reach = getReachedStatus();
+      reach = m_robot->getReachedStatus();
     }
     find_min(data, best_input, min_output);
     input += best_input;
@@ -1344,18 +1363,18 @@ private:
     m_logger->debug("[RobotNode] Minimum Y for inner tube: q = {:.2f}", input);
     // computing the averagte of minimum config for both sides
     targetPosTemp[2] = input;
-    setTargetPos(targetPosTemp);
-    waitUntilReach(m_cancel_flag);
+    m_robot->setTargetPos(targetPosTemp);
+    m_robot->waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
     m_logger->info("[RobotNode] Middle tube is in minimum Y posoition");
 
-    setEncoders({0.0, m_x[1], 0.0, m_x[3]});
+    m_robot->setEncoders({0.0, m_x[1], 0.0, m_x[3]});
     sleep_thread_cancelable(500);
     if (check_cancel())
       return "canceled";
-    enableOperation(false);
-    setTargetPos(m_x);
+    m_robot->enableOperation(false);
+    m_robot->setTargetPos(m_x);
     m_encoders_set[0] = true;
     m_encoders_set[2] = true;
     m_logger->info("[RobotNode] Rotary joints encoders found");
@@ -1393,14 +1412,14 @@ private:
 
     switchToConfigMode();
     // m_trans_limit = true; // enable translation limits
-    setOperationMode(OpMode::PositionProfile);
-    setProfileParams(maxVel, maxAcc, maxDcc);
-    setMaxTorque(maxTorqueNegative, maxTorquePositive);
-    enableOperation(true);
+    m_robot->setOperationMode(OpMode::PositionProfile);
+    m_robot->setProfileParams(maxVel, maxAcc, maxDcc);
+    m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
+    m_robot->enableOperation(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    setTargetPos(k_home_pos + k_home_pos_margin);
+    m_robot->setTargetPos(k_home_pos + k_home_pos_margin);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    waitUntilReach(m_cancel_flag);
+    m_robot->waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
 
@@ -1539,6 +1558,9 @@ private:
   blaze::StaticVector<double, 4UL> m_maxVel; // [deg/s] and [mm/s]
   blaze::StaticVector<double, 4UL> m_maxAcc; // [deg/s^2] and [mm/s^2]
 
+  std::unique_ptr<ICtrJointGroup> m_robot; // hardware seam (CTRobot on the real robot)
+  // node-side spdlog sink (was inherited from CTRobot before the seam)
+  std::shared_ptr<spdlog::logger> m_logger = spdlog::default_logger();
   std::thread worker_thread_;
   std::mutex m_task_mutex;
   std::condition_variable m_task_cv;
@@ -1570,6 +1592,7 @@ int main(int argc, char *argv[])
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<RobotNode>();
+  node->initHardware();
   rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 7);
   executor.add_node(node);
   executor.spin();
