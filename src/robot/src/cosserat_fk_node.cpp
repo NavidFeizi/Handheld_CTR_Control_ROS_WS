@@ -41,7 +41,7 @@ class ForwardKinNode : public rclcpp::Node
 {
 public:
   // default class constructor
-  ForwardKinNode() : Node("forward_kinematics_node"), count_(0)
+  ForwardKinNode() : Node("cosserat_fk_node"), count_(0)
   {
     ForwardKinNode::declare_parameters();
     ForwardKinNode::setup_ros_interfaces();
