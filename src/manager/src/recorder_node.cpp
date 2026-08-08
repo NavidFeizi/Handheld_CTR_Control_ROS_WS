@@ -18,7 +18,8 @@
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/msg/force.hpp"
 #include "interfaces/srv/recording.hpp"
-#include <ament_index_cpp/get_package_share_directory.hpp>
+#include "ctr_common/output_session.hpp"
+#include "ctr_common/runtime_paths.hpp"
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include "tf2/exceptions.h"
@@ -260,28 +261,10 @@ private:
   // Function to create and open dump files for a specific recording session
   bool create_dump_files(const std::string& session_name)
   {
-    std::string package_name = "manager";
-    std::string workspace_directory = ament_index_cpp::get_package_share_directory(package_name);
-    auto in_time_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    std::stringstream ss;
-    ss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d_%H-%M-%S");
-    
-    // Create session subfolder if it doesn't exist
-    std::string output_base = workspace_directory + "/../../../../Output_Files";
-    std::string session_folder = session_name.empty() ? "default" : session_name;
-    std::string session_folder_path = output_base + "/" + session_folder;
-    
-    // Create session folder if it doesn't exist
-    if (!std::filesystem::exists(session_folder_path))
-    {
-      std::filesystem::create_directories(session_folder_path);
-      RCLCPP_INFO(this->get_logger(), "[%s] Created session folder: %s", session_name.c_str(), session_folder.c_str());
-    }
-    
-    // Create timestamped subfolder inside session folder
-    std::string timestamp_folder = ss.str();
-    std::string folder_address = session_folder_path + "/" + timestamp_folder;
-    std::filesystem::create_directories(folder_address);
+    const std::filesystem::path output_base =
+        ctr_common::resolveDataRoot(*this, "manager") / "Output_Files";
+    const std::string folder_address = ctr_common::makeSessionDir(output_base, session_name).string();
+    RCLCPP_INFO(this->get_logger(), "[%s] Recording session directory: %s", session_name.c_str(), folder_address.c_str());
 
     // Create new session
     RecordingSession& session = m_sessions[session_name];
@@ -323,7 +306,7 @@ private:
     session.computed_file << ",f_x,f_y,f_z,f_mag,ctrl_time";
     session.computed_file << "\n";
 
-    RCLCPP_INFO(this->get_logger(), "[%s] Dump files opened - folder: %s/%s", session_name.c_str(), session_folder.c_str(), timestamp_folder.c_str());
+    RCLCPP_INFO(this->get_logger(), "[%s] Dump files opened - folder: %s", session_name.c_str(), folder_address.c_str());
     return true;
   }
 

@@ -1,14 +1,10 @@
 #include "manager/master_node.hpp"
 
-using namespace std::chrono_literals;
+#include "ctr_common/csv_io.hpp"
+#include "ctr_common/joint_conventions.hpp"
+#include "ctr_common/runtime_paths.hpp"
 
-// Resolved lazily on first use: get_package_share_directory() can throw, which
-// at static-init time (before main) would terminate with no diagnostic.
-static const std::string &PACKAGE_SHARE_DIR()
-{
-  static const std::string dir = ament_index_cpp::get_package_share_directory("manager");
-  return dir;
-}
+using namespace std::chrono_literals;
 
 // ============================================================================
 // Constructor
@@ -966,9 +962,8 @@ void MasterNode::control_loop()
                     m_f_at_plan_valid = false;
 
                     // Delete plannedPath.csv
-                    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR());
-                    ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
-                    std::filesystem::path file_path = ws_dir / "Shared_Files" / "plannedPath.csv";
+                    std::filesystem::path file_path =
+                        ctr_common::resolveDataRoot(*this, "manager") / "Shared_Files" / "plannedPath.csv";
                     
                     if (std::filesystem::exists(file_path))
                     {
@@ -986,20 +981,7 @@ void MasterNode::control_loop()
 void MasterNode::publish_position(const blaze::StaticVector<double, 6> &q)
 {
     interfaces::msg::Jointspace msg;
-    msg.position[0] = q[3]; // alpha1
-    msg.position[1] = q[0]; // beta1
-    msg.position[2] = q[4]; // alpha2
-    msg.position[3] = q[1]; // beta2
-    m_pub_joint_targ->publish(msg);
-}
-
-void MasterNode::publish_velocity(const blaze::StaticVector<double, 4> &q_dot)
-{
-    interfaces::msg::Jointspace msg;
-    msg.velocity[0] = q_dot[3];
-    msg.velocity[1] = q_dot[0];
-    msg.velocity[2] = q_dot[4];
-    msg.velocity[3] = q_dot[1];
+    msg.position = ctr_common::physicsToWire(q);
     m_pub_joint_targ->publish(msg);
 }
 
@@ -1022,127 +1004,70 @@ bool MasterNode::loadPlannedPath()
 
 bool MasterNode::read_path_from_csv(std::vector<blaze::StaticVector<double, 6>> &init_q_list, const std::string &fileName)
 {
-    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR());
-    ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
-    std::filesystem::path file_path = ws_dir / "Shared_Files" / fileName;
+    const std::filesystem::path file_path =
+        ctr_common::resolveDataRoot(*this, "manager") / "Shared_Files" / fileName;
 
-    std::ifstream file;
-    file.open(file_path, std::ifstream::in);
-    if (!file.is_open())
+    const auto rows = ctr_common::csv::readNumericCsv(file_path);
+    if (!rows)
     {
         RCLCPP_ERROR(get_logger(), "Failed to open file: %s", file_path.c_str());
         return false;
     }
 
     init_q_list.clear();
-    std::string line;
 
-    // Read file line by line. The file may be in the legacy 6-column layout
-    // [β₁, β₂, β₃, α₁, α₂, α₃] (β₃/α₃ are the unactuated outer tube, always 0) or
-    // the new planner 4-column layout [β₁, β₂, α₁, α₂] (no header). A 4-column row
-    // is expanded to the 6-element layout by inserting the two zero columns so the
-    // rest of the (6-column) pipeline can consume it unchanged.
-    while (std::getline(file, line))
+    // The file may be in the legacy 6-column layout [β₁, β₂, β₃, α₁, α₂, α₃]
+    // (β₃/α₃ are the unactuated outer tube, always 0) or the new planner
+    // 4-column layout [β₁, β₂, α₁, α₂] (no header — non-numeric lines are
+    // skipped by the parser). A 4-column row is expanded to the 6-element
+    // layout so the rest of the (6-column) pipeline can consume it unchanged.
+    for (const auto &row : *rows)
     {
-        std::istringstream ss(line);
-        std::string value;
-        std::vector<double> row;
-
-        bool parse_ok = true;
-        while (std::getline(ss, value, ','))
-        {
-            try
-            {
-                row.push_back(std::stod(value));
-            }
-            catch (const std::exception &e)
-            {
-                parse_ok = false;
-                break;
-            }
-        }
-
-        if (!parse_ok)
-        {
-            // Non-numeric line (e.g. a header row): skip it silently.
-            continue;
-        }
-
         if (row.size() == 6)
         {
-            blaze::StaticVector<double, 6> q_point = {row[0], row[1], row[2], row[3], row[4], row[5]};
-            init_q_list.push_back(q_point);
+            init_q_list.push_back({row[0], row[1], row[2], row[3], row[4], row[5]});
         }
         else if (row.size() == 4)
         {
-            // [β₁, β₂, α₁, α₂] -> [β₁, β₂, 0, α₁, α₂, 0]
-            blaze::StaticVector<double, 6> q_point = {row[0], row[1], 0.0, row[2], row[3], 0.0};
-            init_q_list.push_back(q_point);
+            init_q_list.push_back({row[0], row[1], 0.0, row[2], row[3], 0.0});
         }
         else
         {
-            RCLCPP_WARN(get_logger(), "Line does not contain 4 or 6 values: %s", line.c_str());
+            RCLCPP_WARN(get_logger(), "Row does not contain 4 or 6 values (got %zu)", row.size());
         }
     }
 
-    file.close();
     RCLCPP_INFO(get_logger(), "Loaded %zu path points from CSV file.", init_q_list.size());
     return true;
 }
 
 void MasterNode::read_targets_from_csv(std::vector<Eigen::Vector3d> &target_list, const std::string &fileName)
 {
-    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR());
-    ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
-    std::filesystem::path file_path = ws_dir / "Input_Files" / fileName;
+    const std::filesystem::path file_path =
+        ctr_common::resolveDataRoot(*this, "manager") / "Input_Files" / fileName;
 
-    std::ifstream file;
-    file.open(file_path, std::ifstream::in);
-    if (!file.is_open())
+    const auto rows = ctr_common::csv::readNumericCsv(file_path);
+    if (!rows)
     {
         RCLCPP_ERROR(get_logger(), "Failed to open file: %s", file_path.c_str());
         return;
     }
 
     target_list.clear();
-    std::string line;
 
-    // Discard first line (header: x,y,z)
-    if (std::getline(file, line))
-    { /* header */
-    }
-
-    // Read file line by line
-    while (std::getline(file, line))
+    // Header line (x,y,z) is non-numeric and dropped by the parser.
+    for (const auto &row : *rows)
     {
-        std::istringstream ss(line);
-        std::string value;
-        std::vector<double> row;
-
-        while (std::getline(ss, value, ','))
-        {
-            try
-            {
-                row.push_back(std::stod(value));
-            }
-            catch (const std::exception &e)
-            {
-                RCLCPP_WARN(get_logger(), "Failed to parse value: %s", value.c_str());
-            }
-        }
-
         if (row.size() == 3)
         {
-            Eigen::Vector3d target_point(row[0], row[1], row[2]);
-            target_list.push_back(target_point);
+            target_list.emplace_back(row[0], row[1], row[2]);
         }
         else
         {
-            RCLCPP_WARN(get_logger(), "Line does not contain exactly 3 values (x,y,z): %s", line.c_str());
+            RCLCPP_WARN(get_logger(), "Row does not contain exactly 3 values (x,y,z), got %zu", row.size());
         }
     }
 
-    file.close();
     RCLCPP_INFO(get_logger(), "Loaded %zu task-space targets from %s", target_list.size(), fileName.c_str());
 }
 

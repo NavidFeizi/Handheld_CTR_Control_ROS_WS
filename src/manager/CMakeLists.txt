@@ -28,6 +28,7 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(interfaces REQUIRED)
+find_package(ctr_common REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 
 find_package(geometry_msgs REQUIRED)
@@ -42,6 +43,7 @@ set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
 # Define and link executables
 add_executable(record src/recorder_node.cpp)
+target_link_libraries(record ctr_common::ctr_common)
 ament_target_dependencies(record rclcpp std_msgs interfaces ament_index_cpp
                             tf2 tf2_ros geometry_msgs tf2_eigen Eigen3)
 
@@ -51,7 +53,7 @@ add_executable(master
     include/manager/master_node.hpp
     include/manager/master_qt_gui.hpp)
 target_include_directories(master PRIVATE include)
-target_link_libraries(master Qt5::Widgets Qt5::Core Qt5::Concurrent)
+target_link_libraries(master Qt5::Widgets Qt5::Core Qt5::Concurrent ctr_common::ctr_common)
 ament_target_dependencies(master rclcpp std_msgs std_srvs interfaces ament_index_cpp 
                             tf2 tf2_ros geometry_msgs tf2_eigen Eigen3)
 

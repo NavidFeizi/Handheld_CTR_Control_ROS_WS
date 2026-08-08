@@ -135,8 +135,7 @@ private:
     void control_loop();
     void maybeRequestDeploymentReplan();
     void publish_position(const blaze::StaticVector<double, 6>& q);
-    void publish_velocity(const blaze::StaticVector<double, 4>& q_dot);
-    
+
     // Utility functions
     bool loadPlannedPath();
     bool read_path_from_csv(std::vector<blaze::StaticVector<double, 6>>& init_q_list,
