@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ctr_bringup</name>
+  <version>1.0.0</version>
+  <description>
+    System bring-up for the handheld CTR: EM tracker, then (+14 s) robot nodes
+    and GUI, then (+20 s) the OpenIGTLink bridge to 3D Slicer. The timer delays
+    let the NDI tracker finish initializing — preserve the ordering.
+  </description>
+  <maintainer email="fpedrosa@mirsee.com">Filipe Pedrosa</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>robot</exec_depend>
+  <exec_depend>emtracker</exec_depend>
+  <exec_depend>igtlink_bridge</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
