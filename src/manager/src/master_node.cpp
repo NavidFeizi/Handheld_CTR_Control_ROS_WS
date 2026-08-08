@@ -2,8 +2,13 @@
 
 using namespace std::chrono_literals;
 
-std::string package_name = "manager";
-std::string PACKAGE_SHARE_DIR = ament_index_cpp::get_package_share_directory(package_name);
+// Resolved lazily on first use: get_package_share_directory() can throw, which
+// at static-init time (before main) would terminate with no diagnostic.
+static const std::string &PACKAGE_SHARE_DIR()
+{
+  static const std::string dir = ament_index_cpp::get_package_share_directory("manager");
+  return dir;
+}
 
 // ============================================================================
 // Constructor
@@ -961,7 +966,7 @@ void MasterNode::control_loop()
                     m_f_at_plan_valid = false;
 
                     // Delete plannedPath.csv
-                    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
+                    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR());
                     ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
                     std::filesystem::path file_path = ws_dir / "Shared_Files" / "plannedPath.csv";
                     
@@ -1017,7 +1022,7 @@ bool MasterNode::loadPlannedPath()
 
 bool MasterNode::read_path_from_csv(std::vector<blaze::StaticVector<double, 6>> &init_q_list, const std::string &fileName)
 {
-    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
+    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR());
     ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
     std::filesystem::path file_path = ws_dir / "Shared_Files" / fileName;
 
@@ -1087,7 +1092,7 @@ bool MasterNode::read_path_from_csv(std::vector<blaze::StaticVector<double, 6>> 
 
 void MasterNode::read_targets_from_csv(std::vector<Eigen::Vector3d> &target_list, const std::string &fileName)
 {
-    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR);
+    std::filesystem::path ws_dir(PACKAGE_SHARE_DIR());
     ws_dir = ws_dir.parent_path().parent_path().parent_path().parent_path();
     std::filesystem::path file_path = ws_dir / "Input_Files" / fileName;
 
