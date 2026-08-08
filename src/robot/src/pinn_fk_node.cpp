@@ -260,26 +260,10 @@ public:
 
     const auto [Tb1, Tb2, Tb3] = m_ctr_pinns->getAllTubesShape(m_q, m_wf);
 
-    // convert unit to mm for Slicer
-    blaze::DynamicMatrix<double, blaze::rowMajor> Tb1_mm = Tb1 * 1.0e3;
-    blaze::DynamicMatrix<double, blaze::rowMajor> Tb2_mm = Tb2 * 1.0e3;
-    blaze::DynamicMatrix<double, blaze::rowMajor> Tb3_mm = Tb3 * 1.0e3;
-
-    std::cout << "Tb1: \n" << Tb1_mm << std::endl;
-
-    std_msgs::msg::Float64MultiArray msg_1 = blazeToMultiArrayMsg(Tb1_mm);
-    std_msgs::msg::Float64MultiArray msg_2 = blazeToMultiArrayMsg(Tb2_mm);
-    std_msgs::msg::Float64MultiArray msg_3 = blazeToMultiArrayMsg(Tb3_mm);
-
-    // blaze::StaticMatrix<double, m_backbonePoints, 3UL> Tb1_mm = Tb1 * 1.0e3;
-    // blaze::StaticMatrix<double, m_backbonePoints, 3UL> Tb2_mm = Tb2 * 1.0e3;
-    // blaze::StaticMatrix<double, m_backbonePoints, 3UL> Tb3_mm = Tb3 * 1.0e3;
-
-    // std::cout << "Tb1: \n" << Tb1_mm << std::endl;
-
-    // std_msgs::msg::Float64MultiArray msg_1 = blazeToMultiArrayMsg<m_backbonePoints>(Tb1_mm);
-    // std_msgs::msg::Float64MultiArray msg_2 = blazeToMultiArrayMsg<m_backbonePoints>(Tb2_mm);
-    // std_msgs::msg::Float64MultiArray msg_3 = blazeToMultiArrayMsg<m_backbonePoints>(Tb3_mm);
+    // shapes stay in metres on the wire; the IGTL bridge converts to mm for Slicer
+    std_msgs::msg::Float64MultiArray msg_1 = blazeToMultiArrayMsg(Tb1);
+    std_msgs::msg::Float64MultiArray msg_2 = blazeToMultiArrayMsg(Tb2);
+    std_msgs::msg::Float64MultiArray msg_3 = blazeToMultiArrayMsg(Tb3);
 
     m_publisher_tube_1->publish(msg_1);
     m_publisher_tube_2->publish(msg_2);
@@ -313,7 +297,7 @@ public:
     // Flatten row-major; works for either storage order SO
     for (size_t i = 0; i < rows; ++i)
       for (size_t j = 0; j < cols; ++j)
-        msg.data[i * cols + j] = mat(i, j) * 1.0e-3;
+        msg.data[i * cols + j] = mat(i, j);
 
     return msg;
   }
@@ -341,7 +325,7 @@ public:
     // Flatten row-major; works for either storage order SO
     for (size_t i = 0; i < rows; ++i)
       for (size_t j = 0; j < cols; ++j)
-        msg.data[i * cols + j] = mat(i, j) * 1.0e-3;
+        msg.data[i * cols + j] = mat(i, j);
 
     return msg;
   }
