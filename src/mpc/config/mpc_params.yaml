@@ -1,0 +1,14 @@
+# Single source of truth for the MPC node parameters (handheld CTR values).
+mpc:
+  ros__parameters:
+    sample_time: 0.025
+    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_v3"
+    models_dir: ""                       # empty -> installed share/ctr_kinematics_pinn/models
+    q0: [-0.156, -0.072, 0.0, 0.0]       # SI units
+    u_max: [0.012, 0.012, 3.0, 3.0]
+    u_dot_max: [0.03, 0.03, 5.0, 5.0]
+    q_scale: [0.5, 0.5, 0.2, 0.2]
+    R_u: 0.0
+    R_du: 0.5
+    Q: 2000.0
+    error_c: 1.0

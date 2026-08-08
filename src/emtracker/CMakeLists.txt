@@ -62,4 +62,10 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/config
 )
 
+# Node parameters (kept out of config/ so the seed copy stays pure).
+install(FILES
+  config/emtracker_params.yaml
+  DESTINATION share/${PROJECT_NAME}
+)
+
 ament_package()

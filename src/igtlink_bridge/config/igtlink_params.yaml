@@ -1,0 +1,14 @@
+# Single source of truth for the OpenIGTLink bridge instances.
+igtlink_bridge_slicer_node:
+  ros__parameters:
+    hostname: "localhost"
+    port: 18944
+    convert_to_startrack: false
+    auto_connect: false
+
+igtlink_bridge_module_node:
+  ros__parameters:
+    hostname: "10.15.232.114"
+    port: 18975
+    convert_to_startrack: true
+    auto_connect: false

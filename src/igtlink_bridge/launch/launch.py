@@ -1,9 +1,17 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+
 def generate_launch_description():
+    # Canonical parameter values live in config/igtlink_params.yaml; the
+    # launch arguments below override them.
+    params_file = os.path.join(get_package_share_directory('igtlink_bridge'), 'config', 'igtlink_params.yaml')
+
     # Launch args
     hostname_module_arg = DeclareLaunchArgument('hostname_module', default_value='10.15.232.114')
     port_module_arg = DeclareLaunchArgument('port_module', default_value='18975')
@@ -23,10 +31,9 @@ def generate_launch_description():
         name='igtlink_bridge_module_node',
         output='screen',
         prefix=['taskset -c 8'],
-        parameters=[{
+        parameters=[params_file, {
             'hostname': hostname_module,
             'port': port_module,
-            'convert_to_startrack': True,
             'auto_connect': auto_connect,
         }],
     )
@@ -37,10 +44,9 @@ def generate_launch_description():
         name='igtlink_bridge_slicer_node',
         # output='screen',
         prefix=['taskset -c 8'],
-        parameters=[{
+        parameters=[params_file, {
             'hostname': hostname_slicer,
             'port': port_slicer,
-            'convert_to_startrack': False,
             'auto_connect': auto_connect,
         }],
     )

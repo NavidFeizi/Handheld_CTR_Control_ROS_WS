@@ -1,9 +1,16 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def generate_launch_description():
+    # Canonical parameter values live in config/mpc_params.yaml; the launch
+    # arguments below (same names, same defaults) override them.
+    params_file = os.path.join(get_package_share_directory('mpc'), 'config', 'mpc_params.yaml')
+
     # for Handheld CTR MPC
     sample_time_arg = DeclareLaunchArgument('sample_time', default_value='0.025') # seconds
     model_name_arg = DeclareLaunchArgument('model_name', default_value='ctr_8x91_0.18_tanh_9K_9K_50K_v3')
@@ -47,7 +54,7 @@ def generate_launch_description():
         name='mpc',
         output='screen',
         prefix=['taskset -c 4'],
-        parameters=[{
+        parameters=[params_file, {
             'sample_time': sample_time,
             'model_name': model_name,
             'q0': q0,
