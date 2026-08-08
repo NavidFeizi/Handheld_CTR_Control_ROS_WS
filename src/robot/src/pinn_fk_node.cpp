@@ -70,6 +70,7 @@ private:
   // std::shared_ptr<PINNs<backbonePoints, N>> m_ctr_pinns;
 
   double m_sample_time;
+  std::mutex m_state_mutex; // guards m_q / m_wf (subs write, FK timer reads)
   blaze::StaticVector<double, N> m_q;
   blaze::StaticVector<double, N> m_q_min, m_q_max; // Joint limits
   blaze::StaticVector<double, 3> m_wf;              
@@ -196,12 +197,14 @@ public:
   /// Update current joints configuration
   void updateJointsConfig(const interfaces::msg::Jointspace::ConstSharedPtr &msg)
   {
+    std::lock_guard<std::mutex> lock(m_state_mutex);
     m_q = ctr_common::wireToPhysics4(msg->position);
   }
 
   /// @brief Update disterbance distal force (m_wf = f)
   void updateExternalForce(const interfaces::msg::Force::ConstSharedPtr &msg)
   {
+    std::lock_guard<std::mutex> lock(m_state_mutex);
     m_wf[0] = msg->x;
     m_wf[1] = msg->y;
     m_wf[2] = msg->z;
@@ -212,12 +215,18 @@ public:
   void actuate_timer_callback()
   {
     blaze::StaticVector<double, M> x;
-    // blaze::StaticMatrix<double, m_backbonePoints, 3UL> shape;
 
-    // std::cout << "fk_node --> q: " << blaze::trans(m_q) << std::endl;
-
-    // clamp joint positions within limits
-    ctr_common::clampJointPositions(m_q, m_q_min, m_q_max, this->get_logger());
+    // Snapshot the shared state (subscriptions write it from another executor
+    // thread), then clamp the LOCAL copy — the feedback state itself is never
+    // mutated by this timer.
+    blaze::StaticVector<double, N> q;
+    blaze::StaticVector<double, 3> wf;
+    {
+      std::lock_guard<std::mutex> lock(m_state_mutex);
+      q = m_q;
+      wf = m_wf;
+    }
+    ctr_common::clampJointPositions(q, m_q_min, m_q_max, this->get_logger());
     
     // just for test
     // // Generate time-varying force input
@@ -236,7 +245,7 @@ public:
     // m_wf[2] = wf_mag * 0.2 * std::sin(2.0 * M_PI * freq_z * t);
 
     // forward kinematics
-    m_ctr_pinns->getPosDistal(m_q, m_wf, x);
+    m_ctr_pinns->getPosDistal(q, wf, x);
 
     // publish end-effector position
     interfaces::msg::Taskspace simout_msg;
@@ -245,7 +254,7 @@ public:
     simout_msg.p[2] = x[2];;
     m_publisher_simout->publish(simout_msg);
 
-    const auto [Tb1, Tb2, Tb3] = m_ctr_pinns->getAllTubesShape(m_q, m_wf);
+    const auto [Tb1, Tb2, Tb3] = m_ctr_pinns->getAllTubesShape(q, wf);
 
     // shapes stay in metres on the wire; the IGTL bridge converts to mm for Slicer
     std_msgs::msg::Float64MultiArray msg_1 = blazeToMultiArrayMsg(Tb1);
