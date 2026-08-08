@@ -1688,13 +1688,12 @@ void Planner<controlInputs>::writeSolutionToFile(const std::string &outputFile)
 	{
 		if (!outputFile.empty())
 		{
-			const std::filesystem::path tmpDir = "../../OutputFiles";
-			const std::filesystem::path fileName = tmpDir / outputFile;
+			const std::filesystem::path fileName = outputFile;
 
-			// Ensure the directory exists
-			if (!std::filesystem::exists(tmpDir))
+			// Ensure the target directory exists
+			if (fileName.has_parent_path() && !std::filesystem::exists(fileName.parent_path()))
 			{
-				std::filesystem::create_directories(tmpDir);
+				std::filesystem::create_directories(fileName.parent_path());
 			}
 
 			std::ofstream outFile(fileName, std::ios::out);
@@ -1852,10 +1851,9 @@ void Planner<controlInputs>::analyzeSolution(bool dumpCSV, const std::string &cs
 	std::ofstream csv;
 	if (dumpCSV)
 	{
-		const std::filesystem::path tmpDir = "../../OutputFiles";
-		if (!std::filesystem::exists(tmpDir))
-			std::filesystem::create_directories(tmpDir);
-		const std::filesystem::path out = tmpDir / csvPath;
+		const std::filesystem::path out = csvPath;
+		if (out.has_parent_path() && !std::filesystem::exists(out.parent_path()))
+			std::filesystem::create_directories(out.parent_path());
 		csv.open(out, std::ios::out);
 		if (csv.is_open())
 		{
