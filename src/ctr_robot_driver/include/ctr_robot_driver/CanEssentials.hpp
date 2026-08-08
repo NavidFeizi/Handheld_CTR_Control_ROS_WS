@@ -110,7 +110,6 @@ public:
 
 std::string GetCommandFromHex(uint8_t hexValue);
 uint16_t bin2Dec(const std::string &binaryString);
-std::string dec2Bin(uint16_t decimalValue);
 
 /* convert binary to string*/
 template <typename T>

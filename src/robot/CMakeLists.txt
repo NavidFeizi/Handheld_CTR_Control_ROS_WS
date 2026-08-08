@@ -66,6 +66,7 @@ target_link_libraries(pinn_fk ctr_kinematics_pinn::ctr_kinematics_pinn ctr_commo
 ament_target_dependencies(pinn_fk rclcpp std_msgs std_srvs interfaces)
 
 add_executable(ekf_node src/ekf_node.cpp)
+target_include_directories(ekf_node PRIVATE include)
 target_link_libraries(ekf_node ctr_kinematics_pinn::ctr_kinematics_pinn ctr_common::ctr_common)
 ament_target_dependencies(ekf_node rclcpp std_msgs std_srvs interfaces)
 
@@ -82,5 +83,11 @@ install(DIRECTORY
   config
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_quat_utils test/test_quat_utils.cpp)
+  target_include_directories(test_quat_utils PRIVATE include)
+endif()
 
 ament_package()

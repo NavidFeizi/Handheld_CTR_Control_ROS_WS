@@ -14,15 +14,13 @@
 
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "ctr_common/joint_conventions.hpp"
+#include "robot/quat_utils.hpp"
+using namespace robot_quat;
 #include "ctr_common/runtime_paths.hpp"
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 
-inline blaze::StaticVector<double, 4UL> quat_multiply(const blaze::StaticVector<double, 4UL> &q, const blaze::StaticVector<double, 4UL> &r);
-inline void quat_rotate(const blaze::StaticVector<double, 4UL> &q, const blaze::StaticVector<double, 3UL> &v, blaze::StaticVector<double, 3UL> &v_out);
-inline blaze::StaticVector<double, 4UL> quat_inverse(const blaze::StaticVector<double, 4UL> &q);
-inline blaze::StaticVector<double, 3UL> quat_to_rotvec(const blaze::StaticVector<double, 4UL> &quat_err);
 
 static constexpr bool use_orientation = true;
 static constexpr bool exclude_roll = true;
@@ -777,44 +775,6 @@ private:
 };
 
 // Quaternion multiplication: computes Hamilton product of q and r | Format: [w, x, y, z]
-inline blaze::StaticVector<double, 4UL> quat_multiply(const blaze::StaticVector<double, 4UL> &q, const blaze::StaticVector<double, 4UL> &r)
-{
-  double q0 = q[0], q1 = q[1], q2 = q[2], q3 = q[3];
-  double r0 = r[0], r1 = r[1], r2 = r[2], r3 = r[3];
-
-  return blaze::StaticVector<double, 4UL>{
-      q0 * r0 - q1 * r1 - q2 * r2 - q3 * r3,
-      q0 * r1 + q1 * r0 + q2 * r3 - q3 * r2,
-      q0 * r2 - q1 * r3 + q2 * r0 + q3 * r1,
-      q0 * r3 + q1 * r2 - q2 * r1 + q3 * r0};
-}
-
-// Rotate vector v by quaternion q and store result in v_out | Format: q = [w, x, y, z]
-inline void quat_rotate(const blaze::StaticVector<double, 4UL> &q, const blaze::StaticVector<double, 3UL> &v, blaze::StaticVector<double, 3UL> &v_out)
-{
-  const double qw = q[0];
-  blaze::StaticVector<double, 3UL> qv{q[1], q[2], q[3]};
-
-  auto t = 2.0 * blaze::cross(qv, v);
-  v_out = v + qw * t + blaze::cross(qv, t);
-}
-
-// Quaternion inverse: conjugate divided by norm squared | Format: [w, x, y, z]
-inline blaze::StaticVector<double, 4UL> quat_inverse(const blaze::StaticVector<double, 4UL> &q)
-{
-  double norm_sq = blaze::dot(q, q);
-  return blaze::StaticVector<double, 4UL>{q[0], -q[1], -q[2], -q[3]} / norm_sq;
-}
-
-// Convert quaternion error to rotation vector using small-angle approximation | Format: [w, x, y, z] -> [x, y, z]
-inline blaze::StaticVector<double, 3UL> quat_to_rotvec(const blaze::StaticVector<double, 4UL> &quat_err)
-{
-  auto q = quat_err;
-  if (q[0] < 0.0)
-    q = -q;
-  return 2.0 * blaze::subvector(q, 1UL, 3UL);
-}
-
 int main(int argc, char *argv[])
 {
   rclcpp::init(argc, argv);

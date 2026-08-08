@@ -75,4 +75,11 @@ ament_export_targets(export_ctr_robot_driver HAS_LIBRARY_TARGET)
 # consumers must find_package it before the export file loads.
 ament_export_dependencies(spdlog)
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  # Compile only CanEssentials.cpp — the pure CiA-402 helpers need no lely.
+  ament_add_gtest(test_can_essentials test/test_can_essentials.cpp src/CanEssentials.cpp)
+  target_include_directories(test_can_essentials PRIVATE include)
+endif()
+
 ament_package()
