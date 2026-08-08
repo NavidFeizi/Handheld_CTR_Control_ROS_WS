@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 #include <array>
-#include "Tube.hpp"
+#include "ctr_cosserat/Tube.hpp"
 
 class Segment
 {

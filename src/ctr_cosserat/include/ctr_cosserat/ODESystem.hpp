@@ -1,7 +1,7 @@
 #pragma once
 
 #include <blaze/Math.h>
-#include "mathOperations.hpp"
+#include "ctr_cosserat/mathOperations.hpp"
 
 typedef blaze::StaticVector<double, 15UL> state_type;
 

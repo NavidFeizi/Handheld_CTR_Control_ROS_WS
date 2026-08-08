@@ -1,6 +1,6 @@
 // This is a personal academic project. Dear PVS-Studio, please check it.
 // PVS-Studio Static Code Analyzer for C, C++, C#, and Java: http://www.viva64.com
-#include "CTR.hpp"
+#include "ctr_cosserat/CTR.hpp"
 
 // overloaded class constructor
 CTR::CTR(const std::array<std::shared_ptr<Tube>, 3UL> &Tb, blaze::StaticVector<double, 6UL> &q, double Tol, mathOp::rootFindingMethod method, double stageThickness) : m_accuracy(Tol), m_method(method), m_Tubes(Tb), m_beta(blaze::subvector<0UL, 3UL>(q)), m_q(q), m_stageThickness(stageThickness)

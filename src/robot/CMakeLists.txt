@@ -27,7 +27,8 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(rclcpp_action REQUIRED)
-find_package(interfaces REQUIRED) 
+find_package(interfaces REQUIRED)
+find_package(ctr_cosserat REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Widgets Concurrent)
 
@@ -38,7 +39,7 @@ find_package(BLAS REQUIRED)
 find_package(LAPACK REQUIRED)
 find_package(Blaze REQUIRED)
 find_package(TBB REQUIRED)
-find_package(NLopt REQUIRED)      # For CTRlib
+find_package(NLopt REQUIRED)      # For cosserat_fk
 
 # Find necessary pinn packages
 find_package(Torch REQUIRED)
@@ -48,10 +49,6 @@ set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
 add_subdirectory(lib_robot)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib_robot/include)
-
-# Adding the CTR static Library to the project
-add_subdirectory(ctr_library)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/ctr_library/include)
 
 # Adding the CTR pinn library to the project
 add_subdirectory(ctr_pinn_infer)
@@ -66,7 +63,7 @@ target_link_libraries(qt_gui Qt5::Widgets Qt5::Core Qt5::Concurrent)
 ament_target_dependencies(qt_gui rclcpp std_msgs std_srvs rclcpp_action interfaces)
 
 add_executable(cosserat_fk src/cosserat_fk_node.cpp)
-target_link_libraries(cosserat_fk CTRlib)
+target_link_libraries(cosserat_fk ctr_cosserat::ctr_cosserat)
 ament_target_dependencies(cosserat_fk rclcpp std_msgs std_srvs interfaces)
 ament_target_dependencies(cosserat_fk OpenMP Boost BLAS LAPACK Blaze TBB NLopt)
 

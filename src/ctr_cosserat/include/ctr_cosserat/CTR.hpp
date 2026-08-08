@@ -10,12 +10,12 @@
 
 #pragma once
 
-#include "Tube.hpp"
-#include "Segment.hpp"
-#include "ODESystem.hpp"
-#include "Observer.hpp"
-#include "mathOperations.hpp"
-#include "boostBlazeAlgebra.hpp"
+#include "ctr_cosserat/Tube.hpp"
+#include "ctr_cosserat/Segment.hpp"
+#include "ctr_cosserat/ODESystem.hpp"
+#include "ctr_cosserat/Observer.hpp"
+#include "ctr_cosserat/mathOperations.hpp"
+#include "ctr_cosserat/boostBlazeAlgebra.hpp"
 #include <memory>
 #include <tuple>
 #include <chrono>

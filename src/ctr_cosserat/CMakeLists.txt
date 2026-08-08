@@ -1,0 +1,44 @@
+cmake_minimum_required(VERSION 3.22)
+project(ctr_cosserat VERSION 1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+find_package(ament_cmake REQUIRED)
+find_package(NLopt REQUIRED)
+find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
+
+add_library(ctr_cosserat STATIC
+  src/CTR.cpp
+  src/Observer.cpp
+  src/ODESystem.cpp
+  src/Segment.cpp
+  src/Tube.cpp
+)
+add_library(ctr_cosserat::ctr_cosserat ALIAS ctr_cosserat)
+
+target_include_directories(ctr_cosserat PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+
+target_link_libraries(ctr_cosserat
+  PRIVATE
+    NLopt::nlopt
+    m
+    ${BLAS_LIBRARIES}
+    ${LAPACK_LIBRARIES}
+    gfortran
+)
+
+install(DIRECTORY include/ DESTINATION include)
+install(TARGETS ctr_cosserat
+  EXPORT export_ctr_cosserat
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin)
+
+ament_export_targets(export_ctr_cosserat HAS_LIBRARY_TARGET)
+
+ament_package()

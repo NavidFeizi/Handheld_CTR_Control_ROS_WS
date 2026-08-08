@@ -16,7 +16,7 @@
 #include <fstream>
 #include <filesystem>
 
-#include "CTR.hpp"
+#include "ctr_cosserat/CTR.hpp"
 #include <limits>
 
 // #include <chrono>
