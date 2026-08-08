@@ -2,6 +2,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+import numpy as np
 
 def generate_launch_description():
     # Launch args
@@ -17,14 +18,23 @@ def generate_launch_description():
     
     # EKF parameters
     f_dot_arg  = DeclareLaunchArgument('f_dot', default_value='1.0')
-    R_arg  = DeclareLaunchArgument('R', default_value='[7.22e-09, -1.72e-09, 5.78e-11, 0.00e+00, 0.00e+00, 0.00e+00,\
-                                                        -1.72e-09, 6.92e-09, 2.22e-09, 0.00e+00, 0.00e+00, 0.00e+00,\
-                                                        5.78e-11, 2.22e-09, 3.65e-09, 0.00e+00, 0.00e+00, 0.00e+00,\
-                                                        0.00e+00, 0.00e+00, 0.00e+00, 4.59e-02, -3.34e-03, 0.00e+00,\
-                                                        0.00e+00, 0.00e+00, 0.00e+00, -3.34e-03, 5.56e-02, 0.00e+00,\
-                                                        0.00e+00, 0.00e+00, 0.00e+00, -3.34e-03, 5.56e-02, 5.56e-0]')
-    
-    
+    R_ekf = np.array(
+        [
+            [1.75e-08, -3.22e-09, -7.38e-11, 0.00e+00, 0.00e+00, 0.00e+00],
+            [-3.22e-09, 1.27e-08, -1.12e-10, 0.00e+00, 0.00e+00, 0.00e+00],
+            [-7.38e-11, -1.12e-10, 3.24e-09, 0.00e+00, 0.00e+00, 0.00e+00],
+            [0.00e+00, 0.00e+00, 0.00e+00, 1.05e-06, 3.08e-07, 1.12e-06],
+            [0.00e+00, 0.00e+00, 0.00e+00, 3.08e-07, 2.02e-06, 4.82e-06],
+            [0.00e+00, 0.00e+00, 0.00e+00, 1.12e-06, 4.82e-06, 1.17e-05],
+        ]
+    )
+    R_ekf[3:6, 3:6] *= 5e4
+    R_ekf *= 1.5
+    R_default = '[' + ', '.join([f'{val:.2e}' for val in R_ekf.flatten()]) + ']'
+
+    R_arg = DeclareLaunchArgument('R', default_value=R_default)
+
+
     f_dot = LaunchConfiguration('f_dot')
     R = LaunchConfiguration('R')
 
