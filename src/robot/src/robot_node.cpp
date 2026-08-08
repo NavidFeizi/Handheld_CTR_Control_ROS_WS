@@ -55,7 +55,10 @@ public:
     setMaxVel(m_maxVel);
     setMaxAcc(m_maxAcc);
     initRosInterfaces();
-    startRobotCommunication(k_sample_time);
+    if (!startRobotCommunication(k_sample_time))
+    {
+      RCLCPP_FATAL(get_logger(), "CANopen bring-up failed after retries - node stays up, hardware unavailable");
+    }
 
     worker_thread_ = std::thread([this]()
                                  {

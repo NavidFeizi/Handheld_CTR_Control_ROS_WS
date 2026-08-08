@@ -30,17 +30,28 @@ CTRobot::CTRobot()
               {200.00 * M_PI / 180.00, 10.00 * 1e-3, 200.00 * M_PI / 180.00, 10.00 * 1e-3},
               {200.00 * M_PI / 180.00, 10.00 * 1e-3, 200.00 * M_PI / 180.00, 10.00 * 1e-3}) {} // Calls parameterized constructor
 
-/* Copy constructor */
-CTRobot::CTRobot(const CTRobot &rhs) : m_inrTubeRot(rhs.m_inrTubeRot),
-                                       m_inrTubeTrn(rhs.m_inrTubeTrn),
-                                       m_mdlTubeRot(rhs.m_mdlTubeRot),
-                                       m_mdlTubeTrn(rhs.m_mdlTubeTrn) {};
 
 /* class destructor: disable, and close cotrollers. */
 CTRobot::~CTRobot()
 {
-  m_logger->info("[CAN Master]  Closing");
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  if (m_logger)
+    m_logger->info("[CAN Master]  Closing");
+  shutdown();
+}
+
+/* Orderly teardown: stop the monitor loop, deconfigure the CANopen nodes and
+   stop the event loop, then join both threads (they used to be leaked/detached,
+   which put the joinable m_thread destructor one CTRobot destruction away from
+   std::terminate). Safe to call more than once. */
+void CTRobot::shutdown()
+{
+  m_monitor_stop = true;
+  if (m_monitorThread.joinable())
+    m_monitorThread.join();
+  if (m_can_running && m_request_can_shutdown)
+    m_request_can_shutdown();
+  if (m_canThread.joinable())
+    m_canThread.join();
 }
 
 /* initilizes the fiber driver for each node and what the status on all nodes */
@@ -82,24 +93,8 @@ void CTRobot::startCANopenNodes()
                               m_paths.canopen_dir + "/master.bin",
                               7);
 
-  // Create a signal handler.
-  io::SignalSet sigset(poll, exec);
-  // Watch for Ctrl+C or process termination.
-  sigset.insert(SIGHUP);
-  sigset.insert(SIGINT);
-  sigset.insert(SIGTERM);
-
-  // Submit a task to be executed when a signal is raised. We don't care which.
-  sigset.submit_wait([&](int /*signo*/)
-                     {
-    // If the signal is raised again, terminate immediately.
-    sigset.clear();
-    // Tell the master to start the deconfiguration process for all nodes, and
-    // submit a task to be executed once that process completes.
-    master.AsyncDeconfig().submit(exec, [&]() {
-      // Perform a clean shutdown.
-      ctx.shutdown();
-    }); });
+  // (The old io::SignalSet handler is gone: rclcpp owns process signals, and
+  // shutdown() now drives the same AsyncDeconfig -> ctx.shutdown() sequence.)
 
   // Start the NMT service of the master by pretending to receive a 'reset
   // node' command.
@@ -126,41 +121,70 @@ void CTRobot::startCANopenNodes()
             { m_mdlTubeTrn = std::make_shared<Cia301Node>(exec, master, 4, "Faulhaber", m_encodersResolution[3], m_gearRatios[3], m_velocityFactors[3],
                                                           m_sampleTime, operation_mode, m_maxAcc[3], m_maxVel[3],
                                                           m_paths.resolvedEncoderMemoryDir(), m_shared_state, m_logger); });
+  // Hand shutdown()/the monitor controlled access to the stack-owned CANopen
+  // objects. Valid while this thread is inside loop.run().
+  m_request_can_shutdown = [&master, exec, &ctx]()
   {
-    std::thread t1([&]()
-                   { loop.run(); });
-    t1.detach();
-  }
-  // this wait is mandatory to star the loop before commanding targets
+    master.AsyncDeconfig().submit(exec, [&ctx]()
+                                  { ctx.shutdown(); });
+  };
+  m_request_master_reset = [&master]()
+  { master.Reset(); };
+
+  m_monitor_stop = false;
+  m_monitorThread = std::thread(&CTRobot::monitorLoop, this);
+
+  // Run the event loop in THIS thread (it used to run in a detached thread
+  // referencing this stack frame). Returns when ctx.shutdown() is invoked.
+  m_can_running = true;
+  loop.run();
+  m_can_running = false;
+}
+
+/* Boot / switch-on / enable watch loop (used to run inline in the CAN thread
+   with no way to stop it). Exits when m_monitor_stop is set or boot fails. */
+void CTRobot::monitorLoop()
+{
+  // give the event loop time to create the node drivers
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   std::chrono::seconds timeout(5);
+  int boot_attempts = 0;
   auto startTime = std::chrono::high_resolution_clock::now();
-  while (!m_shared_state->m_boot_success)
+  while (!m_monitor_stop && !m_shared_state->m_boot_success)
   {
-
     auto currentTime = std::chrono::high_resolution_clock::now();
     auto elapsedTime = std::chrono::duration_cast<std::chrono::seconds>(currentTime - startTime);
     if (elapsedTime >= timeout)
     {
-      m_logger->warn("Bootup Timed Out!  --->  Reseting All Nodes -------");
-      std::raise(SIGINT);
-      master.Reset();
+      // The old code raised SIGINT at the whole process here. Retry the NMT
+      // reset a bounded number of times, then report failure and stand down.
+      boot_attempts++;
+      if (boot_attempts > 3)
+      {
+        m_logger->error("[CAN Master] Bootup failed after 3 reset attempts - giving up (hardware unavailable)");
+        m_boot_failed = true;
+        return;
+      }
+      m_logger->warn("[CAN Master] Bootup timed out - resetting all nodes (attempt {}/3)", boot_attempts);
+      if (m_request_master_reset)
+        m_request_master_reset();
+      startTime = std::chrono::high_resolution_clock::now();
       std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-      // break; // Exit the loop on timeout
     }
-    if (m_inrTubeRot->getFlags(Flags::FlagIndex::BOOT_SUCCESS) &&
+    if (m_inrTubeRot && m_inrTubeTrn && m_mdlTubeRot && m_mdlTubeTrn &&
+        m_inrTubeRot->getFlags(Flags::FlagIndex::BOOT_SUCCESS) &&
         m_inrTubeTrn->getFlags(Flags::FlagIndex::BOOT_SUCCESS) &&
         m_mdlTubeRot->getFlags(Flags::FlagIndex::BOOT_SUCCESS) &&
         m_mdlTubeTrn->getFlags(Flags::FlagIndex::BOOT_SUCCESS))
     {
-      // shared_state->signalBootSuccess();
       m_shared_state->m_boot_success = true;
       m_logger->info("[CAN Master] Nodes Booted Successfully");
     }
+    std::this_thread::sleep_for(std::chrono::milliseconds(4));
   }
 
-  while (!m_shared_state->m_flag_robot_switched_on)
+  while (!m_monitor_stop && !m_shared_state->m_flag_robot_switched_on)
   {
     if (CTRobot::getSwitchStatus())
     {
@@ -180,9 +204,10 @@ void CTRobot::startCANopenNodes()
         m_logger->info("[CAN Master] At Least One Node Switched OFF");
       }
     }
+    std::this_thread::sleep_for(std::chrono::milliseconds(4));
   }
 
-  while (true)
+  while (!m_monitor_stop)
   {
     auto en_status = CTRobot::getEnableStatus();
     if (en_status[0] && en_status[1] && en_status[2] && en_status[3])
@@ -195,16 +220,6 @@ void CTRobot::startCANopenNodes()
         m_logger->info("[CAN Master] All Nodes Enabled");
       }
     }
-    // else if (CTRobot::getDisabledStatus())
-    // {
-    //   if (m_shared_state->m_flag_operation_enabled_2)
-    //   {
-    //     m_shared_state->m_flag_operation_enabled = false;
-    //     m_shared_state->m_flag_operation_enabled_2 = false;
-    //     std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    //     m_logger->info("[CAN Master] All Nodes Disabled");
-    //   }
-    // }
     else
     {
       if (m_shared_state->m_flag_operation_enabled)
@@ -215,51 +230,34 @@ void CTRobot::startCANopenNodes()
       }
     }
 
-    // if (CTRobot::getDisabledStatus())
-    // {
-    //   if (CTRobot::getEncoderStatus())
-    //   {
-    //     if (!m_shared_state->m_encoders_set)
-    //     {
-    //       m_shared_state->m_encoders_set = true;
-    //       std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    //       m_logger->info("[CAN Master] Encoders Set");
-    //     }
-    //   }
-    //   else
-    //   {
-    //     if (m_shared_state->m_encoders_set)
-    //     {
-    //       m_shared_state->m_encoders_set = false;
-    //     }
-    //   }
-    // }
-
     std::this_thread::sleep_for(std::chrono::milliseconds(4));
   }
-
-  // while (true)
-  // {
-  //   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  // }
 }
 
-/* starts the Fiber_Loop in a separate thread */
-void CTRobot::startRobotCommunication(int sample_time)
+/* starts the CANopen event loop and monitor threads; returns false if the
+   nodes never boot (the caller keeps the node alive, hardware unavailable) */
+bool CTRobot::startRobotCommunication(int sample_time)
 {
   m_sampleTime = sample_time;
-  m_thread = std::thread(&CTRobot::startCANopenNodes, this);
+  m_canThread = std::thread(&CTRobot::startCANopenNodes, this);
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  // wait untill all nodes tasks are posted to proceed
-  while (!m_inrTubeRot->getFlags(Flags::FlagIndex::TASKS_POSTED) ||
+  // wait until all node tasks are posted (or boot definitively fails)
+  while (!m_inrTubeRot || !m_inrTubeTrn || !m_mdlTubeRot || !m_mdlTubeTrn ||
+         !m_inrTubeRot->getFlags(Flags::FlagIndex::TASKS_POSTED) ||
          !m_inrTubeTrn->getFlags(Flags::FlagIndex::TASKS_POSTED) ||
          !m_mdlTubeRot->getFlags(Flags::FlagIndex::TASKS_POSTED) ||
          !m_mdlTubeTrn->getFlags(Flags::FlagIndex::TASKS_POSTED))
   {
+    if (m_boot_failed)
+    {
+      m_logger->error("[CAN Master] Robot communication failed to start");
+      return false;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   m_logger->info("[CAN Master] Tasks Posted");
+  return true;
 }
 
 /* enable operation of all joints

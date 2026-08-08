@@ -26,6 +26,8 @@
 #include <thread>
 #include <string>
 #include <cstdlib>
+#include <atomic>
+#include <functional>
 #include <bitset>
 #include <fstream>
 #include <cmath>
@@ -144,12 +146,17 @@ public:
     CTRobot(bool position_limit, blaze::StaticVector<double, 4UL> maxVel, blaze::StaticVector<double, 4UL> maxAcc);
     CTRobot();
 
-    CTRobot(const CTRobot &rhs);
+    // not copyable: owns threads and the CANopen master lifetime
+    CTRobot(const CTRobot &rhs) = delete;
+    CTRobot &operator=(const CTRobot &rhs) = delete;
     ~CTRobot();
 
     void setRuntimePaths(RuntimePaths paths) { m_paths = std::move(paths); }
 
-    void startRobotCommunication(int sample_time);
+    // returns false if the CANopen nodes never boot (after bounded retries)
+    bool startRobotCommunication(int sample_time);
+    // stops the monitor loop, deconfigures the nodes, joins both threads
+    void shutdown();
     void enableOperation(const bool enable);
 
     // ========================== Command and Feedback Methods ===========================
@@ -190,7 +197,6 @@ public:
     void waitUntilReach() const;
     void waitUntilTransReach(const std::atomic<bool>& cancel_flag) const;
     void waitUntilTransReach() const;
-    void findTransEncoders();
 
     // bool m_boot_success = false;
     // bool m_flag_robot_switched_on = false;
@@ -209,6 +215,7 @@ protected:
 
 private:
     void startCANopenNodes();
+    void monitorLoop();
     void convPosToRobotFrame(const blaze::StaticVector<double, 4UL> &posCurrent,
                              blaze::StaticVector<double, 4UL> &posInCTRFrame) const;
     int checkPosLimits(const blaze::StaticVector<double, 4UL> &posTarget) const;
@@ -226,8 +233,14 @@ private:
     static constexpr blaze::StaticVector<double, 4UL> m_velocityFactors = {10.0, 10.0, 10.0, 10.0};
     static constexpr blaze::StaticVector<double, 4UL> m_gearRatios = {1, 1, 1, 1}; 
 
-    std::thread m_thread;
-    
+    std::thread m_canThread;     // runs the lely event loop (loop.run())
+    std::thread m_monitorThread; // boot/switch-on/enable watch (monitorLoop)
+    std::atomic<bool> m_monitor_stop{false};
+    std::atomic<bool> m_boot_failed{false};
+    std::atomic<bool> m_can_running{false};
+    std::function<void()> m_request_can_shutdown; // set by the CAN thread before loop.run()
+    std::function<void()> m_request_master_reset;
+
     
     unsigned int m_sampleTime; // commandPeriod [ms]
     OpMode operation_mode;
