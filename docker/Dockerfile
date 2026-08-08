@@ -43,9 +43,9 @@ RUN git clone --depth 1 --branch 1.6.0 https://github.com/ompl/ompl.git /tmp/omp
     && cmake --install /tmp/ompl/build && rm -rf /tmp/ompl
 
 # OpenIGTLink 3.1 from source → /usr/local (config lands at /usr/local/lib/igtl/cmake/igtl-3.1,
-# the path hardcoded in emtracker/ and igtlink_bridge/).
-RUN git clone https://github.com/openigtlink/OpenIGTLink.git /tmp/igtl \
-    && git -C /tmp/igtl checkout v3.1.0 2>/dev/null || git -C /tmp/igtl checkout v3.1 2>/dev/null || git -C /tmp/igtl checkout release-3.1 \
+# the path hardcoded in emtracker/ and igtlink_bridge/). No 3.1 tag was ever cut upstream —
+# master carries version 3.1 (the lab install can only have come from there), so build master.
+RUN git clone --depth 1 https://github.com/openigtlink/OpenIGTLink.git /tmp/igtl \
     && cmake -S /tmp/igtl -B /tmp/igtl/build -DCMAKE_BUILD_TYPE=Release \
          -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF \
     && cmake --build /tmp/igtl/build -j"$(nproc)" \
