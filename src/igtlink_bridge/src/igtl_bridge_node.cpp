@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -15,6 +16,7 @@
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/srv/transformation.hpp"
 #include "interfaces/srv/config.hpp"
+#include "interfaces/srv/planner.hpp"
 #include "interfaces/msg/status.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 
@@ -89,7 +91,7 @@ private:
     m_robot_setup_client = create_client<interfaces::srv::Config>("robot_config");
 
     /// robot setup service
-    m_planner_client = create_client<interfaces::srv::Config>("planner/command");
+    m_planner_client = create_client<interfaces::srv::Planner>("planner/command");
 
     m_cbGroup1 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     m_cbGroup2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -429,30 +431,28 @@ private:
 
         else if (commandName == "RobotAutonomousMotion" || commandName == "RobotTrajectory")
         {
-          auto request = std::make_shared<interfaces::srv::Config::Request>();
+          auto request = std::make_shared<interfaces::srv::Planner::Request>();
+          request->value = {0.0, 0.0, 0.0};
 
-          // Split commandContent on the first newline
+          // Split commandContent on the first newline: "command\nx,y,z" (target in metres)
           std::string::size_type newline_pos = commandContent.find('\n');
 
           if (newline_pos != std::string::npos)
           {
             request->command = commandContent.substr(0, newline_pos);
-            try
+            std::string value_str = commandContent.substr(newline_pos + 1);
+            std::replace(value_str.begin(), value_str.end(), ',', ' ');
+            std::istringstream value_stream(value_str);
+            if (!(value_stream >> request->value[0] >> request->value[1] >> request->value[2]))
             {
-              std::string value_str = commandContent.substr(newline_pos + 1);
-              request->value = std::stod(value_str); // Convert to double
-            }
-            catch (const std::exception &e)
-            {
-              RCLCPP_WARN(this->get_logger(), "Invalid value in commandContent: %s", e.what());
-              request->value = 0.0; // Or any safe fallback value
+              RCLCPP_WARN(this->get_logger(), "Expected 3 target coordinates in commandContent, got: '%s'", value_str.c_str());
+              request->value = {0.0, 0.0, 0.0};
             }
           }
           else
           {
             // Only command present, no value
             request->command = commandContent;
-            request->value = 0.0; // Or leave unchanged if optional
           }
 
           // using ServiceResponseFuture_2 = rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture;
@@ -785,7 +785,7 @@ private:
   }
 
   ///
-  void handle_service_response_2(const rclcpp::Client<interfaces::srv::Config>::SharedFuture future)
+  void handle_service_response_2(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future)
   {
     // Get the result of the future object
     auto response = future.get();
@@ -896,7 +896,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr m_callback_group_heartbeat;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr m_freeze_phantom_service;
   rclcpp::Client<interfaces::srv::Config>::SharedPtr m_robot_setup_client;
-  rclcpp::Client<interfaces::srv::Config>::SharedPtr m_planner_client;
+  rclcpp::Client<interfaces::srv::Planner>::SharedPtr m_planner_client;
   rclcpp::Client<interfaces::srv::Config>::SharedPtr m_robot_enable_client;
   rclcpp::Subscription<interfaces::msg::Status>::SharedPtr m_robot_status_subs;
 
