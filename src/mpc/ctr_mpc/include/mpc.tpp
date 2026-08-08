@@ -478,14 +478,45 @@ void MPC<h, n, m>::step(const VecN &q0, const blaze::StaticVector<double, 3UL> &
     m_g_eigen = toEigenVec(m_g);
     m_ub_eigen = toEigenVec(m_ub);
     m_lb_eigen = toEigenVec(m_lb);
-    m_solver->clearSolver();
-    m_solver->data()->clearHessianMatrix();
-    m_solver->data()->setHessianMatrix(m_H_eigen);
-    m_solver->data()->setGradient(m_g_eigen);
-    m_solver->data()->setLowerBound(m_lb_eigen);
-    m_solver->data()->setUpperBound(m_ub_eigen);
-    m_solver->initSolver();
-    if (m_solver->solveProblem() != OsqpEigen::ErrorExitFlag::NoError)
+    // Warm start: initialize the solver once, then update matrices/vectors in
+    // place. The Hessian's sparsity pattern is structurally identical every
+    // cycle (same QP construction), which updateHessianMatrix requires; if an
+    // update ever fails (e.g. pattern change from exact-zero entries), fall
+    // back to a full re-init and warn once. The old code cleared and re-inited
+    // the solver every cycle, defeating setWarmStart(true) entirely.
+    bool solver_ok = true;
+    if (!m_solver_ready)
+    {
+        m_solver->data()->clearHessianMatrix();
+        solver_ok = m_solver->data()->setHessianMatrix(m_H_eigen) &&
+                    m_solver->data()->setGradient(m_g_eigen) &&
+                    m_solver->data()->setLowerBound(m_lb_eigen) &&
+                    m_solver->data()->setUpperBound(m_ub_eigen) &&
+                    m_solver->initSolver();
+        m_solver_ready = solver_ok;
+    }
+    else
+    {
+        solver_ok = m_solver->updateHessianMatrix(m_H_eigen) &&
+                    m_solver->updateGradient(m_g_eigen) &&
+                    m_solver->updateBounds(m_lb_eigen, m_ub_eigen);
+        if (!solver_ok)
+        {
+            if (!m_reinit_warned)
+            {
+                std::cout << "OSQP in-place update failed - falling back to solver re-init" << std::endl;
+                m_reinit_warned = true;
+            }
+            m_solver->clearSolver();
+            m_solver->data()->clearHessianMatrix();
+            solver_ok = m_solver->data()->setHessianMatrix(m_H_eigen) &&
+                        m_solver->data()->setGradient(m_g_eigen) &&
+                        m_solver->data()->setLowerBound(m_lb_eigen) &&
+                        m_solver->data()->setUpperBound(m_ub_eigen) &&
+                        m_solver->initSolver();
+        }
+    }
+    if (!solver_ok || m_solver->solveProblem() != OsqpEigen::ErrorExitFlag::NoError)
     {
         std::cout << "Failed to solve QP!" << std::endl;
     }

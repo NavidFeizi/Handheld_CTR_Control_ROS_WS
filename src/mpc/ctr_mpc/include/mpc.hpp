@@ -98,6 +98,8 @@ private:
     std::optional<std::function<SparseMat(const MatHN &)>> m_jacB; // nullsafe
 
     std::shared_ptr<OsqpEigen::Solver> m_solver;
+    bool m_solver_ready = false;  // set after the one-time initSolver()
+    bool m_reinit_warned = false; // warn only once if in-place updates fail
 
     double m_dt;
     VecM m_Q_diag, m_Qf_diag;

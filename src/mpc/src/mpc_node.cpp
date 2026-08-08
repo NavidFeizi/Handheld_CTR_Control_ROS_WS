@@ -553,6 +553,7 @@ private:
   /// @brief Update disterbance distal force (m_wf = f)
   void updateExternalForce(const interfaces::msg::Force::ConstSharedPtr &msg)
   {
+    std::lock_guard<std::mutex> lock(m_state_mutex);
     m_wf[0] = msg->x;
     m_wf[1] = msg->y;
     m_wf[2] = msg->z;
@@ -582,14 +583,16 @@ private:
     }
 
     blaze::StaticVector<double, N> q_meas;
+    blaze::StaticVector<double, 3> wf;
     {
       std::lock_guard<std::mutex> lock(m_state_mutex);
       q_meas = m_q; // raw noisy joints from robot
+      wf = m_wf;
     }
     // Kalman filter: fuse integrated model (using m_u_last) with measurement
     q = kalmanUpdateJoints(q_meas, m_u_last, m_sample_time);
 
-    this->m_mpc_model->getPosDistal(q, m_wf, x_mpc);
+    this->m_mpc_model->getPosDistal(q, wf, x_mpc);
     {
       std::lock_guard<std::mutex> lock(m_state_mutex);
       x_e = (m_x - x_mpc);
@@ -619,7 +622,7 @@ private:
       // }
     }
 
-    m_mpc->step(q, m_wf, ref_h, u_apply);
+    m_mpc->step(q, wf, ref_h, u_apply);
 
     m_u_last = u_apply;
 
