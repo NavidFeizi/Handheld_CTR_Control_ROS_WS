@@ -94,7 +94,7 @@ private:
   {
     // Declare motion limit parameters as vectors
     declare_parameter<std::vector<double>>("maxVel", {3.0, 0.012, 3.0, 0.012});
-    declare_parameter<std::vector<double>>("maxAcc", {20.0, 0.12, 20.0, 0.12});
+    declare_parameter<std::vector<double>>("maxAcc", {10.0, 0.10, 10.0, 0.10});
 
     std::vector<double> maxVelVec = get_parameter("maxVel").as_double_array();
     std::vector<double> maxAccVec = get_parameter("maxAcc").as_double_array();

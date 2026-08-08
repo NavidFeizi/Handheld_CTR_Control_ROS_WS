@@ -1,0 +1,38 @@
+# Single source of truth for robot-package node parameters.
+# Launch files load this file first; launch arguments (same names, same
+# defaults) override individual values.
+robot_node:
+  ros__parameters:
+    Kp: 30.0
+    Ki: 5.0
+    maxVel: [3.0, 0.012, 3.0, 0.012]   # [rad/s, m/s, rad/s, m/s]
+    maxAcc: [10.0, 0.10, 10.0, 0.10]   # [rad/s^2, m/s^2, rad/s^2, m/s^2]
+    can_interface: "can0"
+    canopen_dir: ""          # empty -> installed share/ctr_robot_driver/canopen
+    encoder_memory_dir: ""   # empty -> $HOME/Documents/handheld_CTR/encoder_memory/
+
+pinn_fk_node:
+  ros__parameters:
+    sample_time: 0.025
+    num_backbone: 50
+    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_v3"
+    models_dir: ""           # empty -> installed share/ctr_kinematics_pinn/models
+    q0: [-0.100, -0.055, 0.0, 0.0]
+
+ekf_node:
+  ros__parameters:
+    sample_time: 0.025
+    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_v3"
+    models_dir: ""
+    f_dot: 0.2               # N/s — production value from system_bringup (robot.py's old 0.1 lost)
+    # 6x6 measurement covariance, row-major. Formerly built with numpy in three
+    # launch files (sim.py's hand-typed copy was malformed); values below are
+    # the effective production matrix: base R with R[3:6,3:6]*5e4, then *1.5.
+    R: [
+      2.625e-08, -4.830e-09, -1.107e-10, 0.000e+00, 0.000e+00, 0.000e+00,
+      -4.830e-09, 1.905e-08, -1.680e-10, 0.000e+00, 0.000e+00, 0.000e+00,
+      -1.107e-10, -1.680e-10, 4.860e-09, 0.000e+00, 0.000e+00, 0.000e+00,
+      0.000e+00, 0.000e+00, 0.000e+00, 7.875e-02, 2.310e-02, 8.400e-02,
+      0.000e+00, 0.000e+00, 0.000e+00, 2.310e-02, 1.515e-01, 3.615e-01,
+      0.000e+00, 0.000e+00, 0.000e+00, 8.400e-02, 3.615e-01, 8.775e-01,
+    ]
