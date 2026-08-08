@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -19,15 +19,6 @@ def generate_launch_description():
 
     error_c_arg = DeclareLaunchArgument('error_c', default_value='1.0')
 
-    # for Handheld CTR reference trajectory
-    radius_base_arg = DeclareLaunchArgument('radius_base', default_value='0.022')
-    radius_amp_arg = DeclareLaunchArgument('radius_amp', default_value='0.000')
-    z_amp_arg = DeclareLaunchArgument('z_amp', default_value='0.005')
-    omega_theta_arg = DeclareLaunchArgument('omega_theta', default_value='0.20')
-    omega_radius_arg = DeclareLaunchArgument('omega_radius', default_value='1.2')
-    omega_z_arg = DeclareLaunchArgument('omega_z', default_value='0.88')
-    p_centre_arg = DeclareLaunchArgument('p_centre', default_value='[0.0, 0.0, 0.125]') 
-
     # # for Grassmann CTR MPC
     # sample_time_arg = DeclareLaunchArgument('sample_time', default_value='0.025') # seconds
     # model_name_arg = DeclareLaunchArgument('model_name', default_value='grassmann_ctr_v4.4.4')
@@ -36,15 +27,6 @@ def generate_launch_description():
     # du_max_arg = DeclareLaunchArgument('du_max', default_value='[0.02, 0.02, 0.02, 1.0, 1.0, 1.0]') 
     # R_arg = DeclareLaunchArgument('R', default_value='[0.05, 0.05, 0.05, 0.005, 0.005, 0.005]') 
     # Q_arg = DeclareLaunchArgument('Q', default_value='[10000.0, 10000.0, 10000.0]') 
-
-    # # for Grassmann reference trajectory
-    # radius_base_arg = DeclareLaunchArgument('radius_base', default_value='0.040')
-    # radius_amp_arg = DeclareLaunchArgument('radius_amp', default_value='0.015')
-    # z_amp_arg = DeclareLaunchArgument('z_amp', default_value='0.015')
-    # omega_theta_arg = DeclareLaunchArgument('omega_theta', default_value='0.25')
-    # omega_radius_arg = DeclareLaunchArgument('omega_radius', default_value='2.0')
-    # omega_z_arg = DeclareLaunchArgument('omega_z', default_value='1.5')
-    # p_centre_arg = DeclareLaunchArgument('p_centre', default_value='[0.0, 0.0, 0.140]') 
 
     ### =============================================================================== ###
 
@@ -79,37 +61,6 @@ def generate_launch_description():
         }],
     )
 
-    omega_theta = LaunchConfiguration('omega_theta')
-    omega_radius = LaunchConfiguration('omega_radius')
-    omega_z = LaunchConfiguration('omega_z')
-    radius_base = LaunchConfiguration('radius_base')
-    radius_amp = LaunchConfiguration('radius_amp')
-    z_amp = LaunchConfiguration('z_amp')
-    p_centre = LaunchConfiguration('p_centre')
-
-    reference_node = Node(
-        package='mpc',
-        executable='reference',
-        name='reference_node',
-        output='screen',
-        prefix=['taskset -c 5'],
-        parameters=[{
-            'sample_time': sample_time,
-            'omega_theta': omega_theta,
-            'omega_radius': omega_radius,
-            'omega_z': omega_z,
-            'radius_base': radius_base,
-            'radius_amp': radius_amp,
-            'z_amp': z_amp,
-            'p_centre': p_centre,
-        }],
-    )
-
-    delayed_mpc_node = TimerAction(
-        period=1.0,  # Delay in seconds
-        actions=[mpc_node],
-    )
-
     ld = LaunchDescription()
     ld.add_action(sample_time_arg)
     ld.add_action(model_name_arg)
@@ -122,15 +73,6 @@ def generate_launch_description():
     ld.add_action(Q_arg)
     ld.add_action(error_c_arg)
 
-    ld.add_action(omega_theta_arg)
-    ld.add_action(omega_radius_arg)
-    ld.add_action(omega_z_arg)
-    ld.add_action(radius_base_arg)
-    ld.add_action(radius_amp_arg)
-    ld.add_action(z_amp_arg)
-    ld.add_action(p_centre_arg)
-    
     ld.add_action(mpc_node)
-    # ld.add_action(reference_node)
 
     return ld

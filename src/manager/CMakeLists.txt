@@ -27,8 +27,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
-find_package(rclcpp_action REQUIRED)
-find_package(interfaces REQUIRED) 
+find_package(interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 
 find_package(geometry_msgs REQUIRED)
@@ -42,20 +41,11 @@ find_package(Qt5 REQUIRED COMPONENTS Core Widgets Concurrent)
 set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
 # Define and link executables
-add_executable(manage src/manager_node.cpp)
-ament_target_dependencies(manage rclcpp std_msgs rclcpp_action interfaces ament_index_cpp)
-
 add_executable(record src/recorder_node.cpp)
-ament_target_dependencies(record rclcpp std_msgs interfaces ament_index_cpp 
+ament_target_dependencies(record rclcpp std_msgs interfaces ament_index_cpp
                             tf2 tf2_ros geometry_msgs tf2_eigen Eigen3)
 
-add_executable(procedure src/procedure_node.cpp)
-ament_target_dependencies(procedure rclcpp std_msgs interfaces ament_index_cpp)
-
-add_executable(joint_path src/joint_path_node.cpp)
-ament_target_dependencies(joint_path rclcpp std_msgs interfaces ament_index_cpp)
-
-add_executable(master 
+add_executable(master
     src/master_node.cpp
     src/master_qt_gui.cpp
     include/manager/master_node.hpp
@@ -66,10 +56,7 @@ ament_target_dependencies(master rclcpp std_msgs std_srvs interfaces ament_index
                             tf2 tf2_ros geometry_msgs tf2_eigen Eigen3)
 
 install(TARGETS
-manage
 record
-procedure
-joint_path
 master
   DESTINATION lib/${PROJECT_NAME})
 

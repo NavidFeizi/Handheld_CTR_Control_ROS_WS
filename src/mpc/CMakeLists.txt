@@ -41,13 +41,8 @@ add_executable(mpc src/mpc_node.cpp)
 target_link_libraries(mpc CtrMpc CtrPinnInference)
 ament_target_dependencies(mpc rclcpp std_msgs ament_cmake ament_index_cpp interfaces)
 
-# # Define executable and Link libraries
-add_executable(reference src/reference_node.cpp)
-ament_target_dependencies(reference rclcpp std_msgs ament_cmake ament_index_cpp interfaces)
-
 install(TARGETS
 mpc
-reference
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY
