@@ -48,7 +48,7 @@ namespace mathOp
 	// Function that computes the congruent angle of theta in [0, 3Pi]
 	inline double congruentAngle(double angle)
 	{
-		constexpr double THREE_PI = 2.00 * M_PI;
+		constexpr double THREE_PI = 3.00 * M_PI;
 		return std::fmod(std::fabs(angle), THREE_PI) * (angle < 0.00 ? -1.00 : 1.00);
 	}
 
