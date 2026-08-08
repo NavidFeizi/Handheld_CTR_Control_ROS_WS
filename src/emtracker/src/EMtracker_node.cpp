@@ -1,10 +1,13 @@
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <blaze/Blaze.h>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -65,6 +68,37 @@ public:
   }
 
 private:
+
+  /// @brief Resolve the writable EM-tracker config/data directory. Parameter
+  /// "emtracker_data_dir" wins; default is $HOME/Documents/handheld_CTR/
+  /// emtracker_config/. On first run the installed read-only seeds
+  /// (share/emtracker/config) are copied in; existing files are never
+  /// overwritten, so registration results and edited configs survive.
+  std::string resolveConfigDir()
+  {
+    std::string dir = this->declare_parameter<std::string>("emtracker_data_dir", "");
+    if (dir.empty())
+    {
+      const char *home = std::getenv("HOME");
+      dir = std::string(home != nullptr ? home : ".") + "/Documents/handheld_CTR/emtracker_config/";
+    }
+
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path seeds =
+        std::filesystem::path(ament_index_cpp::get_package_share_directory("emtracker")) / "config";
+    if (std::filesystem::exists(seeds))
+    {
+      std::filesystem::copy(seeds, dir,
+                            std::filesystem::copy_options::recursive |
+                                std::filesystem::copy_options::skip_existing);
+    }
+    else
+    {
+      RCLCPP_WARN(this->get_logger(), "No installed config seeds found at %s", seeds.c_str());
+    }
+    RCLCPP_INFO(this->get_logger(), "EM tracker config directory: %s", dir.c_str());
+    return dir;
+  }
 
   /// @brief Function to set up ROS interfaces including subscriptions, services, and timers
   void setup_ros_interfaces()
@@ -135,7 +169,8 @@ private:
     /** initialize emtracker **/
     double cutoff_freq = 30.0; //[Hz]
     bool debug_mode = false;
-    m_emt = std::make_unique<EMTracker>(host_name, m_sample_time, cutoff_freq, debug_mode); // Allocate the object dynamically
+    const std::string config_dir = resolveConfigDir();
+    m_emt = std::make_unique<EMTracker>(host_name, m_sample_time, cutoff_freq, debug_mode, config_dir); // Allocate the object dynamically
 
     // // landmark registration process - uncomment only if you want to redo landmark registration
     // std::string landmarks = "landmarks_truth_sensor_1-3.csv";

@@ -23,11 +23,6 @@ target_compile_options(${PROJECT_NAME} PRIVATE "-Wno-overflow")
 
 set(BLA_STATIC ON) # use static linkage
 
-# for dynamic access to the conf directory in EMTracker.cpp
-target_compile_definitions(${PROJECT_NAME} PRIVATE CONFIG_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/config/")
-target_compile_definitions(${PROJECT_NAME} PRIVATE outPutFiles_Directory="${CMAKE_SOURCE_DIR}/OutputFiles/")
-target_compile_definitions(${PROJECT_NAME} PRIVATE Log_directory="${CMAKE_SOURCE_DIR}/OutputFiles/Log/")
-
 # linking NDI's shared library
 add_subdirectory(ndi_api)
 target_link_libraries(${PROJECT_NAME} PUBLIC NDI)

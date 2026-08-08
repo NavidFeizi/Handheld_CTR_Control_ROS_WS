@@ -29,10 +29,14 @@ std::streamsize originalPrecision = std::cout.precision();
  * @param cutoff_freq The cutoff frequency for the tools filter.
  * @param flag_debug Flag to enable or disable printing in the read loop.
  */
-EMTracker::EMTracker(const std::string &hostname, double filter_sample_time, double cutoff_freq, bool flag_debug)
+EMTracker::EMTracker(const std::string &hostname, double filter_sample_time, double cutoff_freq, bool flag_debug, std::string config_dir)
     : m_flag_debug(flag_debug)
 {
-  m_config_Dir = CONFIG_DIRECTORY;
+  m_config_Dir = std::move(config_dir);
+  if (!m_config_Dir.empty() && m_config_Dir.back() != '/')
+  {
+    m_config_Dir += '/';
+  }
   m_combinedAPI = std::make_shared<CombinedApi>();
 
   m_flag_filter = false;
@@ -228,7 +232,7 @@ void EMTracker::LoadToolDefinitions2Ports(bool load_all)
   std::vector<PortHandleInfo> portHandles = m_combinedAPI->portHandleSearchRequest(PortHandleSearchRequestOption::Enabled);
 
   // Iterate through the sensor configuration map to find the matching serial number
-  m_config_Dir = CONFIG_DIRECTORY;
+  // (m_config_Dir was set once in the constructor)
   for (auto &entry : m_sensorConfigMap)
   {
     quatTransformation transform;

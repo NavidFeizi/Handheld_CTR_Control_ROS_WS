@@ -31,6 +31,7 @@ find_package(interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 
 # EM tracker libraries
 add_subdirectory(lib_emtracker)
@@ -43,7 +44,7 @@ include(${OpenIGTLink_USE_FILE})
 
 add_executable(track src/EMtracker_node.cpp)
 target_link_libraries(track EMTlib)
-ament_target_dependencies(track rclcpp std_msgs std_srvs interfaces OpenIGTLink geometry_msgs tf2 tf2_ros)
+ament_target_dependencies(track rclcpp std_msgs std_srvs interfaces OpenIGTLink geometry_msgs tf2 tf2_ros ament_index_cpp)
 
 install(TARGETS
   track
@@ -52,6 +53,13 @@ install(TARGETS
 install(DIRECTORY
   launch
   DESTINATION share/${PROJECT_NAME}
+)
+
+# Read-only seeds (config.yaml, SROMs, landmark/transform CSVs, beeps). At
+# runtime the node copies them once into the writable emtracker_data_dir.
+install(DIRECTORY
+  lib_emtracker/config/
+  DESTINATION share/${PROJECT_NAME}/config
 )
 
 ament_package()

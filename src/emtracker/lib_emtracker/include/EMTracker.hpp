@@ -73,8 +73,9 @@ private:
 class EMTracker
 {
 public:
-  // EMTracker default constructor
-  EMTracker(const std::string &hostname, double sample_time, double cutoff_freq, bool flag_print);
+  // EMTracker default constructor. config_dir holds config.yaml, SROM/landmark
+  // seeds AND receives registration outputs — pass a writable directory.
+  EMTracker(const std::string &hostname, double sample_time, double cutoff_freq, bool flag_print, std::string config_dir);
   // // EMTracker overloaded constructor
   // EMTracker(std::string hostname);
   // EMTracker desctructor
