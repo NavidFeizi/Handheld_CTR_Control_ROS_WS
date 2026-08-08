@@ -427,22 +427,8 @@ public:
     const std::string plannedPathFile = m_tempDir + "/plannedPath.csv";
     auto start = std::chrono::high_resolution_clock::now();
     // motionPlan.plan(runTime, Planner::optimalPlanner::PLANNER_RRT, Planner::planningObjective::OBJECTIVE_BACKBONE_LENGTH, plannedPathFile);
-    if (true)//(norm_diff > 1.00E-3)
-    {
-      // m_motionPlan->plan(runTime, Planner::optimalPlanner::PLANNER_RRT, Planner::planningObjective::OBJECTIVE_BACKBONE_LENGTH);
-      // m_motionPlan.plan(runTime, Planner<kBackbonePoints, kControlInputs>::optimalPlanner::PLANNER_RRT_CONNECT, Planner<kBackbonePoints, kControlInputs>::planningObjective::OBJECTIVE_REVJOINTSANDPATHLENGTH);
-      // planning_status = m_motionPlan.plan(runTime, Planner<kBackbonePoints, kControlInputs>::optimalPlanner::PLANNER_RRT_CONNECT, Planner<kBackbonePoints, kControlInputs>::planningObjective::OBJECTIVE_REVJOINTS_AND_BACKBONE);
-      // m_ctr_pinn
-      planning_status = m_motionPlan.planTwoPhase(runTime, Planner<kControlInputs>::optimalPlanner::PLANNER_RRT_CONNECT);
-
-      // std::cout << "The first plan" << std::endl;
-      m_first_plan = false;
-    }
-    else
-    {
-      m_motionPlan.replan(runTime);
-      std::cout << "Not the first plan (replan)" << std::endl;
-    }
+    planning_status = m_motionPlan.planTwoPhase(runTime, Planner<kControlInputs>::optimalPlanner::PLANNER_RRT_CONNECT);
+    m_first_plan = false;
     auto end = std::chrono::high_resolution_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
     std::cout << "Planning time: " << elapsed * 1.00E-3 << " seconds" << std::endl;

@@ -614,8 +614,11 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
     {
         if (loadPlannedPath())
         {
+            std::lock_guard<std::mutex> lock(m_force_mutex);
             m_f_at_plan = m_f_pending;
             m_f_at_plan_valid = true;
+            m_replan_attempts = 0;
+            m_replan_backoff_s = m_replan_cooldown_s;
         }
         else
         {
@@ -640,16 +643,25 @@ void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Pl
 
     if (response->success && loadPlannedPath())
     {
+        std::lock_guard<std::mutex> lock(m_force_mutex);
         m_f_at_plan = m_f_pending;
         m_f_at_plan_valid = true;
+        m_replan_attempts = 0;
+        m_replan_backoff_s = m_replan_cooldown_s;
         RCLCPP_INFO(this->get_logger(), "Replan accepted: %s (FTL cost %.6f) - resuming deployment on the new schedule",
                     response->message.c_str(), response->value);
     }
     else
     {
-        // Old list, index, and force baseline are retained: deployment resumes on
-        // the previous plan and the cooldown throttles the next attempt.
-        RCLCPP_WARN(this->get_logger(), "Replan rejected (%s) - continuing previous plan", response->message.c_str());
+        // Old list, index, and force baseline are retained: deployment resumes
+        // on the previous plan. Each rejection doubles the wait (capped); after
+        // k_max_replan_attempts, maybeRequestDeploymentReplan() suppresses
+        // further requests until the drift recovers (hysteresis re-arm).
+        m_replan_attempts++;
+        m_replan_backoff_s = std::min(m_replan_backoff_s * 2.0, k_replan_backoff_cap_s);
+        RCLCPP_WARN(this->get_logger(),
+                    "Replan rejected (%s) - continuing previous plan (attempt %d/%d, next in >= %.1f s)",
+                    response->message.c_str(), m_replan_attempts, k_max_replan_attempts, m_replan_backoff_s);
     }
 
     m_flag_planning = false;
@@ -664,6 +676,12 @@ void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Pl
 // has drifted from the value the active plan was computed with, pause the
 // deployment (m_flag_planning) and ask the planner to re-schedule the
 // remaining prismatic deployment from the current configuration.
+void MasterNode::invalidateForceBaseline()
+{
+    std::lock_guard<std::mutex> lock(m_force_mutex);
+    m_f_at_plan_valid = false;
+}
+
 void MasterNode::maybeRequestDeploymentReplan()
 {
     if (m_flag_planning || m_retracting)
@@ -672,8 +690,6 @@ void MasterNode::maybeRequestDeploymentReplan()
         return; // only while actively inserting
     if (!getReachStatus())
         return; // same settle gate as the insertion step
-    if (!m_f_at_plan_valid)
-        return;
 
     int index;
     size_t remaining;
@@ -687,20 +703,35 @@ void MasterNode::maybeRequestDeploymentReplan()
     if (remaining < m_min_remaining_waypoints)
         return;
 
-    Eigen::Vector3d f;
+    double df;
     {
         std::lock_guard<std::mutex> lock(m_force_mutex);
-        f = m_f_est;
+        if (!m_f_at_plan_valid)
+            return;
+        df = (m_f_est - m_f_at_plan).norm();
+
+        // Hysteresis re-arm: once the drift recovers to half the trigger
+        // threshold, a previous string of rejections is forgiven.
+        if (m_replan_attempts >= k_max_replan_attempts && df <= 0.5 * m_force_replan_threshold)
+        {
+            m_replan_attempts = 0;
+            m_replan_backoff_s = m_replan_cooldown_s;
+            RCLCPP_INFO(this->get_logger(), "Force drift recovered (%.3f N) - replanning re-armed", df);
+        }
     }
-    const double df = (f - m_f_at_plan).norm();
     if (df <= m_force_replan_threshold)
         return;
-    if ((this->now() - m_last_replan_request_time).seconds() < m_replan_cooldown_s)
-        return;
+    {
+        std::lock_guard<std::mutex> lock(m_force_mutex);
+        if (m_replan_attempts >= k_max_replan_attempts)
+            return; // suppressed until hysteresis re-arm or an accepted plan
+        if ((this->now() - m_last_replan_request_time).seconds() < m_replan_backoff_s)
+            return;
+        m_f_pending = m_f_est;
+    }
 
     m_flag_planning = true; // pauses every deployment branch until the response arrives
     m_last_replan_request_time = this->now();
-    m_f_pending = f;
     m_replan_count++;
 
     auto request = std::make_shared<interfaces::srv::Planner::Request>();
@@ -854,7 +885,7 @@ void MasterNode::control_loop()
                     m_auto_retract = false;
                     m_current_config_index = 0;
                     m_q_list_adjusted.clear();
-                    m_f_at_plan_valid = false;
+                    invalidateForceBaseline();
                     RCLCPP_DEBUG(this->get_logger(), "Min deployment index reached: %d", m_current_config_index);
                 }
             }
@@ -938,7 +969,7 @@ void MasterNode::control_loop()
                 {
                     m_auto_insert = false;
                     m_q_list_adjusted.clear();
-                    m_f_at_plan_valid = false;
+                    invalidateForceBaseline();
                     m_current_config_index = 0;
                     RCLCPP_DEBUG(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
                 }
@@ -967,7 +998,7 @@ void MasterNode::control_loop()
                     m_auto_retract = false;
                     m_q_list_actuated.clear();
                     m_q_list_adjusted.clear();
-                    m_f_at_plan_valid = false;
+                    invalidateForceBaseline();
 
                     // Delete plannedPath.csv
                     std::filesystem::path file_path =
@@ -1334,7 +1365,7 @@ void MasterNode::updateTestStateMachine()
                 m_q_list_adjusted.clear();
                 m_q_list_actuated.clear();
             }
-            m_f_at_plan_valid = false;
+            invalidateForceBaseline();
             m_current_target_index++;
             m_test_state = TestState::SelectingTarget;
             m_test_state_entry_time = current_time;
@@ -1356,7 +1387,7 @@ void MasterNode::updateTestStateMachine()
             m_q_list_adjusted.clear();
             m_q_list_actuated.clear();
         }
-        m_f_at_plan_valid = false;
+        invalidateForceBaseline();
         break;
     }
     }

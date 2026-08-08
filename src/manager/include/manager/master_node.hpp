@@ -134,6 +134,7 @@ private:
     // Control functions
     void control_loop();
     void maybeRequestDeploymentReplan();
+    void invalidateForceBaseline();
     void publish_position(const blaze::StaticVector<double, 6>& q);
 
     // Utility functions
@@ -159,6 +160,15 @@ private:
     double m_force_replan_threshold = 0.12; // N; ‖f_now − f_at_plan‖ that triggers a deployment replan
     double m_replan_cooldown_s = 2.0;       // s between replan requests (EKF ramps at f_dot ≈ 0.1 N/s)
     size_t m_min_remaining_waypoints = 5;   // ≈10 mm at m_insertion_step; below this a replan is not worth the pause
+
+    // Rejected-replan backoff: after each rejection the wait doubles (capped);
+    // after k_max_replan_attempts consecutive rejections replanning is
+    // suppressed until the force drift recovers below threshold/2 (hysteresis)
+    // or a plan/replan is accepted.
+    static constexpr int k_max_replan_attempts = 3;
+    static constexpr double k_replan_backoff_cap_s = 60.0;
+    int m_replan_attempts = 0;
+    double m_replan_backoff_s = 2.0;
     std::string m_targets_csv = "random_interior_points.csv"; // target list in Input_Files/
 
     // Member variables
@@ -170,7 +180,6 @@ private:
     bool m_flag_planner_updated = false;
     bool m_planner_success = false;
     double m_planner_ik_error = 0.0;
-    std::shared_future<std::shared_ptr<interfaces::srv::Planner::Response>> m_planner_future;
     
     blaze::StaticVector<double, 4> m_com_vel;
     blaze::StaticVector<double, 4UL> m_q, m_q_des, m_q_error, m_q_abs, m_q_prev;
@@ -224,7 +233,10 @@ private:
     Eigen::Vector3d m_tip_position;  // For CSV target error calculation
 
     // Force-triggered deployment replanning
-    std::mutex m_force_mutex; // guards m_f_est (written by the force subscription)
+    std::mutex m_force_mutex; // guards m_f_est (force subscription) AND the plan
+                              // force baseline m_f_at_plan / m_f_pending /
+                              // m_f_at_plan_valid (written from service-response
+                              // callbacks, read from the Qt control loop)
     Eigen::Vector3d m_f_est = Eigen::Vector3d::Zero();     // latest EKF tip-force estimate [N]
     Eigen::Vector3d m_f_at_plan = Eigen::Vector3d::Zero(); // force the ACTIVE waypoint list was planned with
     Eigen::Vector3d m_f_pending = Eigen::Vector3d::Zero(); // snapshot taken when a planner request is sent
