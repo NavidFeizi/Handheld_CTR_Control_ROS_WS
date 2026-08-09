@@ -1,0 +1,130 @@
+# ctr_robot_driver
+
+ROS-free CANopen motor driver for the handheld CTR's four joint drives, built on
+lely-coapp. Static library, no `rclcpp` dependency. Formerly `robot/lib_robot`.
+
+Ships the CANopen master configuration too: `dcfgen` turns `config/master.yml` into
+`master.dcf`/`master.bin` at build time, installed to
+`share/ctr_robot_driver/canopen/` and read from there at runtime.
+
+## Using it from another package
+
+```cmake
+find_package(ctr_robot_driver REQUIRED)
+target_link_libraries(ctr_robot ctr_robot_driver::ctr_robot_driver)
+```
+
+```xml
+<depend>ctr_robot_driver</depend>
+```
+
+Its consumer is `robot`'s `ctr_robot` node.
+
+## `ICtrJointGroup` — the hardware seam
+
+`include/ctr_robot_driver/ICtrJointGroup.hpp` is the abstract interface the rest of
+the system programs against. `RobotNode` holds an `ICtrJointGroup`, not a `CTRobot`,
+so a simulation or test double can implement the same surface without any hardware.
+
+Every command and feedback vector is a `blaze::StaticVector<double,4>` — one slot per
+joint, in **wire order** `[α1, β1, α2, β2]`. Convert with
+`ctr_common::joint_conventions` before handing values to the PINN or Cosserat model.
+
+| Group | Members |
+|---|---|
+| Lifecycle | `connect(int sample_time_ms) → bool` (blocking, false if hardware never comes up), `shutdown()` (safe to call more than once), `isConnected()` |
+| Command | `enableOperation(bool)`, `setTargetPos`, `setTargetVel` |
+| Configuration | `setMaxVel`, `setMaxAcc`, `setMaxTorque(neg, pos)`, `setProfileParams(vel, acc, dcc)`, `setOperationMode(OpMode)`, `setEncoders`, `setPosLimit(min, max)` |
+| Feedback | `getCurrent`, `getVel`, `getPos`, `getPosLimit` |
+| Status | `getSwitchStatus` (×2), `getEnableStatus`, `getEncoderStatus`, `getDisabledStatus` (×2), `getReachedStatus`, `getTemperature(cpu, driver)`, `getDigitalIn`, `getInterface` |
+| Waits | `waitUntilReach` / `waitUntilTransReach`, each with and without an `std::atomic<bool>&` cancel flag |
+
+## `CTRobot` — the CANopen implementation
+
+`class CTRobot final : public ICtrJointGroup`. Not copyable — it owns threads and the
+CANopen master lifetime.
+
+```cpp
+CTRobot(bool position_limit,
+        blaze::StaticVector<double,4> maxVel,
+        blaze::StaticVector<double,4> maxAcc);
+CTRobot();
+```
+
+### `RuntimePaths` — set these first
+
+These were compile-time macros before the refactor. They are now runtime values and
+**must be set via `setRuntimePaths()` before `startRobotCommunication()`**:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `canopen_dir` | *(required, no default)* | Directory holding `master.dcf` / `master.bin` |
+| `can_interface` | `can0` | SocketCAN interface name |
+| `encoder_memory_dir` | empty → `$HOME/Documents/handheld_CTR/encoder_memory/` | Persisted encoder offsets |
+| `log_dir` | `log/Robot/` | spdlog output |
+
+`resolvedEncoderMemoryDir()` applies the `$HOME` fallback. `robot_node` exposes
+`canopen_dir`, `can_interface`, and `encoder_memory_dir` as ROS parameters.
+
+### `CanEssentials.hpp`
+
+| Type | Purpose |
+|---|---|
+| `ControlWord` / `StatusWord` | CiA-402 bit structs; `getCiA402StatusMessage()` decodes a status word to text |
+| `Flags` | Atomic bitset over `FlagIndex`: `BOOT_SUCCESS`, `TASKS_POSTED`, `ENCODER_SET`, `NEW_TARG_READY`, `ENCODER_MEM_READY`, `ENABLE_FAULT` |
+| `OpMode` | `Disabled = 0`, `PositionProfile = 1`, `VelocityProfile = 3`, `Homing = 6`, `FaulhaberCommand = -1` |
+| Helpers | `GetCommandFromHex`, `bin2Dec`, `ToBinaryString<T>`, plus the CANopen object-dictionary index constants |
+
+`CiA301node.hpp` wraps a lely `FiberDriver` per axis. It is internal — program
+against `ICtrJointGroup`.
+
+## Threading rules
+
+These were learned the hard way and must be preserved:
+
+- **`EnableOp_` must never throw.** lely fibers are `noexcept`, so a throw kills the
+  whole process. It returns `bool` and sets `Flags::ENABLE_FAULT` instead — the node
+  stays up with operation not enabled.
+- `CTRobot` owns two joinable threads (the CAN event loop and a monitor/watchdog).
+  `shutdown()` is idempotent and is called from the destructor.
+- Boot timeout retries three times and then reports failure. It does **not**
+  `raise(SIGINT)`.
+
+## CANopen configuration
+
+`config/master.yml` defines master `node_id: 7`, `sync_period: 10000 µs`, and four
+slaves at `node_id` 1–4, all sharing `605.0141.01-L.eds`.
+
+The `dcfgen` step is a proper `add_custom_command` + `add_custom_target(canopen_dcf
+ALL)`: it copies the YAML and EDS into the **build** tree and regenerates only when
+those inputs change. The previous `POST_BUILD` version regenerated on every build and
+wrote into the source tree. Generated and source files install together to
+`share/ctr_robot_driver/canopen/`.
+
+`dcfgen` comes from the PyPI `dcf-tools` package and must be on `PATH` at build time.
+
+## Hardware
+
+A real SocketCAN bus with the four drives powered and on the network. Bus bring-up
+(`ip link set can0 up type can bitrate 1000000`, the IXXAT driver, `candump`
+verification) is in the [root README](../../README.md) — follow it rather than
+improvising.
+
+## Build quirks
+
+`liblely-coapp` is linked by plain path rather than through the PkgConfig imported
+target, and `spdlog` is `PRIVATE`, so the exported link interface of this static
+library stays resolvable downstream. As with `ctr_cosserat`, `PRIVATE` dependencies
+of a static library surface in the export as `$<LINK_ONLY:...>`, so consumers must be
+able to resolve `spdlog` when `find_package(ctr_robot_driver)` loads.
+
+## Tests
+
+```bash
+colcon test --packages-select ctr_robot_driver --ctest-args -R test_can_essentials
+```
+
+`test/test_can_essentials.cpp` compiles only `CanEssentials.cpp`, so it needs no lely
+master and no hardware: `bin2Dec` correctness, `StatusWord` bit decoding
+(ready / switched-on / operation-enabled / fault), `Flags` atomic set and get, and
+`ToBinaryString<uint16_t>` width and spacing.

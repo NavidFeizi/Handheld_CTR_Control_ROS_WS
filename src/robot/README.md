@@ -1,97 +1,194 @@
-<div align="center">
+# robot
 
-# Catheter Robot Node
+The hardware layer and operator GUI for the handheld CTR, plus the two model-based
+nodes that run beside them: PINN forward kinematics and EKF tip-force estimation.
 
-</div>
+`ctr_robot` drives the four joint motors through `ICtrJointGroup` (implemented by
+`ctr_robot_driver`) and is the only node in the workspace that talks to the CAN bus.
+Everything else here is pure software.
 
-This ROS2 Package establishes the CANopen connection to the robot and manages joint space position control. The position control loop is closed over the internal velocity loop of the Maxon motion controller. Real-time communication is achieved using PDO, synchronized with a SYNC command from the master node (PC). The sampling frequency for commanding and reading joint statuses is set to 400 Hz (2.5 ms).
+## Quick start
 
-## Building Requirements
+```bash
+source install/setup.bash
+ros2 launch robot robot.py       # robot_node + GUI + pinn_fk + ekf_node
+```
 
-Ensure that you have the following libraries installed in your system:
+There is no `launch.py` in this package — the three launch files are `robot.py`,
+`sim.py`, and `ekf.py`. Normally you do not launch this package directly; the system
+bring-up in `ctr_bringup` includes it after the EM tracker has initialized.
 
-* [Blaze Library](https://bitbucket.org/blaze-lib/blaze/src/master/)
-* [LAPACK](http://www.netlib.org/lapack/)
-* [Lely CANopen](https://opensource.lely.com/canopen/)
-* Download and install the SocketCAN driver compatible with your Linux kernel from the [HMS Networks website](https://www.hms-networks.com/support/general-downloads).
+## Nodes
 
-## Build Instructions
+| Executable | Node name in code | Name at launch | Role |
+|---|---|---|---|
+| `ctr_robot` | `ctr_robot` | `robot_node` | CANopen hardware layer: joint targets, feedback, homing, collets |
+| `qt_gui` | `qt_gui_node` | `gui_node` | Operator GUI |
+| `pinn_fk` | `forward_kinematics_node` | `pinn_fk_node` (`robot_sim_node` in `sim.py`) | PINN forward kinematics and backbone shape |
+| `ekf_node` | `kalman_filter_node` | `ekf_node` | EKF tip-force estimation |
+| `cosserat_fk` | `cosserat_fk_node` | — | Cosserat-rod forward kinematics. **Not launched** — see [Status notes](#status-notes) |
 
-To build the nodes, follow these steps:
+The node name declared in the source differs from the launch name for three of these.
+When calling `ros2 param set`, use the **launch** name (`robot_node`, `gui_node`,
+`pinn_fk_node`, `ekf_node`) — that is what the parameter file keys on.
 
-1. **Build the packages:**
-   ```bash
-   colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-select interfaces robot
-   ```
+## Launch files
 
-## Setup USB-CANopen Connection to the Robot
+| File | Starts | Arguments (defaults) |
+|---|---|---|
+| `robot.py` | `robot_node`, `gui_node` (+5 s), `pinn_fk_node`, `ekf_node` | `Kp` 30.0, `Ki` 5.0, `maxVel` `[3.0, 0.012, 3.0, 0.012]`, `maxAcc` `[10.0, 0.10, 10.0, 0.10]`, `f_dot` 0.2 |
+| `sim.py` | `pinn_fk` as `robot_sim_node`, `ekf_node` — no hardware | same names; `f_dot` defaults to **1.0** |
+| `ekf.py` | `ekf_node` only | `f_dot` defaults to **0.1** |
 
-To set up the CANopen connection using the HMS IXXAT USB-to-CAN V2 compact, follow these steps:
+`sim.py` and `ekf.py` declare `Kp`/`Ki`/`maxVel`/`maxAcc` too, but no node in those
+files consumes them.
 
-1. **Load the CANopen driver:**
-   ```bash
-   sudo modprobe ix_usb_can
-   ```
-   If you encounter an error, it indicates the IXXAT SocketCAN driver is not installed. Install a compatible version with your Linux kernel (e.g., IXXAT_SocketCAN_2_0_378_Modified_2023-03-15).
+### CPU pinning
 
-2. **Configure the CAN interface:**
-   ```bash
-   sudo ip link set can0 up type can bitrate 1000000
-   sudo ip link set can0 txqueuelen 1000
-   sudo ip link set can0 down
-   sudo ip link set can0 type can loopback on
-   sudo ip link set can0 up
-   ```
+Every node is pinned with `taskset`. The workspace-wide core map, documented in a
+comment in `robot.py`:
 
-3. **Monitor the CAN connection:**
-   Open a terminal and run:
-   ```bash
-   candump can0
-   ```
+| Core | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|
+| Node | manager | ekf | mpc | robot | gui | pinn_fk | igtl | planner | emtracker |
 
-4. **Send a reset command to check all nodes (EPOS2 motion controllers):**
-   Open a separate terminal and run:
-   ```bash
-   cansend can0 000#8200
-   ```
-   If you see a line similar to the one below among the return packets, it is the echo of the reset command, indicating the connection is working. If not, ensure the "loopback" setting is on. Sometimes, replugging the USB port resolves this issue.
-   ```plaintext
-   can0  000   [2]  82 00
-   ```
+The EKF was moved to core 3 — otherwise unused — because sharing core 7 with
+`pinn_fk` starved both Torch inference loops. Keep them apart.
 
-## Usage Example
+## Parameters
 
-1. **Run the node:**
-   ```bash
-   source ./install/setup.bash
-   taskset -c 0,1 ros2 run catheter_sim_koopman_cpp simulator
-   ```
-   or run the launch file 
-   ```bash
-   ros2 launch robot launch.py
-   ```
-   `taskset` is set in the launch file.
+Single source of truth is `config/robot_params.yaml`; launch arguments with the same
+names override individual values.
 
-2. **Command homing service:**
-   This service uses the EMtracker node (a separate node from the robot) to get the catheter tip position and set the tendons home position such that the catheter tip stays at zero in the home position. The emtracker_node must be alive before the execution of the homing procedure.
+### `robot_node`
 
-   Execute from another terminal:
-   ```bash
-   ros2 service call /homing std_srvs/srv/Trigger
-   ```
-3. **Set control paramters parameters:**
-   Execute from another terminal:
-   ```bash
-   source ./install/setup.bash
-   ros2 param set robot_node Kp 5.0
-   ros2 param set robot_node Ki 1.0
-   ```
+| Parameter | Default | Meaning |
+|---|---|---|
+| `Kp` | 30.0 | Position-loop proportional gain |
+| `Ki` | 5.0 | Position-loop integral gain |
+| `maxVel` | `[3.0, 0.012, 3.0, 0.012]` | rad/s, m/s per joint |
+| `maxAcc` | `[10.0, 0.10, 10.0, 0.10]` | rad/s², m/s² per joint |
+| `can_interface` | `can0` | SocketCAN interface |
+| `canopen_dir` | `""` | Empty → installed `share/ctr_robot_driver/canopen` |
+| `encoder_memory_dir` | `""` | Empty → `$HOME/Documents/handheld_CTR/encoder_memory/` |
 
-## To Do
+### `pinn_fk_node`
 
-* Clean the robot library and handle turning motos off in a correct way
+| Parameter | Default | Meaning |
+|---|---|---|
+| `sample_time` | 0.025 | s |
+| `num_backbone` | 50 | Backbone nodes per tube shape |
+| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | Model in the PINN pool |
+| `models_dir` | `""` | Empty → installed `share/ctr_kinematics_pinn/models` |
+| `q0` | `[-0.100, -0.055, 0.0, 0.0]` | Initial joint configuration |
 
-## Notes
+### `ekf_node`
 
-* When tuning the low-level EPOS velocity controller, ensure that you use the setup wizard to clear all previous parameters. Some control parameters may not update after the first tuning, leading to jagged velocity control.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `sample_time` | 0.025 | s |
+| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | Model in the PINN pool |
+| `models_dir` | `""` | Empty → installed pool |
+| `f_dot` | 0.2 | N/s — process-noise rate on the force state |
+| `R` | 36 elements | 6×6 measurement covariance, row-major |
 
+`R` lives **only** in the YAML. It was previously rebuilt with numpy in three
+separate launch files, one of which was malformed; the value in the YAML is the
+effective production matrix (base `R` with the lower 3×3 block scaled by 5e4, then
+the whole thing by 1.5). Do not re-derive it in a launch file.
+
+## Topics
+
+| Node | Direction | Topic | Type |
+|---|---|---|---|
+| `ctr_robot` | sub | `joint_space/target` | `interfaces/msg/Jointspace` |
+| `ctr_robot` | sub | `joint_space/manual_vel` | `interfaces/msg/Jointspace` |
+| `ctr_robot` | sub | `task_space/feedback/base_tool` | `interfaces/msg/Taskspace` |
+| `ctr_robot` | pub | `robot_status` | `interfaces/msg/Status` |
+| `ctr_robot` | pub | `manual_interface` | `interfaces/msg/Interface` |
+| `ctr_robot` | pub | `joint_space/feedback` | `interfaces/msg/Jointspace` |
+| `pinn_fk` | sub | `joint_space/feedback` | `interfaces/msg/Jointspace` |
+| `pinn_fk` | sub | `task_space/force_estimate` | `interfaces/msg/Force` |
+| `pinn_fk` | pub | `task_space/sim_out` | `interfaces/msg/Taskspace` |
+| `pinn_fk` | pub | `shape/tube_1`, `shape/tube_2`, `shape/tube_3` | `std_msgs/msg/Float64MultiArray` |
+| `ekf_node` | sub | `/task_space/feedback/base_tool` | `interfaces/msg/Taskspace` |
+| `ekf_node` | sub | `joint_space/feedback` | `interfaces/msg/Jointspace` |
+| `ekf_node` | pub | `task_space/force_estimate` | `interfaces/msg/Force` |
+| `ekf_node` | pub | `EKF/computation_time` | `std_msgs/msg/Float64` |
+| `ekf_node` | pub | `EKF/residual_error` | `interfaces/msg/EKFResidual` |
+| `qt_gui` | sub | `joint_space/feedback`, `robot_status`, `manual_interface`, `/task_space/feedback/base_tool`, `task_space/force_estimate`, `EKF/residual_error`, `igtl_bridge/connected` | — |
+| `qt_gui` | pub | `joint_space/manual_vel` | `interfaces/msg/Jointspace` |
+| `cosserat_fk` | sub | `joint_space/feedback` | `interfaces/msg/Jointspace` |
+| `cosserat_fk` | pub | `shape/tube_1`, `shape/tube_2`, `shape/tube_3` | `std_msgs/msg/Float64MultiArray` |
+
+Tube shapes are published in **metres**; `igtlink_bridge` converts to millimetres at
+the Slicer boundary.
+
+## Services
+
+| Service | Type | Node |
+|---|---|---|
+| `robot_config` | `interfaces/srv/Config` | provided by `ctr_robot` |
+| `robot_enable` | `interfaces/srv/Config` | provided by `ctr_robot` |
+| `robot_config`, `robot_enable` | `interfaces/srv/Config` | called by `qt_gui` |
+| `freeze_robot` | `std_srvs/srv/SetBool` | called by `qt_gui` (served by `emtracker`) |
+| `igtl_bridge/connect` | `std_srvs/srv/SetBool` | called by `qt_gui` (served by `igtlink_bridge`) |
+
+### Homing and collets
+
+**There is no `/homing` service.** Homing, collet, and mode changes are dispatched
+through the `command` string field of `robot_config`:
+
+```bash
+ros2 service call /robot_config interfaces/srv/Config "{command: 'findLinearHome', value: 0}"
+```
+
+Accepted commands: `findLinearHome`, `findRotaryHome`, `findRotaryHomeAndGoHome`,
+`goHome`, `engageCollets`, `disengageCollets`, `lockCollets`, `unlockCollets`,
+`engageAndUnlock`, `lockAndDisengage`, `startProcedure`, `endProcedure`,
+`toggleEnable`, `disable`, `setCtrlMode`, `setTransLimMode`.
+
+Run these from the GUI in normal operation. The homing order matters — **linear
+first, then rotary**; the [root README](../../README.md) has the full operator
+procedure.
+
+## Hardware
+
+`ctr_robot` needs a live SocketCAN bus (`can0` by default) with the four drives
+powered. CAN bring-up, the IXXAT driver, and homing are covered in the
+[root README](../../README.md).
+
+Bus bring-up happens in `main()` before the executor spins; on failure the node logs
+`RCLCPP_FATAL` but stays alive, so a running `robot_node` is not by itself proof that
+the hardware is connected — check `robot_status`.
+
+`qt_gui`, `pinn_fk`, `ekf_node`, and `cosserat_fk` need no hardware. Use `sim.py` to
+run the model nodes alone.
+
+## Threading
+
+`qt_gui` runs a `MultiThreadedExecutor` beside the Qt thread. Widget mutations from
+ROS callbacks must go through `QMetaObject::invokeMethod(..., Qt::QueuedConnection)`;
+cross-thread state is atomic or mutex-snapshotted. The GUI no longer blocks in its
+constructor waiting for services — 500 ms readiness timers gate the controls instead.
+
+## Tests
+
+```bash
+colcon test --packages-select robot --ctest-args -R test_quat_utils
+```
+
+`test/test_quat_utils.cpp` covers the quaternion helpers extracted from the EKF into
+`include/robot/quat_utils.hpp` — multiply, inverse, rotate, and rotation-vector
+conversion — so they can be tested without Torch or hardware.
+
+## Status notes
+
+- **`cosserat_fk` is built and installed but never launched.** The
+  `ld.add_action(cosserat_fk_node)` line is commented out in `robot.py`; the
+  PINN-based `pinn_fk` superseded it. It remains useful as a reference
+  implementation — see [`ctr_cosserat`](../ctr_cosserat/README.md).
+- **`f_dot` defaults disagree across launch files**: 0.2 in `robot.py`, 1.0 in
+  `sim.py`, 0.1 in `ekf.py`. The YAML carries 0.2 and notes that `robot.py`'s
+  earlier 0.1 was lost during the refactor. Pass `f_dot:=` explicitly if the value
+  matters to your run.

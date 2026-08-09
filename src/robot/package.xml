@@ -3,7 +3,9 @@
 <package format="3">
   <name>robot</name>
   <version>1.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Hardware layer and operator GUI for the handheld CTR: CANopen joint
+  control through the ICtrJointGroup seam, Qt operator interface, PINN forward
+  kinematics, and EKF tip-force estimation.</description>
   <maintainer email="nfeizi@uwo.com">navid</maintainer>
   <license>TODO: License declaration</license>
 

@@ -3,7 +3,8 @@
 <package format="3">
   <name>emtracker</name>
   <version>1.0.0</version>
-  <description>TODO: Package description</description>
+  <description>NDI Aurora electromagnetic tracker driver: tool and phantom pose
+  publication in the robot frame, TF broadcast, and landmark registration.</description>
   <maintainer email="nfeizi@uwo.com">navid</maintainer>
   <license>TODO: License declaration</license>
 

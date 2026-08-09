@@ -3,7 +3,9 @@
 <package format="3">
   <name>planner</name>
   <version>1.0.0</version>
-  <description>TODO: Package description</description>
+  <description>OMPL motion planning for CTR deployment: PINN-informed two-phase
+  planning under a follow-the-leader objective, with mid-deployment replanning of the
+  remaining path.</description>
   <maintainer email="nfeizi@uwo.com">navid</maintainer>
   <license>TODO: License declaration</license>
 

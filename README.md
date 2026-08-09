@@ -57,6 +57,30 @@ source of truth, loaded by its launch file; launch arguments override.
 Runtime data directories resolve via the `data_root` parameter, the
 `CTR_DATA_ROOT` env var, or (fallback) the legacy workspace-layout climb.
 
+## Package Documentation
+
+Every package carries its own README with its nodes, launch arguments, parameters,
+topics, services, and tests.
+
+| Package | Kind | Documentation |
+|---------|------|---------------|
+| `interfaces` | messages | [src/interfaces/README.md](src/interfaces/README.md) |
+| `ctr_common` | shared lib | [src/ctr_common/README.md](src/ctr_common/README.md) |
+| `ctr_cosserat` | static lib, ROS-free | [src/ctr_cosserat/README.md](src/ctr_cosserat/README.md) |
+| `ctr_kinematics_pinn` | header-only lib, ROS-free | [src/ctr_kinematics_pinn/README.md](src/ctr_kinematics_pinn/README.md) |
+| `ctr_robot_driver` | static lib, ROS-free | [src/ctr_robot_driver/README.md](src/ctr_robot_driver/README.md) |
+| `ctr_bringup` | launch only | [src/ctr_bringup/README.md](src/ctr_bringup/README.md) |
+| `robot` | nodes | [src/robot/README.md](src/robot/README.md) |
+| `emtracker` | node | [src/emtracker/README.md](src/emtracker/README.md) |
+| `manager` | nodes | [src/manager/README.md](src/manager/README.md) |
+| `planner` | node | [src/planner/README.md](src/planner/README.md) |
+| `mpc` | node | [src/mpc/README.md](src/mpc/README.md) |
+| `igtlink_bridge` | node | [src/igtlink_bridge/README.md](src/igtlink_bridge/README.md) |
+| `target_gen` | Python, not a ROS package | [src/target_gen/README.md](src/target_gen/README.md) |
+
+The build-verification image has its own notes in
+[docker/README.md](docker/README.md).
+
 ## Dependencies
 
 | Library | Purpose | Minimum version |

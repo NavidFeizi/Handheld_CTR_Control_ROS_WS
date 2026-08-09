@@ -3,7 +3,9 @@
 <package format="3">
   <name>manager</name>
   <version>1.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Procedure orchestration for the handheld CTR: master GUI for targets
+  and plan requests, the waypoint deployment loop with force-drift replanning, and
+  synchronized CSV recording.</description>
   <maintainer email="nfeizi@uwo.com">navid</maintainer>
   <license>TODO: License declaration</license>
 
