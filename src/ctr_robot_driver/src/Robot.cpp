@@ -148,28 +148,32 @@ void CTRobot::monitorLoop()
   // give the event loop time to create the node drivers
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  std::chrono::seconds timeout(5);
+  const auto timeout = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(m_paths.boot_timeout_s));
+  const int max_boot_attempts = m_paths.boot_max_attempts;
   int boot_attempts = 0;
-  auto startTime = std::chrono::high_resolution_clock::now();
+  auto startTime = std::chrono::steady_clock::now();
   while (!m_monitor_stop && !m_shared_state->m_boot_success)
   {
-    auto currentTime = std::chrono::high_resolution_clock::now();
-    auto elapsedTime = std::chrono::duration_cast<std::chrono::seconds>(currentTime - startTime);
+    auto currentTime = std::chrono::steady_clock::now();
+    auto elapsedTime = currentTime - startTime;
     if (elapsedTime >= timeout)
     {
       // The old code raised SIGINT at the whole process here. Retry the NMT
       // reset a bounded number of times, then report failure and stand down.
       boot_attempts++;
-      if (boot_attempts > 3)
+      if (boot_attempts > max_boot_attempts)
       {
-        m_logger->error("[CAN Master] Bootup failed after 3 reset attempts - giving up (hardware unavailable)");
+        m_logger->error("[CAN Master] Bootup failed after {} reset attempts - giving up (hardware unavailable)",
+                        max_boot_attempts);
         m_boot_failed = true;
         return;
       }
-      m_logger->warn("[CAN Master] Bootup timed out - resetting all nodes (attempt {}/3)", boot_attempts);
+      m_logger->warn("[CAN Master] Bootup timed out - resetting all nodes (attempt {}/{})",
+                     boot_attempts, max_boot_attempts);
       if (m_request_master_reset)
         m_request_master_reset();
-      startTime = std::chrono::high_resolution_clock::now();
+      startTime = std::chrono::steady_clock::now();
       std::this_thread::sleep_for(std::chrono::milliseconds(2000));
     }
     if (m_inrTubeRot && m_inrTubeTrn && m_mdlTubeRot && m_mdlTubeTrn &&

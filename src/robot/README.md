@@ -95,6 +95,11 @@ launch file shadows them.
 | `can_interface` | `can0` | SocketCAN interface |
 | `canopen_dir` | `""` | Empty → installed `share/ctr_robot_driver/canopen` |
 | `encoder_memory_dir` | `""` | Empty → `$HOME/Documents/handheld_CTR/encoder_memory/` |
+| `boot_max_attempts` | 10 | `master.Reset()` retries before bring-up is declared failed |
+| `boot_timeout_s` | 5.0 | Seconds to wait per boot attempt for all four drives |
+
+Raise `boot_max_attempts` if a drive is a slow starter: bring-up gives up after
+`boot_max_attempts × boot_timeout_s` and then reports the robot as not connected.
 
 ### `pinn_fk_node`
 

@@ -50,6 +50,8 @@ public:
     }
     paths.can_interface = declare_parameter<std::string>("can_interface", "can0");
     paths.encoder_memory_dir = declare_parameter<std::string>("encoder_memory_dir", "");
+    paths.boot_max_attempts = static_cast<int>(declare_parameter<int64_t>("boot_max_attempts", 10));
+    paths.boot_timeout_s = declare_parameter<double>("boot_timeout_s", 5.0);
 
     auto robot = std::make_unique<CTRobot>();
     robot->setRuntimePaths(paths);

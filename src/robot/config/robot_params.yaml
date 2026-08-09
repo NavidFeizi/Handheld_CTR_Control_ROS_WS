@@ -10,6 +10,11 @@ robot_node:
     can_interface: "can0"
     canopen_dir: ""          # empty -> installed share/ctr_robot_driver/canopen
     encoder_memory_dir: ""   # empty -> $HOME/Documents/handheld_CTR/encoder_memory/
+    # NMT boot supervision: master.Reset() is re-issued every boot_timeout_s
+    # until all four drives report bootup, up to boot_max_attempts times.
+    # Raise boot_max_attempts if a drive is a slow starter.
+    boot_max_attempts: 10
+    boot_timeout_s: 5.0
 
 pinn_fk_node:
   ros__parameters:

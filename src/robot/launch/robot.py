@@ -43,6 +43,8 @@ def _launch_setup(context, *args, **kwargs):
             'Ki': 'Ki',
             'maxVel': 'maxVel',
             'maxAcc': 'maxAcc',
+            'boot_max_attempts': 'boot_max_attempts',
+            'boot_timeout_s': 'boot_timeout_s',
         }),
     )
 
@@ -114,6 +116,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'maxAcc', default_value='',
             description=f'[rad/s^2, m/s^2, rad/s^2, m/s^2]; unset -> {_YAML}'),
+        DeclareLaunchArgument(
+            'boot_max_attempts', default_value='',
+            description=f'NMT reset retries before giving up; unset -> {_YAML}'),
+        DeclareLaunchArgument(
+            'boot_timeout_s', default_value='',
+            description=f'seconds to wait per boot attempt; unset -> {_YAML}'),
         # EKF parameters (R lives in the YAML only)
         DeclareLaunchArgument(
             'f_dot', default_value='',

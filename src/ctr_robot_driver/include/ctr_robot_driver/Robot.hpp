@@ -135,6 +135,13 @@ public:
         std::string encoder_memory_dir; // empty -> $HOME/Documents/handheld_CTR/encoder_memory/
         std::string log_dir = "log/Robot/";
 
+        // NMT boot supervision. The pre-refactor driver re-issued master.Reset()
+        // every ~2 s forever until every node came up, which silently papered
+        // over slow-starting drives; a hard-coded budget of 3 then regressed
+        // those setups. Tune per bench instead of rebuilding.
+        int boot_max_attempts = 10;  // master.Reset() retries before giving up
+        double boot_timeout_s = 5.0; // per-attempt wait for all nodes to boot
+
         std::string resolvedEncoderMemoryDir() const
         {
             if (!encoder_memory_dir.empty())
