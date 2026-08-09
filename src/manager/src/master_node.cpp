@@ -482,6 +482,13 @@ void MasterNode::robotStatus_callback(const interfaces::msg::Status::SharedPtr m
         m_enabledJoints[i] = msg->enable[i];
         m_encoderJoints[i] = msg->encoder[i];
         m_reachedJoints[i] = msg->reached[i];
+
+        // A joint that never reached Operation Enabled will not track the
+        // deployment waypoints; say so rather than letting the loop run on.
+        if (msg->enable_fault[i] && !m_enableFaultPrev[i])
+            RCLCPP_ERROR(get_logger(),
+                         "Joint %d reports a drive enable fault - it is NOT under control", i);
+        m_enableFaultPrev[i] = msg->enable_fault[i];
     }
 
     emit robotStatusUpdated(m_enabled, m_procedure, m_head_attached, m_engaged, m_locked);

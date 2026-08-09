@@ -221,3 +221,9 @@ conversion — so they can be tested without Torch or hardware.
   `ekf.py` used to hardcode 0.2 / 1.0 / 0.1 as launch-argument defaults that silently
   beat the YAML; all three now default to unset, so every entry point gets the YAML's
   0.2. Pass `f_dot:=` explicitly to deviate for a single run.
+- **A drive that refuses to enable is now visible.** `robot_status` carries
+  `bool[4] enable_fault`; `ctr_robot` logs it at `ERROR` on the false→true edge and
+  `qt_gui` shows the joint as `FAULT` (red) instead of an ordinary `OFF`. Previously
+  the latch existed only inside the driver and nothing above it read the flag, so a
+  single joint failing the CiA-402 transition looked identical to one that was simply
+  disabled. See [`ctr_robot_driver`](../ctr_robot_driver/README.md).

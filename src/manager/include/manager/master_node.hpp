@@ -228,6 +228,9 @@ private:
     bool m_flag_manual, m_flag_use_target_action, m_flag_enabled, m_trans_limit, m_trans_limit_prev = false;
     
     blaze::StaticVector<bool, 4UL> m_enabledJoints, m_encoderJoints, m_reachedJoints;
+    // Previous enable-fault latches, for edge-triggered logging (the Status
+    // topic republishes on a timer, so level-triggered would flood the log).
+    std::array<bool, 4> m_enableFaultPrev = {0, 0, 0, 0};
     
     Eigen::Matrix4d m_trans_tip;
     Eigen::Matrix4d m_trans_probe;

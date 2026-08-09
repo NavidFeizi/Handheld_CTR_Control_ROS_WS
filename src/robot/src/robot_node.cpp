@@ -245,10 +245,23 @@ private:
     blaze::StaticVector<bool, 4UL> reached_status;
     blaze::StaticVector<bool, 4UL> encoder_status;
     blaze::StaticVector<bool, 4UL> en_status;
+    blaze::StaticVector<bool, 4UL> en_fault_status;
     en_status = m_robot->getEnableStatus();
+    en_fault_status = m_robot->getEnableFaultStatus();
     encoder_status = m_robot->getEncoderStatus();
     reached_status = m_robot->getReachedStatus();
     m_robot->getPosLimit(m_minCurrentPosLimit, m_maxCurrentPosLimit);
+
+    // Edge-triggered: this callback runs on a timer, so level-triggered
+    // logging would bury the log under a repeat every period.
+    for (int i = 0; i < 4; i++)
+    {
+      if (en_fault_status[i] && !m_enable_fault_prev[i])
+        RCLCPP_ERROR(get_logger(),
+                     "Joint %d (%s) failed the CiA-402 enable transition - that joint is NOT under control",
+                     i, k_joint_names[i]);
+      m_enable_fault_prev[i] = en_fault_status[i];
+    }
 
     if ((abs(m_x[1] - k_pos_preEngage[1]) < 0.001) && (abs(m_x[3] - k_pos_preEngage[3]) < 0.001))
       m_flag_readyToEngage = true;
@@ -264,6 +277,7 @@ private:
     for (int i = 0; i < 4; i++)
     {
       msg.enable[i] = en_status[i];
+      msg.enable_fault[i] = en_fault_status[i];
       // msg.encoder[i] = encoder_status[i];
       msg.encoder[i] = m_encoders_set[i];
       msg.reached[i] = reached_status[i];
@@ -1531,9 +1545,14 @@ private:
 
   // constant
   static constexpr int k_sample_time = 20; // [ms]
+  // wire order [alpha1, beta1, alpha2, beta2]; used for operator-facing messages
+  static constexpr const char *k_joint_names[4] = {
+      "inner tube rotation", "inner tube translation",
+      "middle tube rotation", "middle tube translation"};
 
   // member variables
   std::atomic<bool> m_stop_worker{false};
+  std::array<bool, 4> m_enable_fault_prev = {0, 0, 0, 0}; // for edge-triggered fault logging
   bool m_flag_manual, m_flag_use_target_action, m_trans_limit = false;
   bool m_emtracker_alive, m_targpublisher_alive, m_targpublisher_alive_tmep = false;
   bool m_flag_readyToEngage, m_flagEngaged, m_head_attached = false;

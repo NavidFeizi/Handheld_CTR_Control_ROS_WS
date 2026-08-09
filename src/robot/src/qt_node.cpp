@@ -550,6 +550,7 @@ private:
     }
 
     void updateTable_JointsStatus(blaze::StaticVector<bool, 4> enable,
+                                  blaze::StaticVector<bool, 4> enableFault,
                                   blaze::StaticVector<double, 4> minPosLimit,
                                   blaze::StaticVector<double, 4> maxPosLimit,
                                   blaze::StaticVector<bool, 4> encoder,
@@ -557,10 +558,15 @@ private:
                                   blaze::StaticVector<double, 4> cpuTemp,
                                   blaze::StaticVector<double, 4> driverTemp)
     {
-        mp_table_joints->setItem(0, 0, new QTableWidgetItem(enable[0] ? "ON" : "OFF"));
-        mp_table_joints->setItem(0, 1, new QTableWidgetItem(enable[1] ? "ON" : "OFF"));
-        mp_table_joints->setItem(0, 2, new QTableWidgetItem(enable[2] ? "ON" : "OFF"));
-        mp_table_joints->setItem(0, 3, new QTableWidgetItem(enable[3] ? "ON" : "OFF"));
+        // A faulted joint reads OFF like any disabled one, which is exactly how
+        // a dead motor went unnoticed. Call it out instead.
+        for (int i = 0; i < 4; i++)
+        {
+            auto *item = new QTableWidgetItem(enableFault[i] ? "FAULT" : (enable[i] ? "ON" : "OFF"));
+            if (enableFault[i])
+                item->setForeground(Qt::red);
+            mp_table_joints->setItem(0, i, item);
+        }
 
         mp_table_joints->setItem(4, 0, new QTableWidgetItem(QString::number(minPosLimit[0], 'f', 2)));
         mp_table_joints->setItem(4, 1, new QTableWidgetItem(QString::number(minPosLimit[1], 'f', 4)));
@@ -747,7 +753,7 @@ private:
     m_mode           = static_cast<CtrlMode>(msg->control_mode);
 
     blaze::StaticVector<double, 4> minPosLimit, maxPosLimit;
-    blaze::StaticVector<bool,   4> enabledJoints, encoderJoints, reachedJoints;
+    blaze::StaticVector<bool,   4> enabledJoints, faultJoints, encoderJoints, reachedJoints;
     blaze::StaticVector<double, 4> cpuTemp, windingTemp;
 
     for (int i = 0; i < 4; i++)
@@ -755,6 +761,7 @@ private:
         minPosLimit[i]   = msg->min_pos_limit[i];
         maxPosLimit[i]   = msg->max_pos_limit[i];
         enabledJoints[i] = msg->enable[i];
+        faultJoints[i]   = msg->enable_fault[i];
         encoderJoints[i] = msg->encoder[i];
         reachedJoints[i] = msg->reached[i];
         cpuTemp[i] = msg->cpu_temp[i];
@@ -776,7 +783,7 @@ private:
          enabled, procedure, head_attached, engaged, locked,
          mode, trans_limit,
          minPosLimit, maxPosLimit,
-         enabledJoints, encoderJoints, reachedJoints, cpuTemp, windingTemp]() mutable
+         enabledJoints, faultJoints, encoderJoints, reachedJoints, cpuTemp, windingTemp]() mutable
         {
             // --- Buttons ---
             mp_unlock_button->setEnabled(engaged);
@@ -784,6 +791,7 @@ private:
 
             // --- Joints table ---
             updateTable_JointsStatus(enabledJoints,
+                                     faultJoints,
                                      minPosLimit,
                                      maxPosLimit,
                                      encoderJoints,

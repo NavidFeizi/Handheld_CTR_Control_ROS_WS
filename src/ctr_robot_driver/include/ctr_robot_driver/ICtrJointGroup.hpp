@@ -54,6 +54,10 @@ public:
     virtual bool getSwitchStatus(blaze::StaticVector<bool, 4> &status) const = 0;
     virtual bool getSwitchStatus() const = 0;
     virtual blaze::StaticVector<bool, 4> getEnableStatus() const = 0;
+    /// Per-joint "the drive would not reach/leave Operation Enabled" latch.
+    /// A joint reporting true is not under control and never will be until the
+    /// fault is cleared — surface it, never silently ignore it.
+    virtual blaze::StaticVector<bool, 4> getEnableFaultStatus() const = 0;
     virtual blaze::StaticVector<bool, 4> getEncoderStatus() const = 0;
     virtual bool getDisabledStatus(blaze::StaticVector<bool, 4> &status) const = 0;
     virtual bool getDisabledStatus() const = 0;

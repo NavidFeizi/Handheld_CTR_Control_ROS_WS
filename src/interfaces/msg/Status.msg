@@ -1,4 +1,6 @@
 bool[4] enable [0, 0, 0, 0]
+# Drive refused the CiA-402 enable/disable transition: joint is not under control
+bool[4] enable_fault [0, 0, 0, 0]
 bool[4] encoder [0, 0, 0, 0]
 bool[4] reached [0, 0, 0, 0] 
 bool engaged 0

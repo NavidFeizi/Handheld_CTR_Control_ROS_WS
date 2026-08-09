@@ -196,6 +196,7 @@ public:
     bool getSwitchStatus(blaze::StaticVector<bool, 4> &status) const;
     bool getSwitchStatus() const;
     blaze::StaticVector<bool, 4> getEnableStatus() const;
+    blaze::StaticVector<bool, 4> getEnableFaultStatus() const;
     blaze::StaticVector<bool, 4> getEncoderStatus() const;
     bool getDisabledStatus(blaze::StaticVector<bool, 4> &status) const;
     bool getDisabledStatus() const;

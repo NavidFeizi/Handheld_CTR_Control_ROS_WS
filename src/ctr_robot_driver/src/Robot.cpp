@@ -324,6 +324,19 @@ bool CTRobot::getDisabledStatus() const
   return this->getDisabledStatus(status);
 }
 
+/* Per-joint latch set when EnableOp_ gives up on the CiA-402 transition. The
+   node stays booted and keeps its PDOs, so nothing else reveals the failure —
+   without this the joint just silently never moves. */
+blaze::StaticVector<bool, 4> CTRobot::getEnableFaultStatus() const
+{
+  blaze::StaticVector<bool, 4> status;
+  status[0] = m_inrTubeRot->getFlags(Flags::FlagIndex::ENABLE_FAULT);
+  status[1] = m_inrTubeTrn->getFlags(Flags::FlagIndex::ENABLE_FAULT);
+  status[2] = m_mdlTubeRot->getFlags(Flags::FlagIndex::ENABLE_FAULT);
+  status[3] = m_mdlTubeTrn->getFlags(Flags::FlagIndex::ENABLE_FAULT);
+  return status;
+}
+
 /* template */
 blaze::StaticVector<bool, 4> CTRobot::getEncoderStatus() const
 {

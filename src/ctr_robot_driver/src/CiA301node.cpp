@@ -447,9 +447,16 @@ bool Cia301Node::EnableOp_(const bool enable)
     {
         while (m_statusWord.operation_enabled)
         {
-            if (attempt_count >= max_attempts) // If the loop has run 10 times without disabling the operation, return an error
+            if (attempt_count >= max_attempts) // give up: flag the fault instead of spinning
             {
-                logger->debug("[Node " + m_nodeId + "] Operation not disabled after " + std::to_string(max_attempts) + " attempts - current status: " + m_statusWord.getCiA402StatusMessage());
+                // This used to only log at debug level and fall through, so a
+                // drive that never left "Operation Enabled" trapped the fiber
+                // in this loop forever: that node stopped writing PDOs and went
+                // dead while the other three kept running. Mirror the enable
+                // branch and bail out.
+                logger->error("[Node " + m_nodeId + "] Operation not disabled after " + std::to_string(max_attempts) + " attempts - current status: " + m_statusWord.getCiA402StatusMessage());
+                m_flags.set(Flags::FlagIndex::ENABLE_FAULT, true);
+                return false;
             }
             Wait(AsyncWrite<uint16_t>(CONTROL_WORD_IDX, 0, 0x0007));                 // set the state macine to switched on
             m_statusWord.update(Wait(AsyncRead<uint16_t>(STATUS_WORD_IDX, 0x0000))); // get status word on SDO
