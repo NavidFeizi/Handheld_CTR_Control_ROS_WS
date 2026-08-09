@@ -20,3 +20,6 @@ src/robot/lib_robot/config/master.bin
 
 # Qt Creator / CMake local state
 CMakeLists.txt.user
+
+# Local agent guidance, not a workspace deliverable
+CLAUDE.md
