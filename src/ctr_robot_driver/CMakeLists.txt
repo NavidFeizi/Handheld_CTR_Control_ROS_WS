@@ -32,6 +32,14 @@ target_link_libraries(ctr_robot_driver
 
 target_compile_options(ctr_robot_driver PRIVATE -Wall -Wextra -pedantic)
 
+# Parity with the pre-refactor lib_robot build, which appended -O2 to
+# CMAKE_CXX_FLAGS_RELEASE and so pinned these three TUs to -O2 (the last -O
+# flag wins over colcon's -O3). This driver interleaves a lely fiber with the
+# ROS executor threads; keep the optimisation level that has hardware hours
+# behind it rather than silently changing codegen as part of a move. Revisit
+# once the cross-thread state has been fully audited.
+target_compile_options(ctr_robot_driver PRIVATE $<$<CONFIG:Release>:-O2>)
+
 # --- CANopen master configuration -------------------------------------------
 # dcfgen generates master.dcf/master.bin from config/master.yml in the BUILD
 # tree, only when the inputs change (the old POST_BUILD version regenerated on
