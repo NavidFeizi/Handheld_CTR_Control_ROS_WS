@@ -88,6 +88,13 @@ if(BUILD_TESTING)
   # Compile only CanEssentials.cpp — the pure CiA-402 helpers need no lely.
   ament_add_gtest(test_can_essentials test/test_can_essentials.cpp src/CanEssentials.cpp)
   target_include_directories(test_can_essentials PRIVATE include)
+
+  # node_command.hpp is header-only and deliberately lely-free, so the
+  # caller-thread -> fiber handshake is testable without hardware.
+  ament_add_gtest(test_node_command test/test_node_command.cpp)
+  target_include_directories(test_node_command PRIVATE include)
+  find_package(Threads REQUIRED)
+  target_link_libraries(test_node_command Threads::Threads)
 endif()
 
 ament_package()

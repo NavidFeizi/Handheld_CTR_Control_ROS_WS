@@ -118,13 +118,42 @@ library stays resolvable downstream. As with `ctr_cosserat`, `PRIVATE` dependenc
 of a static library surface in the export as `$<LINK_ONLY:...>`, so consumers must be
 able to resolve `spdlog` when `find_package(ctr_robot_driver)` loads.
 
+## Command handshake (`node_command.hpp`)
+
+Configuration calls (`enableOperation`, `setMaxTorque`, `setProfileParams`,
+`setEncoder`, `setOperationMode`) arrive on ROS threads but may only touch the
+CANopen stack from inside the node's lely fiber, so they cross into `TaskTarget`
+through `NodeCommandMailbox`: a single-slot mailbox where the producer writes the
+payload and *then* release-stores the command tag, and the fiber acquire-loads the
+tag before reading the payload.
+
+The ordering is the whole point. The previous handshake set a plain
+`int m_isConfiguring` **before** assigning a plain `std::string m_commandMsg`, with
+no synchronisation: the fiber could observe the flag while the string was still
+stale, fall through every dispatch branch, and clear both — silently swallowing
+that node's command. Because the four nodes race independently, the visible
+symptom was one motor left un-enabled while the other three came up.
+
+`publish()` waits (up to 5 s) for the slot to drain and then refuses — returning
+false, which the caller logs at `ERROR` — rather than overwriting a command the
+fiber has not consumed yet. The timeout is sized to clear the slowest handler
+(`SetEncoder_` sits on ~2.5 s of internal `AsyncWait`s), not the ~18 ms poll
+period, so legitimate back-to-back calls such as `findLinearHome`'s
+`setEncoders()` → `enableOperation(false)` block and succeed instead of the
+second one being lost.
+
 ## Tests
 
 ```bash
-colcon test --packages-select ctr_robot_driver --ctest-args -R test_can_essentials
+colcon test --packages-select ctr_robot_driver
 ```
 
 `test/test_can_essentials.cpp` compiles only `CanEssentials.cpp`, so it needs no lely
 master and no hardware: `bin2Dec` correctness, `StatusWord` bit decoding
 (ready / switched-on / operation-enabled / fault), `Flags` atomic set and get, and
 `ToBinaryString<uint16_t>` width and spacing.
+
+`test/test_node_command.cpp` covers the mailbox (`node_command.hpp` is header-only
+and deliberately lely-free): payload/tag atomicity, slot release on consume,
+refusal to overwrite an unconsumed command, and a two-thread stress run asserting
+that no published command is lost or delivered with another command's payload.

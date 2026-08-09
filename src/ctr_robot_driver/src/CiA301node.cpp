@@ -521,10 +521,12 @@ void Cia301Node::ResetFault_()
     This task is posted in in the OnBoot function */
 void Cia301Node::TaskTarget() noexcept
 {
+    NodeCommandMailbox::Payload command_payload;
+
     while (true)
     {
         // send position/velocity target
-        if (robot_states->m_flag_operation_enabled & !m_isConfiguring)
+        if (robot_states->m_flag_operation_enabled && !m_mailbox.pending())
         {
             m_flag_target_task_processing = true;
             if (m_current_operation_mode == OpMode::PositionProfile) // Position Profile mode
@@ -587,38 +589,37 @@ void Cia301Node::TaskTarget() noexcept
             m_flag_target_task_processing = false;
         }
 
-        else if (m_isConfiguring)
+        else if (m_mailbox.pending())
         {
             while (m_flag_target_task_processing)
                 Wait(AsyncWait(duration(std::chrono::microseconds(5))));
-            if (m_commandMsg == "enable")
-            {
-                Cia301Node::EnableOp_(true);
-            }
-            else if (m_commandMsg == "disable")
-            {
-                Cia301Node::EnableOp_(false);
-            }
-            else if (m_commandMsg == "set_max_torque")
-            {
-                Cia301Node::SetMaxTorque_(m_set_max_torque[0], m_set_max_torque[1]);
-            }
-            else if (m_commandMsg == "set_profile_params")
-            {
-                Cia301Node::SetProfileParams_(m_set_profile_acc, m_set_profile_dcc, m_set_profile_vel); // set profile parameters
-            }
-            else if (m_commandMsg == "set_encoder")
-            {
-                Cia301Node::SetEncoder_(m_set_encoder);
-            }
-            else if (m_commandMsg == "set_operation_mode")
-            {
-                Cia301Node::SetOperationMode_(m_set_operation_mode);
-            }
-            m_commandMsg = "";
 
-            // Wait(AsyncWait(duration(std::chrono::microseconds(m_sampleTime))));
-            m_isConfiguring = false;
+            // consume() copies the payload out and frees the slot, so the
+            // handlers below may take as long as their SDOs need.
+            switch (m_mailbox.consume(command_payload))
+            {
+            case NodeCommand::Enable:
+                Cia301Node::EnableOp_(true);
+                break;
+            case NodeCommand::Disable:
+                Cia301Node::EnableOp_(false);
+                break;
+            case NodeCommand::SetMaxTorque:
+                Cia301Node::SetMaxTorque_(command_payload.maxTorqueNegative, command_payload.maxTorquePositive);
+                break;
+            case NodeCommand::SetProfileParams:
+                Cia301Node::SetProfileParams_(command_payload.profileAcc, command_payload.profileDcc,
+                                              command_payload.profileVel); // set profile parameters
+                break;
+            case NodeCommand::SetEncoder:
+                Cia301Node::SetEncoder_(command_payload.encoderOffset);
+                break;
+            case NodeCommand::SetOperationMode:
+                Cia301Node::SetOperationMode_(command_payload.operationMode);
+                break;
+            case NodeCommand::None:
+                break; // consumed by someone else between pending() and consume()
+            }
         }
 
         else
@@ -868,55 +869,68 @@ void Cia301Node::setHomeOffsetValue(const double val)
     m_pos_offset_SI = val;
 }
 
-// The member functions below trigger an associated function inside "taskOperation" or "taskConfig"
+// The member functions below hand a command to "TaskTarget" through m_mailbox,
 // to comply with asynchronous commanding through SDO while "Task Target" is posted.
 // Since the actual function is executed on another thread (fiber), the task execution may take some time.
 // Therefore, a wait should be used after calling the functions below.
+//
+// Every one of them fills a payload FIRST and publishes the tag LAST; the
+// mailbox turns that into a release/acquire handoff. The old code published a
+// bare flag before the command string with no synchronisation, which let the
+// fiber consume-and-discard a command it could not yet see the payload of.
+
+/* Logs and returns false when the mailbox could not accept the command. */
+bool Cia301Node::PublishCommand_(NodeCommand command, const NodeCommandMailbox::Payload &payload)
+{
+    if (m_mailbox.publish(command, payload))
+        return true;
+
+    logger->error("[Node " + m_nodeId + "] Command dropped: the previous one was still unprocessed "
+                                        "after 5 s (is the CANopen fiber stalled?)");
+    return false;
+}
 
 /**/
 void Cia301Node::enableOperation(const bool enable)
 {
-    m_isConfiguring = true;
-    if (enable)
-        m_commandMsg = "enable";
-    else
-        m_commandMsg = "disable";
+    NodeCommandMailbox::Payload payload;
+    payload.enable = enable;
+    PublishCommand_(enable ? NodeCommand::Enable : NodeCommand::Disable, payload);
 }
 
 /**/
 void Cia301Node::setMaxTorque(const double negative, const double positive)
 {
-    m_set_max_torque[0] = negative;
-    m_set_max_torque[1] = positive;
-    m_isConfiguring = true;
-    m_commandMsg = "set_max_torque";
+    NodeCommandMailbox::Payload payload;
+    payload.maxTorqueNegative = negative;
+    payload.maxTorquePositive = positive;
+    PublishCommand_(NodeCommand::SetMaxTorque, payload);
 }
 
 /**/
 void Cia301Node::setProfileParams(const double acc, const double dcc, const double vel)
 {
-    m_set_profile_acc = static_cast<unsigned int>(abs(acc * m_conversionFactor));
-    m_set_profile_dcc = static_cast<unsigned int>(abs(dcc * m_conversionFactor));
-    m_set_profile_vel = static_cast<unsigned int>(abs(vel * m_conversionFactor));
-
-    m_isConfiguring = true;
-    m_commandMsg = "set_profile_params";
+    NodeCommandMailbox::Payload payload;
+    payload.profileAcc = static_cast<int>(std::abs(acc * m_conversionFactor));
+    payload.profileDcc = static_cast<int>(std::abs(dcc * m_conversionFactor));
+    payload.profileVel = static_cast<int>(std::abs(vel * m_conversionFactor));
+    PublishCommand_(NodeCommand::SetProfileParams, payload);
 }
 
 /**/
 void Cia301Node::setEncoder(const double offset)
 {
-    m_set_encoder = offset;
-    m_isConfiguring = true;
-    m_commandMsg = "set_encoder";
+    NodeCommandMailbox::Payload payload;
+    payload.encoderOffset = offset;
+    PublishCommand_(NodeCommand::SetEncoder, payload);
 }
 
 /**/
 void Cia301Node::setOperationMode(const OpMode mode)
 {
-    m_set_operation_mode = mode;
-    m_isConfiguring = true;
-    m_commandMsg = "set_operation_mode";
+    NodeCommandMailbox::Payload payload;
+    payload.operationMode = mode;
+    PublishCommand_(NodeCommand::SetOperationMode, payload);
 }
 
 /* Sets position limit SI unit and converts to motion controller unit

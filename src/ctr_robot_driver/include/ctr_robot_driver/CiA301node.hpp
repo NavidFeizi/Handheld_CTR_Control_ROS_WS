@@ -49,6 +49,7 @@
 #include "ctr_robot_driver/Robot.hpp"
 #include "ctr_robot_driver/CanEssentials.hpp"
 #include "ctr_robot_driver/SharedStates.hpp"
+#include "ctr_robot_driver/node_command.hpp"
 
 using namespace std::chrono_literals;
 using namespace lely;
@@ -135,6 +136,8 @@ private:
 
   // ============================== Utility Methods ==============================
   void ReadEncoderMemFile(const std::string &directory, double &encoder_memory, std::ofstream &encoder_memory_file);
+  // Hands a command to the fiber; logs and returns false if the mailbox is blocked.
+  bool PublishCommand_(NodeCommand command, const NodeCommandMailbox::Payload &payload);
 
 public:
 private:
@@ -157,7 +160,6 @@ private:
   double m_pos_offset_SI = 0.0;    // in SI unit
   OpMode m_operation_mode;         // mode of operation
   OpMode m_current_operation_mode; // mode of operation
-  int m_isConfiguring = 0;         // 1=set zero, 2=find limit
 
   // ======================== Command and feedback variables ========================
   // Atomics: the ROS threads write targets / read feedback while the lely
@@ -185,7 +187,14 @@ private:
   // int32_t m_digital_in;
 
   // ======================== Other variables ========================
-  bool m_flag_target_task_processing;
+  // Written and read only inside the TaskTarget fiber, so it needs no
+  // synchronisation — but it MUST be initialised: it used to be an
+  // indeterminate bool, and the config branch spins `while
+  // (m_flag_target_task_processing)`. A node whose storage happened to come up
+  // non-zero would spin there forever on its very first command (which arrives
+  // before the target branch ever runs and clears it), leaving that one motor
+  // dead while the others came up.
+  bool m_flag_target_task_processing = false;
   Flags m_flags;
   std::shared_ptr<SharedState> robot_states; // Shared all node states set by the master (Robot)
   std::shared_ptr<spdlog::logger> logger;    // Shared logger instance
@@ -196,9 +205,9 @@ private:
   std::string m_encoderMemDir;               // Directory holding the encoder memory files (formerly the EnoderStoreFiles_directory macro)
   bool m_printPdos = false;                  // for tracing debug
   bool m_bit12Prev = false;
-  std::string m_commandMsg = "";
-  blaze::StaticVector<double, 2> m_set_max_torque = blaze::StaticVector<double, 2>(0.0);
-  int m_set_profile_vel, m_set_profile_acc, m_set_profile_dcc;
-  double m_set_encoder;
-  OpMode m_set_operation_mode;
+
+  // Configuration commands cross from the caller threads into the fiber here.
+  // The payload travels with the tag: see node_command.hpp for why the old
+  // flag-then-string pair could silently drop a command on one node.
+  NodeCommandMailbox m_mailbox;
 };
