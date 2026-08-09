@@ -2,7 +2,8 @@
 # Mirrors the lab machine's dependency layout (everything hand-installed at /usr/local)
 # so the workspace's hardcoded find paths resolve identically. Used by check.sh for
 # compile checks only — binaries built here are NOT deployed.
-FROM ros:jazzy
+# Pinned to the noble tag explicitly so the base OS can't drift.
+FROM ros:jazzy-ros-base-noble
 
 ENV DEBIAN_FRONTEND=noninteractive
 
