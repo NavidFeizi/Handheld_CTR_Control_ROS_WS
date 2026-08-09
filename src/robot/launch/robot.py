@@ -2,29 +2,35 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, TimerAction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+_YAML = 'config/robot_params.yaml'
 
 
-def generate_launch_description():
-    # Canonical parameter values live in config/robot_params.yaml; the launch
-    # arguments below (same names and defaults as before) override them.
+def _parameters(context, params_file, mapping):
+    """YAML first; only launch arguments actually typed on the CLI override it.
+
+    mapping: {parameter_name: launch_argument_name}. An argument left at its
+    empty default is dropped, so the YAML value stands.
+
+    The value stays a ParameterValue substitution rather than the performed
+    string: launch_ros infers the parameter type from the substitution result,
+    so `Kp:=99.0` reaches rclcpp as a double. Storing the plain string instead
+    writes `Kp: '99.0'` into the generated params file and rclcpp rejects it.
+    """
+    overrides = {}
+    for param, arg in mapping.items():
+        config = LaunchConfiguration(arg)
+        if config.perform(context) != '':
+            overrides[param] = ParameterValue(config)
+    return [params_file, overrides] if overrides else [params_file]
+
+
+def _launch_setup(context, *args, **kwargs):
     params_file = os.path.join(get_package_share_directory('robot'), 'config', 'robot_params.yaml')
-
-    kp_arg      = DeclareLaunchArgument('Kp', default_value='30.0')
-    ki_arg      = DeclareLaunchArgument('Ki', default_value='5.0')
-    maxvel_arg  = DeclareLaunchArgument('maxVel', default_value='[3.0, 0.012, 3.0, 0.012]') # SI units: [rad/s, m/s, rad/s, m/s]
-    maxacc_arg  = DeclareLaunchArgument('maxAcc', default_value='[10.0, 0.10, 10.0, 0.10]') # SI units: [rad/s^2, m/s^2, rad/s^2, m/s^2]
-
-    # EKF parameters (R lives in the YAML only)
-    f_dot_arg   = DeclareLaunchArgument('f_dot', default_value='0.2')
-
-    Kp      = LaunchConfiguration('Kp')
-    Ki      = LaunchConfiguration('Ki')
-    MaxVel  = LaunchConfiguration('maxVel')
-    MaxAcc  = LaunchConfiguration('maxAcc')
-    f_dot   = LaunchConfiguration('f_dot')
 
     robot_node = Node(
         package='robot',
@@ -32,12 +38,12 @@ def generate_launch_description():
         name='robot_node',
         output='screen',
         prefix=['taskset -c 5'],
-        parameters=[params_file, {
-            'Kp': Kp,
-            'Ki': Ki,
-            'maxVel': MaxVel,
-            'maxAcc': MaxAcc,
-        }],
+        parameters=_parameters(context, params_file, {
+            'Kp': 'Kp',
+            'Ki': 'Ki',
+            'maxVel': 'maxVel',
+            'maxAcc': 'maxAcc',
+        }),
     )
 
     gui_node = Node(
@@ -75,24 +81,42 @@ def generate_launch_description():
         name='ekf_node',
         # output='screen',
         prefix=['taskset -c 3'],
-        parameters=[params_file, {
-            'f_dot': f_dot,
-        }]
+        parameters=_parameters(context, params_file, {
+            'f_dot': 'f_dot',
+        }),
     )
 
     delay_gui_node = TimerAction(period=5.0, actions=[gui_node])
 
-    ld = LaunchDescription()
-    ld.add_action(kp_arg)
-    ld.add_action(ki_arg)
-    ld.add_action(maxvel_arg)
-    ld.add_action(maxacc_arg)
-    ld.add_action(f_dot_arg)
+    return [
+        robot_node,
+        delay_gui_node,
+        # cosserat_fk_node,
+        pinn_fk_node,
+        pinn_ekf_node,
+    ]
 
-    ld.add_action(robot_node)
-    ld.add_action(delay_gui_node)
-    # ld.add_action(cosserat_fk_node)
-    ld.add_action(pinn_fk_node)
-    ld.add_action(pinn_ekf_node)
 
-    return ld
+def generate_launch_description():
+    # Canonical parameter values live in config/robot_params.yaml. The launch
+    # arguments below default to empty and only override the YAML when passed
+    # explicitly on the command line.
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'Kp', default_value='',
+            description=f'unset -> {_YAML}'),
+        DeclareLaunchArgument(
+            'Ki', default_value='',
+            description=f'unset -> {_YAML}'),
+        DeclareLaunchArgument(
+            'maxVel', default_value='',
+            description=f'[rad/s, m/s, rad/s, m/s]; unset -> {_YAML}'),
+        DeclareLaunchArgument(
+            'maxAcc', default_value='',
+            description=f'[rad/s^2, m/s^2, rad/s^2, m/s^2]; unset -> {_YAML}'),
+        # EKF parameters (R lives in the YAML only)
+        DeclareLaunchArgument(
+            'f_dot', default_value='',
+            description=f'N/s; unset -> {_YAML}'),
+        OpaqueFunction(function=_launch_setup),
+    ])

@@ -6,22 +6,37 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    # Robot launch arguments
-    kp_arg = DeclareLaunchArgument('Kp', default_value='30.0')
-    ki_arg = DeclareLaunchArgument('Ki', default_value='5.0')
-    maxvel_arg = DeclareLaunchArgument('maxVel', default_value='[3.0, 0.012, 3.0, 0.012]')
-    maxacc_arg = DeclareLaunchArgument('maxAcc', default_value='[10.0, 0.10, 10.0, 0.10]')
-    f_dot_arg = DeclareLaunchArgument('f_dot', default_value='0.2')
+    # Every argument below defaults to empty and is forwarded verbatim to the
+    # included launch file, which treats empty as "use the package's
+    # config/*_params.yaml". Only values passed explicitly on the command line
+    # override the YAML.
 
-    host_name_arg = DeclareLaunchArgument('host_name', default_value='/dev/ttyUSB1')
-    send_on_igtl_arg = DeclareLaunchArgument('send_on_igtl', default_value='false')
-    enable_position_logging_arg = DeclareLaunchArgument('enable_position_logging', default_value='false')
+    # Robot launch arguments (-> robot/config/robot_params.yaml)
+    kp_arg = DeclareLaunchArgument('Kp', default_value='', description='unset -> robot_params.yaml')
+    ki_arg = DeclareLaunchArgument('Ki', default_value='', description='unset -> robot_params.yaml')
+    maxvel_arg = DeclareLaunchArgument('maxVel', default_value='', description='unset -> robot_params.yaml')
+    maxacc_arg = DeclareLaunchArgument('maxAcc', default_value='', description='unset -> robot_params.yaml')
+    f_dot_arg = DeclareLaunchArgument('f_dot', default_value='', description='unset -> robot_params.yaml')
 
-    hostname_module_arg = DeclareLaunchArgument('hostname_module', default_value='10.15.232.114')
-    port_module_arg = DeclareLaunchArgument('port_module', default_value='18975')
-    hostname_slicer_arg = DeclareLaunchArgument('hostname_slicer', default_value='localhost')
-    port_slicer_arg = DeclareLaunchArgument('port_slicer', default_value='18944')
-    auto_connect_arg = DeclareLaunchArgument('auto_connect', default_value='false')
+    # EM tracker launch arguments (-> emtracker/config/emtracker_params.yaml)
+    host_name_arg = DeclareLaunchArgument('host_name', default_value='',
+                                          description='unset -> emtracker_params.yaml')
+    send_on_igtl_arg = DeclareLaunchArgument('send_on_igtl', default_value='',
+                                             description='unset -> emtracker_params.yaml')
+    enable_position_logging_arg = DeclareLaunchArgument('enable_position_logging', default_value='',
+                                                        description='unset -> emtracker_params.yaml')
+
+    # OpenIGTLink bridge launch arguments (-> igtlink_bridge/config/igtlink_params.yaml)
+    hostname_module_arg = DeclareLaunchArgument('hostname_module', default_value='',
+                                                description='unset -> igtlink_params.yaml')
+    port_module_arg = DeclareLaunchArgument('port_module', default_value='',
+                                            description='unset -> igtlink_params.yaml')
+    hostname_slicer_arg = DeclareLaunchArgument('hostname_slicer', default_value='',
+                                                description='unset -> igtlink_params.yaml')
+    port_slicer_arg = DeclareLaunchArgument('port_slicer', default_value='',
+                                            description='unset -> igtlink_params.yaml')
+    auto_connect_arg = DeclareLaunchArgument('auto_connect', default_value='',
+                                             description='unset -> igtlink_params.yaml')
 
     robot_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -59,7 +74,7 @@ def generate_launch_description():
             'auto_connect': LaunchConfiguration('auto_connect'),
         }.items(),
     )
-    
+
     delayed_robot_launch = TimerAction(
         period=14.0,
         actions=[robot_launch],

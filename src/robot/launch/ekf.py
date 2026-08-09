@@ -2,17 +2,35 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+_YAML = 'config/robot_params.yaml'
 
 
-def generate_launch_description():
-    # R and the other EKF parameters come from config/robot_params.yaml.
+def _parameters(context, params_file, mapping):
+    """YAML first; only launch arguments actually typed on the CLI override it.
+
+    mapping: {parameter_name: launch_argument_name}. An argument left at its
+    empty default is dropped, so the YAML value stands.
+
+    The value stays a ParameterValue substitution rather than the performed
+    string: launch_ros infers the parameter type from the substitution result,
+    so `f_dot:=0.5` reaches rclcpp as a double. Storing the plain string instead
+    writes `f_dot: '0.5'` into the generated params file and rclcpp rejects it.
+    """
+    overrides = {}
+    for param, arg in mapping.items():
+        config = LaunchConfiguration(arg)
+        if config.perform(context) != '':
+            overrides[param] = ParameterValue(config)
+    return [params_file, overrides] if overrides else [params_file]
+
+
+def _launch_setup(context, *args, **kwargs):
     params_file = os.path.join(get_package_share_directory('robot'), 'config', 'robot_params.yaml')
-
-    f_dot_arg = DeclareLaunchArgument('f_dot', default_value='0.1')
-    f_dot = LaunchConfiguration('f_dot')
 
     pinn_ekf_node = Node(
         package='robot',
@@ -20,13 +38,20 @@ def generate_launch_description():
         name='ekf_node',
         # output='screen',
         prefix=['taskset -c 3'],
-        parameters=[params_file, {
-            'f_dot': f_dot,
-        }]
+        parameters=_parameters(context, params_file, {
+            'f_dot': 'f_dot',
+        }),
     )
 
-    ld = LaunchDescription()
-    ld.add_action(f_dot_arg)
-    ld.add_action(pinn_ekf_node)
+    return [pinn_ekf_node]
 
-    return ld
+
+def generate_launch_description():
+    # R and the other EKF parameters come from config/robot_params.yaml, which
+    # is authoritative; f_dot below only overrides it when passed explicitly.
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'f_dot', default_value='',
+            description=f'N/s; unset -> {_YAML}'),
+        OpaqueFunction(function=_launch_setup),
+    ])

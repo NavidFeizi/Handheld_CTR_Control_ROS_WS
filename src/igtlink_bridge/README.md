@@ -31,17 +31,31 @@ own parameter block.
 
 `launch/launch.py`, CPU core 8.
 
-| Argument | Default |
-|---|---|
-| `hostname_slicer` | `localhost` |
-| `port_slicer` | `18944` |
-| `hostname_module` | `10.15.232.114` |
-| `port_module` | `18975` |
-| `auto_connect` | `false` |
+| Argument | Default | Overrides |
+|---|---|---|
+| `hostname_slicer` | *(none)* | `igtlink_bridge_slicer_node.hostname` |
+| `port_slicer` | *(none)* | `igtlink_bridge_slicer_node.port` |
+| `hostname_module` | *(none)* | `igtlink_bridge_module_node.hostname` |
+| `port_module` | *(none)* | `igtlink_bridge_module_node.port` |
+| `auto_connect` | *(none)* | `auto_connect` on both nodes |
+
+The argument names are distinct because the two nodes share the same parameter names —
+`hostname_slicer` and `hostname_module` both land on a `hostname`, in different blocks.
+None carries a default: unset they are dropped and `config/igtlink_params.yaml` supplies
+the value. Pass one explicitly to override it for a single run:
+
+```bash
+ros2 launch igtlink_bridge launch.py port_slicer:=18950 auto_connect:=true
+```
+
+Editing the YAML needs `colcon build --packages-select igtlink_bridge` — launch reads the
+installed `share/` copy. See [Configuration and
+parameters](../../README.md#configuration-and-parameters) for the mechanism.
 
 ## Parameters
 
-From `config/igtlink_params.yaml`, keyed per node name.
+From `config/igtlink_params.yaml`, keyed per node name. The defaults below are the YAML's
+values and are what each node actually receives; the launch file does not shadow them.
 
 ### `igtlink_bridge_slicer_node`
 

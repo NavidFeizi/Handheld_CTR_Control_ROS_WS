@@ -11,9 +11,24 @@ to initialize, which is why `ctr_bringup` delays the robot nodes by 14 s.
 
 ```bash
 source install/setup.bash
-ros2 launch emtracker launch.py
-ros2 launch emtracker launch.py host_name:=/dev/ttyUSB0    # different serial port
+ros2 launch emtracker launch.py                            # values from emtracker_params.yaml
+ros2 launch emtracker launch.py host_name:=/dev/ttyUSB0    # one-off serial-port override
 ```
+
+### Changing the serial port permanently
+
+Edit `host_name` in `config/emtracker_params.yaml`, then **rebuild** — the launch file
+reads the installed copy under `share/`, so an edit to the source tree does nothing until
+it is reinstalled:
+
+```bash
+colcon build --packages-select emtracker
+source install/setup.bash
+ros2 launch emtracker launch.py
+ros2 param get emt_node host_name     # confirm what the node actually got
+```
+
+A `--symlink-install` workspace picks the edit up without rebuilding.
 
 ## Nodes
 
@@ -27,15 +42,37 @@ Use `emt_node` — the launch name — with `ros2 param set`.
 
 `launch/launch.py` starts `emt_node` pinned to CPU core 10.
 
-| Argument | Default |
-|---|---|
-| `host_name` | `/dev/ttyUSB1` |
-| `send_on_igtl` | `false` |
-| `enable_position_logging` | `false` |
+| Argument | Default | Overrides |
+|---|---|---|
+| `host_name` | *(none)* | `emt_node.host_name` |
+| `send_on_igtl` | *(none)* | `emt_node.send_on_igtl` |
+| `enable_position_logging` | *(none)* | `emt_node.enable_position_logging` |
+
+**`config/emtracker_params.yaml` is authoritative.** None of these arguments carries a
+default value: left alone they resolve to the empty string, the launch file drops them,
+and the node is started with the YAML as its only parameter source. Type one on the
+command line and it is added as a second, higher-priority parameter file containing just
+that key — so it wins for that run only.
+
+This is deliberate. `parameters=[yaml, {...}]` applies the dict *after* the YAML, so an
+argument with a concrete default would silently overwrite the YAML on every launch and
+make YAML edits look ignored. `launch/launch.py` therefore resolves the arguments inside
+an `OpaqueFunction`, drops the empty ones, and wraps the survivors in `ParameterValue` so
+they keep their type (`send_on_igtl:=true` arrives as a bool, not the string `'true'`).
+
+`ros2 launch emtracker launch.py --show-args` lists the arguments with empty defaults;
+each one's description names the YAML that owns the real value.
+
+The same rule applies to every package in the workspace — see [Configuration and
+parameters](../../README.md#configuration-and-parameters).
 
 ## Parameters
 
-From `config/emtracker_params.yaml`; the three launch arguments above override.
+From `config/emtracker_params.yaml` — the single source of truth. The defaults below are
+the YAML's values and are what the node actually receives; nothing in the launch file
+shadows them. Remember the rebuild step from
+[Changing the serial port permanently](#changing-the-serial-port-permanently) when you
+edit them.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -123,12 +160,12 @@ Both are pure math, with no ROS or hardware dependency.
 
 ## Status notes
 
-- **`host_name` defaults disagree**: the in-code `declare_parameter` default is
-  `/dev/ttyUSB0`, while the YAML and launch file both say `/dev/ttyUSB1`. The YAML
-  wins in normal operation, so this only bites if you run the executable directly
-  with `ros2 run`.
-- **`enable_position_logging` defaults disagree** the same way: `true` in code,
-  `false` in the YAML and launch file.
+- **`host_name` defaults disagree with the code**: the in-code `declare_parameter`
+  default is `/dev/ttyUSB0`, while the YAML says `/dev/ttyUSB1`. The launch file no
+  longer carries a default of its own, so the YAML is the single value that matters;
+  the in-code default only bites if you run the executable directly with `ros2 run`.
+- **`enable_position_logging` disagrees the same way**: `true` in code, `false` in the
+  YAML.
 - Two stale files sit in `lib_emtracker/config/`:
   `landmarks_truth_ctr_robot-depreciated.csv` (named as deprecated) and
   `landmarks_truth_ctr_robot_v3.5 copy.csv` (a stray duplicate). Neither is loaded by

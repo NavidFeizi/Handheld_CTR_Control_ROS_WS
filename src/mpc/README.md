@@ -23,12 +23,26 @@ ros2 launch mpc launch.py
 
 ## Launch file
 
-`launch/launch.py` starts `mpc` on CPU core 4. Every parameter below is also a launch
-argument with the same name and default.
+`launch/launch.py` starts `mpc` on CPU core 4. Every parameter below except `models_dir`
+is also a launch argument of the same name, each with **no default**: unset they are
+dropped and `config/mpc_params.yaml` supplies the value. Pass one explicitly to override
+it for a single run — e.g. to drive the Grassmann CTR instead of the handheld:
+
+```bash
+ros2 launch mpc launch.py model_name:=grassmann_ctr_v4.4.4 \
+    q0:='[-0.100, -0.055, -0.005, 0.0, 0.0, 0.0]'
+```
+
+Quote array values as shown; they reach the node as a double array, not a string.
+
+Editing the YAML needs `colcon build --packages-select mpc` — launch reads the installed
+`share/` copy. See [Configuration and
+parameters](../../README.md#configuration-and-parameters) for the mechanism.
 
 ## Parameters
 
-From `config/mpc_params.yaml` — the handheld CTR values.
+From `config/mpc_params.yaml` — the handheld CTR values. The defaults below are the
+YAML's and are what the node actually receives; the launch file does not shadow them.
 
 | Parameter | Default | Meaning |
 |---|---|---|

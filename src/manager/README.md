@@ -32,13 +32,26 @@ into the same class (`class MasterNode : public QWidget, public rclcpp::Node`).
 
 `launch/launch.py` starts both nodes on CPU core 2.
 
-| Argument | Default |
-|---|---|
-| `recorder_sample_time` | `.025` |
+| Argument | Default | Overrides |
+|---|---|---|
+| `recorder_sample_time` | *(none)* | `recorder_node.sample_time` |
+
+It carries no default: unset it is dropped and `config/manager_params.yaml` supplies the
+value. Pass it explicitly to override for a single run:
+
+```bash
+ros2 launch manager launch.py recorder_sample_time:=0.01
+```
+
+`master_node` has no launch arguments at all — every one of its tunables comes from the
+YAML. Editing the YAML needs `colcon build --packages-select manager`, since launch reads
+the installed `share/` copy. See [Configuration and
+parameters](../../README.md#configuration-and-parameters) for the mechanism.
 
 ## Parameters
 
-From `config/manager_params.yaml`.
+From `config/manager_params.yaml`. The defaults below are the YAML's values and are what
+the nodes actually receive; the launch file does not shadow them.
 
 ### `master_node`
 

@@ -31,23 +31,42 @@ them produces a system that comes up looking fine and then reports bad poses.
 
 ## Launch arguments
 
-All are forwarded to the included launch files.
+All are forwarded to the included launch files. **None of them carries a default value.**
+Left unset they resolve to the empty string, the included launch file drops them, and the
+target package's `config/*_params.yaml` supplies the value. Pass one explicitly to
+override the YAML for a single run.
 
-| Argument | Default | Goes to |
-|---|---|---|
-| `Kp` | 30.0 | `robot` |
-| `Ki` | 5.0 | `robot` |
-| `maxVel` | `[3.0, 0.012, 3.0, 0.012]` | `robot` |
-| `maxAcc` | `[10.0, 0.10, 10.0, 0.10]` | `robot` |
-| `f_dot` | 0.2 | `robot` (EKF) |
-| `host_name` | `/dev/ttyUSB1` | `emtracker` |
-| `send_on_igtl` | `false` | `emtracker` |
-| `enable_position_logging` | `false` | `emtracker` |
-| `hostname_slicer` | `localhost` | `igtlink_bridge` |
-| `port_slicer` | `18944` | `igtlink_bridge` |
-| `hostname_module` | `10.15.232.114` | `igtlink_bridge` |
-| `port_module` | `18975` | `igtlink_bridge` |
-| `auto_connect` | `false` | `igtlink_bridge` |
+| Argument | Default | Goes to | YAML that owns the value |
+|---|---|---|---|
+| `Kp` | *(none)* | `robot` | `robot/config/robot_params.yaml` |
+| `Ki` | *(none)* | `robot` | `robot/config/robot_params.yaml` |
+| `maxVel` | *(none)* | `robot` | `robot/config/robot_params.yaml` |
+| `maxAcc` | *(none)* | `robot` | `robot/config/robot_params.yaml` |
+| `f_dot` | *(none)* | `robot` (EKF) | `robot/config/robot_params.yaml` |
+| `host_name` | *(none)* | `emtracker` | `emtracker/config/emtracker_params.yaml` |
+| `send_on_igtl` | *(none)* | `emtracker` | `emtracker/config/emtracker_params.yaml` |
+| `enable_position_logging` | *(none)* | `emtracker` | `emtracker/config/emtracker_params.yaml` |
+| `hostname_slicer` | *(none)* | `igtlink_bridge` | `igtlink_bridge/config/igtlink_params.yaml` |
+| `port_slicer` | *(none)* | `igtlink_bridge` | `igtlink_bridge/config/igtlink_params.yaml` |
+| `hostname_module` | *(none)* | `igtlink_bridge` | `igtlink_bridge/config/igtlink_params.yaml` |
+| `port_module` | *(none)* | `igtlink_bridge` | `igtlink_bridge/config/igtlink_params.yaml` |
+| `auto_connect` | *(none)* | `igtlink_bridge` | `igtlink_bridge/config/igtlink_params.yaml` |
+
+```bash
+ros2 launch ctr_bringup system_bringup.launch.py                          # everything from the YAMLs
+ros2 launch ctr_bringup system_bringup.launch.py host_name:=/dev/ttyUSB0  # one-off override
+ros2 launch ctr_bringup system_bringup.launch.py --show-args              # empty defaults + owning YAML
+```
+
+Overrides work through the workspace-root shim as well — `ros2 launch
+launch/system_bringup.launch.py host_name:=/dev/ttyUSB0` reaches `emt_node`, because
+launch configurations are inherited by included launch descriptions.
+
+**This package is the one most likely to break the rule.** It re-declares arguments that
+the included launch files also declare, and forwards them unconditionally — so a concrete
+default here beats the YAML on every run even when the included launch file is written
+correctly. Keep every `default_value` empty. See [Configuration and
+parameters](../../README.md#configuration-and-parameters) for the mechanism.
 
 ## What it does *not* start
 

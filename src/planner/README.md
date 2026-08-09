@@ -32,11 +32,16 @@ In normal operation `manager`'s GUI issues these requests, not you.
 ## Launch file
 
 `launch/launch.py` starts `planner_node` on CPU core 9. It declares **no** launch
-arguments — all configuration comes from the YAML.
+arguments at all — the simplest case of the workspace-wide rule that
+`config/*_params.yaml` is authoritative. Everything is configured through the YAML, or
+at runtime with `ros2 param set planner_node <param> <value>`.
 
 ## Parameters
 
-From `config/planner_params.yaml`.
+From `config/planner_params.yaml` — the single source of truth. Editing it needs
+`colcon build --packages-select planner`, because launch reads the installed `share/`
+copy rather than the source tree. See [Configuration and
+parameters](../../README.md#configuration-and-parameters).
 
 | Parameter | Default | Meaning |
 |---|---|---|

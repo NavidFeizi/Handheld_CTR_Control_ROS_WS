@@ -52,10 +52,77 @@ Handheld_CTR_Control_ROS_WS/
 └── Shared_Files/                             # planner ↔ manager path channel (plannedPath.csv)
 ```
 
-Each package with parameters carries a `config/*_params.yaml` — the single
-source of truth, loaded by its launch file; launch arguments override.
 Runtime data directories resolve via the `data_root` parameter, the
 `CTR_DATA_ROOT` env var, or (fallback) the legacy workspace-layout climb.
+Node parameters follow the rule below.
+
+## Configuration and parameters
+
+Each package with parameters carries one `config/*_params.yaml`, installed to
+`share/<pkg>/`, and its launch file loads it. **That YAML is the single source of
+truth.** Launch arguments declare *no* default value:
+
+- **unset** → the argument is dropped and the YAML value stands;
+- **typed on the command line** → it overrides the YAML, for that run only.
+
+```bash
+ros2 launch emtracker launch.py                          # host_name from emtracker_params.yaml
+ros2 launch emtracker launch.py host_name:=/dev/ttyUSB0  # one-off override
+```
+
+### Why the arguments have no defaults
+
+`Node(parameters=[params_file, {...}])` hands rclcpp each list entry as a separate
+`--params-file`, applied in order — **the last one wins**. The inline dict is therefore
+always applied after the YAML. An argument declared as
+`DeclareLaunchArgument('host_name', default_value='/dev/ttyUSB1')` always has a value,
+even when nothing is typed, so that default would silently overwrite the YAML on *every*
+launch and make YAML edits look ignored. That was a real bug in this workspace.
+
+Each launch file instead declares `default_value=''` and resolves the arguments inside an
+`OpaqueFunction`, through a small local helper:
+
+```python
+def _parameters(context, params_file, mapping):
+    overrides = {}
+    for param, arg in mapping.items():
+        config = LaunchConfiguration(arg)
+        if config.perform(context) != '':
+            overrides[param] = ParameterValue(config)
+    return [params_file, overrides] if overrides else [params_file]
+```
+
+Empty arguments are dropped, so `parameters=` is just `[params_file]` on a plain launch.
+Survivors stay `ParameterValue(LaunchConfiguration(...))` rather than the performed
+string, which keeps launch_ros's type inference: `Kp:=99.0` reaches the node as a double
+and `q0:='[-0.1, -0.05, 0.0, 0.0]'` as a double array. Storing the plain string writes
+`Kp: '99.0'` into the generated params file and rclcpp rejects the type.
+
+**When editing a launch file, never give a parameter-bearing argument a concrete
+default** — including in `ctr_bringup`, which forwards all of its arguments
+unconditionally to the launch files it includes.
+
+### Editing a YAML takes a rebuild
+
+Launch files read the **installed** copy under `share/`, not `src/`. After editing
+`src/<pkg>/config/*_params.yaml`:
+
+```bash
+colcon build --packages-select <pkg>
+source install/setup.bash
+```
+
+A workspace built with `--symlink-install` picks the edit up without rebuilding.
+
+### Checking what a node actually got
+
+```bash
+ros2 launch <pkg> <file> --show-args   # empty defaults; each description names its YAML
+ros2 param get <node_name> <param>     # the value the running node received
+```
+
+Use the **launch** node name (`emt_node`, `robot_node`, `ekf_node`, …), which is what the
+parameter files key on.
 
 ## Package Documentation
 

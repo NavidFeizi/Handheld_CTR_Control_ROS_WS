@@ -34,14 +34,37 @@ When calling `ros2 param set`, use the **launch** name (`robot_node`, `gui_node`
 
 ## Launch files
 
-| File | Starts | Arguments (defaults) |
+| File | Starts | Arguments |
 |---|---|---|
-| `robot.py` | `robot_node`, `gui_node` (+5 s), `pinn_fk_node`, `ekf_node` | `Kp` 30.0, `Ki` 5.0, `maxVel` `[3.0, 0.012, 3.0, 0.012]`, `maxAcc` `[10.0, 0.10, 10.0, 0.10]`, `f_dot` 0.2 |
-| `sim.py` | `pinn_fk` as `robot_sim_node`, `ekf_node` — no hardware | same names; `f_dot` defaults to **1.0** |
-| `ekf.py` | `ekf_node` only | `f_dot` defaults to **0.1** |
+| `robot.py` | `robot_node`, `gui_node` (+5 s), `pinn_fk_node`, `ekf_node` | `Kp`, `Ki`, `maxVel`, `maxAcc`, `f_dot` |
+| `sim.py` | `pinn_fk` as `robot_sim_node`, `ekf_node` — no hardware | same names |
+| `ekf.py` | `ekf_node` only | `f_dot` |
 
-`sim.py` and `ekf.py` declare `Kp`/`Ki`/`maxVel`/`maxAcc` too, but no node in those
-files consumes them.
+The arguments mean the same thing wherever they appear:
+
+| Argument | Default | Overrides |
+|---|---|---|
+| `Kp` | *(none)* | `robot_node.Kp` |
+| `Ki` | *(none)* | `robot_node.Ki` |
+| `maxVel` | *(none)* | `robot_node.maxVel` |
+| `maxAcc` | *(none)* | `robot_node.maxAcc` |
+| `f_dot` | *(none)* | `ekf_node.f_dot` |
+
+None of these carries a default: unset they are dropped and `config/robot_params.yaml`
+supplies the value, identically for all three launch files. Pass one explicitly to
+override it for a single run:
+
+```bash
+ros2 launch robot ekf.py f_dot:=0.5
+ros2 launch robot robot.py maxVel:='[1.0, 0.006, 1.0, 0.006]'
+```
+
+Editing the YAML needs `colcon build --packages-select robot` — launch reads the
+installed `share/` copy. See [Configuration and
+parameters](../../README.md#configuration-and-parameters) for the mechanism.
+
+`sim.py` declares `Kp`/`Ki`/`maxVel`/`maxAcc` too, but no node in that file consumes
+them — it starts no `robot_node`.
 
 ### CPU pinning
 
@@ -57,8 +80,9 @@ The EKF was moved to core 3 — otherwise unused — because sharing core 7 with
 
 ## Parameters
 
-Single source of truth is `config/robot_params.yaml`; launch arguments with the same
-names override individual values.
+Single source of truth is `config/robot_params.yaml`, shared by all three launch files.
+The defaults below are the YAML's values and are what the nodes actually receive; no
+launch file shadows them.
 
 ### `robot_node`
 
@@ -188,7 +212,7 @@ conversion — so they can be tested without Torch or hardware.
   `ld.add_action(cosserat_fk_node)` line is commented out in `robot.py`; the
   PINN-based `pinn_fk` superseded it. It remains useful as a reference
   implementation — see [`ctr_cosserat`](../ctr_cosserat/README.md).
-- **`f_dot` defaults disagree across launch files**: 0.2 in `robot.py`, 1.0 in
-  `sim.py`, 0.1 in `ekf.py`. The YAML carries 0.2 and notes that `robot.py`'s
-  earlier 0.1 was lost during the refactor. Pass `f_dot:=` explicitly if the value
-  matters to your run.
+- **`f_dot` no longer disagrees across launch files.** `robot.py`, `sim.py` and
+  `ekf.py` used to hardcode 0.2 / 1.0 / 0.1 as launch-argument defaults that silently
+  beat the YAML; all three now default to unset, so every entry point gets the YAML's
+  0.2. Pass `f_dot:=` explicitly to deviate for a single run.
