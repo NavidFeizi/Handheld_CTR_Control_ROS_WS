@@ -134,6 +134,14 @@ private:
 
     // Control functions
     void control_loop();
+    // Planning is triggered implicitly by control_loop, not by any button. When one of
+    // its gates is closed nothing happens and nothing is logged, which is impossible to
+    // diagnose from the operator's seat; these name the first gate that is blocking.
+    // Each reason uses its own throttle macro call site so that a change of reason is
+    // reported promptly instead of being swallowed by a shared throttle window.
+    void reportPlannerGate(double tube_1_theta_diff, double tube_2_theta_diff,
+                           bool target_changed, bool q_changed);
+    std::string missingServicesDescription() const;
     void maybeRequestDeploymentReplan();
     void invalidateForceBaseline();
     void publish_position(const blaze::StaticVector<double, 6>& q);
@@ -171,13 +179,18 @@ private:
     int m_replan_attempts = 0;
     double m_replan_backoff_s = 2.0;
     std::string m_targets_csv = "random_interior_points.csv"; // target list in Input_Files/
+    // async_send_request has no timeout: if the planner dies mid-request m_flag_planning
+    // never clears and every deployment branch is blocked for the rest of the session.
+    double m_planner_timeout_s = 15.0;
 
     // Member variables
-    CtrlMode m_ctrl_mode, m_ctrl_mode_prev;
-    HighLvlCtrMode m_high_level_mode;
-    
+    CtrlMode m_ctrl_mode = CtrlMode::Config;
+    CtrlMode m_ctrl_mode_prev = CtrlMode::Config;
+    HighLvlCtrMode m_high_level_mode = HighLvlCtrMode::Planner;
+
     bool m_closed_loop_enabled = false;
     std::atomic<bool> m_flag_planning{false}; // written by service callbacks, read by control_loop and GUI
+    std::atomic<double> m_planner_request_time_s{0.0}; // clock seconds when m_flag_planning was raised
     std::atomic<bool> m_services_ready{false};
     rclcpp::TimerBase::SharedPtr m_readiness_timer;
     bool m_flag_planner_updated = false;
@@ -221,23 +234,39 @@ private:
     std::vector<Eigen::Vector3d> m_csv_targets;
     size_t m_csv_target_index = 0;
     
-    bool m_enabled, m_procedure, m_reached, m_encoder = false;
-    bool m_engaged, m_ready_to_engage, m_head_attached = false;
-    int m_locked;
+    // One initializer per declarator: `bool a, b, c = false;` initializes only `c`, which
+    // left m_procedure/m_reached indeterminate until the first robot_status message.
+    bool m_enabled = false;
+    bool m_procedure = false;
+    bool m_reached = false;
+    bool m_encoder = false;
+    bool m_engaged = false;
+    bool m_ready_to_engage = false;
+    bool m_head_attached = false;
+    int m_locked = 0;
     std::atomic<bool> m_robot_frozen{false};
-    bool m_flag_manual, m_flag_use_target_action, m_flag_enabled, m_trans_limit, m_trans_limit_prev = false;
+    bool m_flag_manual = false;
+    bool m_flag_use_target_action = false;
+    bool m_flag_enabled = false;
+    bool m_trans_limit = false;
+    bool m_trans_limit_prev = false;
     
     blaze::StaticVector<bool, 4UL> m_enabledJoints, m_encoderJoints, m_reachedJoints;
     // Previous enable-fault latches, for edge-triggered logging (the Status
     // topic republishes on a timer, so level-triggered would flood the log).
     std::array<bool, 4> m_enableFaultPrev = {0, 0, 0, 0};
     
-    Eigen::Matrix4d m_trans_tip;
-    Eigen::Matrix4d m_trans_probe;
-    Eigen::Vector3d m_Xd, m_Xd_prev, m_Xd_adj_prev;
-    Eigen::Vector3d m_X, m_Xsim;
+    // Eigen's default ctor leaves these uninitialized; m_Xd_prev is read by the
+    // target_changed comparison in control_loop before anything assigns it.
+    Eigen::Matrix4d m_trans_tip = Eigen::Matrix4d::Identity();
+    Eigen::Matrix4d m_trans_probe = Eigen::Matrix4d::Identity();
+    Eigen::Vector3d m_Xd = Eigen::Vector3d::Zero();
+    Eigen::Vector3d m_Xd_prev = Eigen::Vector3d::Zero();
+    Eigen::Vector3d m_Xd_adj_prev = Eigen::Vector3d::Zero();
+    Eigen::Vector3d m_X = Eigen::Vector3d::Zero();
+    Eigen::Vector3d m_Xsim = Eigen::Vector3d::Zero();
     std::mutex m_feedback_mutex; // guards m_X, m_Xsim, m_Xd, m_tip_position, m_q, m_qdot, m_current
-    Eigen::Vector3d m_tip_position;  // For CSV target error calculation
+    Eigen::Vector3d m_tip_position = Eigen::Vector3d::Zero();  // For CSV target error calculation
 
     // Force-triggered deployment replanning
     std::mutex m_force_mutex; // guards m_f_est (force subscription) AND the plan

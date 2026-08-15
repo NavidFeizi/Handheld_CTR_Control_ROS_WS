@@ -393,18 +393,9 @@ private:
         mp_table_ekf->setFixedHeight(140);
         rightLayout->addWidget(mp_table_ekf);
 
-        // --- Planner Status ---
-        QLabel *plannerTitle = new QLabel("Planner Status", this);
-        plannerTitle->setAlignment(Qt::AlignCenter);
-        rightLayout->addWidget(plannerTitle);
-
-        mp_table_planner = new QTableWidget(1, 3, this);
-        mp_table_planner->setHorizontalHeaderLabels({"Status", "Success", "IK Error"});
-        mp_table_planner->setVerticalHeaderLabels({" Planner  "});
-        mp_table_planner->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        mp_table_planner->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-        mp_table_planner->setFixedHeight(50);
-        rightLayout->addWidget(mp_table_planner);
+        // No Planner Status table here: this node has no planner client and no status
+        // source for one, so the table could only ever read "Idle / -- / --". Planner
+        // status lives in the master GUI (manager package), which owns planner/command.
 
         // --- Freeze Robot and IGTLink reconnect controls ---
         mp_freeze_button = new QPushButton("Freeze Robot", this);
@@ -479,10 +470,6 @@ private:
         mp_table_robot->setItem(0, 5, new QTableWidgetItem("--"));
         mp_table_robot->setItem(0, 6, new QTableWidgetItem("--"));
         mp_table_robot->setItem(0, 7, new QTableWidgetItem("--"));
-
-        mp_table_planner->setItem(0, 0, new QTableWidgetItem("Idle"));
-        mp_table_planner->setItem(0, 1, new QTableWidgetItem("--"));
-        mp_table_planner->setItem(0, 2, new QTableWidgetItem("--"));
 
         for (int row = 0; row < mp_table_ekf->rowCount(); ++row)
         {
@@ -643,30 +630,6 @@ private:
         mp_table_cartesian->setItem(0, 4, new QTableWidgetItem(QString::number(theta, 'f', 3)));
     }
 
-    void updateTable_PlannerStatus(bool planning, bool success, double ik_error)
-    {
-        QTableWidgetItem *status_item = new QTableWidgetItem(planning ? "Planning" : "Idle");
-        if (planning)
-        {
-            status_item->setForeground(QBrush(QColor(255, 140, 0)));
-        }
-        mp_table_planner->setItem(0, 0, status_item);
-
-        QTableWidgetItem *success_item = new QTableWidgetItem(success ? "Yes" : "No");
-        if (!success)
-        {
-            success_item->setForeground(QBrush(QColor(255, 0, 0)));
-        }
-        mp_table_planner->setItem(0, 1, success_item);
-
-        QTableWidgetItem *ik_error_item = new QTableWidgetItem(QString::number(ik_error, 'f', 4));
-        if (ik_error > 0.003)
-        {
-            ik_error_item->setForeground(QBrush(QColor(255, 0, 0)));
-        }
-        mp_table_planner->setItem(0, 2, ik_error_item);
-    }
-
     void updateTable_EkfForce(const std::array<double, 4> &force_estimate,
                               const std::array<double, 4> &position_residual,
                               const std::array<double, 4> &orientation_residual)
@@ -806,7 +769,9 @@ private:
             emit update_enable_button_Text(enabled ? "Disable" : "Enable");
 
             // --- Mode radio buttons / Trans limit radio buttons ---
-            if (mode != m_mode_prev)
+            // No mode radio is checked at construction, so the first status message must
+            // always sync even when it matches the initial m_mode_prev.
+            if (mode != m_mode_prev || !m_status_synced)
             {
                 mp_ctrl_mode_group->setExclusive(false);
                 mp_optionCtrlmMode0->setChecked(false);
@@ -837,7 +802,7 @@ private:
                 m_mode_prev = mode;
             }
 
-            if (trans_limit != m_trans_limit_prev)
+            if (trans_limit != m_trans_limit_prev || !m_status_synced)
             {
                 mp_trans_lim_group->setExclusive(false);
                 mp_optionTranLimOn->setChecked(false);
@@ -851,6 +816,8 @@ private:
                 mp_trans_lim_group->setExclusive(true);
                 m_trans_limit_prev = trans_limit;
             }
+
+            m_status_synced = true;
         },
         Qt::QueuedConnection);
 }
@@ -1049,7 +1016,12 @@ private:
         }
     }
 
-    bool m_flag_manual, m_flag_use_target_action, m_flag_enabled, m_trans_limit, m_trans_limit_prev = false;
+    // One initializer per declarator: `bool a, b, c = false;` initializes only `c`.
+    bool m_flag_manual = false;
+    bool m_flag_use_target_action = false;
+    bool m_flag_enabled = false;
+    bool m_trans_limit = false;
+    bool m_trans_limit_prev = false;
 
     // Qt related variables
     std::atomic<uint32_t> m_keysPressed{0};
@@ -1063,10 +1035,11 @@ private:
     QVBoxLayout *mp_bulletLayoutTranLim;
     QRadioButton *mp_optionTranLimOff, *mp_optionTranLimOn;
     QPushButton *mp_unlock_button, *mp_lock_button, *mp_freeze_button, *mp_connect_igtl_button;
-    QTableWidget *mp_table_joints, *mp_table_robot, *mp_table_interface, *mp_table_cartesian, *mp_table_planner, *mp_table_ekf;
+    QTableWidget *mp_table_joints, *mp_table_robot, *mp_table_interface, *mp_table_cartesian, *mp_table_ekf;
 
-    std::atomic<CtrlMode> m_mode;
-    CtrlMode m_mode_prev; // controller mode (manual, velocity, position); prev only touched by the key timer
+    std::atomic<CtrlMode> m_mode{CtrlMode::Config};
+    CtrlMode m_mode_prev = CtrlMode::Config; // controller mode; prev only touched by the key timer
+    bool m_status_synced = false;            // forces the first robot_status to sync the radios
 
     blaze::StaticVector<double, 4> m_com_vel; // Velocity vector
 
@@ -1085,10 +1058,16 @@ private:
     std::array<double, 4> m_position_residual = {0.0, 0.0, 0.0, 0.0};
     std::array<double, 4> m_orientation_residual = {0.0, 0.0, 0.0, 0.0};
 
-    bool m_enabled, m_procedure, m_reached, m_encoder = false;                                     // Tracks button state
-    bool m_engaged, m_ready_to_engage, m_head_attached = false; // Tracks button state
+    // Tracks button state; one initializer per declarator (see note above).
+    bool m_enabled = false;
+    bool m_procedure = false;
+    bool m_reached = false;
+    bool m_encoder = false;
+    bool m_engaged = false;
+    bool m_ready_to_engage = false;
+    bool m_head_attached = false;
     bool m_robot_frozen = false;
-    int m_locked;
+    int m_locked = 0;
 
     blaze::StaticVector<bool, 4UL> m_enabledJoints, m_encoderJoints, m_reachedJoints;
 

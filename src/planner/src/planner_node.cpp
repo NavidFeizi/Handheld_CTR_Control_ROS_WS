@@ -468,11 +468,14 @@ public:
 
     if (m_q_list.size() == 0)
     {
-      RCLCPP_ERROR(get_logger(), "Failed to read planned path or empty CSV");
+      // Must return: falling through published an empty Float64MultiArray, which reads
+      // downstream as a valid zero-length path rather than a failure.
+      RCLCPP_ERROR(get_logger(), "Failed to read planned path or empty CSV - not publishing a path");
       std::lock_guard<std::mutex> lock(m_feedback_mutex);
       m_q = {m_current_q[0UL], m_current_q[1UL], m_current_q[3UL], m_current_q[4UL]};
+      return;
     }
-  
+
     auto m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, step_size);
     // RCLCPP_INFO(get_logger(), "Checkpoint_1");
     // prepare message format

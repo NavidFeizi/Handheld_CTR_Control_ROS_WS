@@ -324,41 +324,120 @@ For manual joint control, set the **Control Mode** radio button to **Manual**. Y
 
 ## Launching the planner and manager
 
-1. Launch the planner node:
-   
-   Open a terminal and navigate to the workspace, then run:      
+### Which GUI owns what
+
+Two Qt windows come up, and they are not interchangeable:
+
+| Window | Package / node | Owns |
+|---|---|---|
+| **Handheld CTR** | `robot` / `gui_node` | Homing (**Find**, **Find Rotary Home**, **Go to Home**), collet engage/lock, control-mode radios, manual jogging, EM tracker + IGTLink status |
+| **Handheld CTR Master** | `manager` / `master_node` | The whole plan-and-deploy workflow: target selection, **Start Procedure**, **Auto Insert/Retract**, planner status, recording |
+
+Planner status is shown **only** in the master window.
+
+### There is no "plan" button
+
+This surprises people, so it is worth stating plainly: nothing in either GUI directly
+commands a plan. `master_node` runs a 100 ms control loop that issues
+`planner/command` by itself, but only once **every** one of these holds at the same time:
+
+| Precondition | How to satisfy it | Where it comes from |
+|---|---|---|
+| All five services up | Run all three launch files (below) | readiness timer, logs "All robot/planner/recorder services are ready" |
+| Procedure active | Click **Enable**, then **Start Procedure** | `robot_status.procedure`; Robot info table shows Procedure = ON |
+| Mode = "Select Target" | Click the **Select Target** radio | the radio maps to the internal `Planner` mode |
+| Tubes aimed at the target | Automatic — wait for the rotary joints to swing round | within 10° on both rotary joints |
+| All four joints reached | Automatic — wait for motion to settle | `robot_status.reached[0..3]` |
+| Target actually moved | Move the probe more than 2 mm, or click **Next ►** in CSV mode | compared against the last planned target |
+
+When a plan is requested you will see `Planner called.` in the `master` terminal and
+`Planning with force estimate: f = [...]` in the `planner` terminal. If neither appears,
+the master node now prints a throttled `Planner idle: <reason>` naming the gate that is
+still closed — read that line rather than guessing.
+
+### Launch sequence
+
+Bring these up in order, each in its own terminal, after the robot and tracker are
+already running and homed.
+
+1. **Planner:**
 
    ```bash
    source ./install/setup.bash
    ros2 launch planner launch.py
    ```
-   You should see in terminal: `Path Planner Node has been initialized.`
 
-2. Launch the manager node:
+   You should see: `Path Planner Node has been initialized.`
 
-   Open another terminal and navigate to the workspace, then run:
+2. **Manager:**
 
    ```bash
    source ./install/setup.bash
    ros2 launch manager launch.py
    ```
 
-   Another GUI with task-space information, robot control, and planner command buttons will appear.
+   This starts both `master` (the GUI) and `record`. The master window appears, and
+   within about a second the terminal prints:
 
-   At this stage, it is recommended to retract the linear stages to the home position and then click **Freeze Robot**. This stops updates of robot body position to mitigate EM tracking sensor deviation during robot actuation caused by magnetic interference from the middle tube stage. After clicking **Freeze Robot**, do not move the robot or the EM tracker field generator.
+   ```
+   [master_node]: All robot/planner/recorder services are ready
+   ```
 
-3. Set target, plan, and command:
+   > **This line is not optional.** `master_node` gates its *entire* control loop on all
+   > five services: `robot_config` and `robot_enable` (from `ctr_robot`), `planner/command`
+   > (from `planner`), `freeze_robot` (from **emtracker**, not the robot), and `recording`
+   > (from `record`). If any one is missing, no button and no automatic behaviour in the
+   > master GUI does anything. The terminal now names the missing service every 5 s.
 
-   1. Set the Mode to "Select Target"
-   2. "Enable" if not enabled.
-   3. "Start Procedure"
-   4. Move the probe to set the desired target position. You should see **Control Mode** change to **Position**, and the rotary joints align toward the target angle. The planner-generated path from current tip position to target is shown in 3D Slicer.
-   5. Once the path is satisfactory, change Mode to "Deployment" and click **Auto Insert** to insert all the way to the target, or use the insert/retract physical buttons on the robot for step-by-step insertion and retraction.
+3. At this stage, retract the linear stages to the home position and click **Freeze
+   Robot**. This stops updates of robot body position, mitigating EM tracking sensor
+   deviation during actuation caused by magnetic interference from the middle tube stage.
+   After clicking **Freeze Robot**, do not move the robot or the EM tracker field
+   generator.
 
-   If you want to read targets from a CSV file, use the `Toggle:xxx` button to switch from **Probe Mode** to **CSV Mode**. The system will then read targets from `Input_Files/random_interior_points.csv` one by one.
----  
+### Set target, plan, and deploy
 
+1. Click **Enable** (the button reads **Disable** once the drives are on).
+2. Click **Start Procedure**. Confirm the Robot info table shows **Procedure = ON** and
+   the robot GUI's **Control Mode** switches to **Position**. Without this step nothing
+   below has any effect.
+3. Select the **Select Target** radio.
+4. Move the probe to the desired target position. The rotary joints align toward the
+   target angle, then the planner runs and the generated path from the current tip
+   position to the target is shown in 3D Slicer.
+5. Once the path is satisfactory, switch the Mode radio to **Deployment** and click
+   **Auto Insert** to insert all the way to the target — or use the insert/retract
+   physical buttons on the robot for step-by-step motion.
+
+To read targets from a file instead of the probe, click **Toggle: Probe Mode** to switch
+to **CSV Mode**. Targets are then read one by one from
+`Input_Files/random_interior_points.csv` (set by the `targets_csv` parameter), and
+**◄ Previous** / **Next ►** step through them. CSV mode does not need the probe sensor.
+
+### Troubleshooting: "nothing happens"
+
+The master node prints a throttled reason whenever the control loop is idle. Map it as
+follows:
+
+| Message | Meaning and fix |
+|---|---|
+| `Control loop idle: waiting on services: ...` | The named node is not running. Start it; check the `planner` and `record` terminals. |
+| `Control loop idle: robot is not in Procedure` | Click **Enable**, then **Start Procedure**. |
+| `Control loop idle: high-level mode is None` | The auto test left the mode cleared. Click the **Select Target** or **Deployment** radio to re-arm. |
+| `Planner idle: rotating tubes toward the target bearing` | Normal for a few seconds. If the joints are not physically moving, a drive is not enabled — look for `drive enable fault` errors. |
+| `Planner idle: joints have not reached their targets` | Motion has not settled, or a joint is stalled/limited. The message lists which joints. |
+| `Planner idle: a plan request is still outstanding` | A solve is in flight (~3 s). If it never clears, the planner died; the request is abandoned after `planner_timeout_s` (15 s). |
+| `Planner idle: target unchanged` | Move the probe further, or use **Next ►** in CSV mode. |
+| `Could not transform robot_base to probe` | No probe sensor is tracked. Probe-mode targeting will not work; CSV mode still will. |
+
+---
 
 ## Other Useful Commands
+
+```bash
 ros2 run tf2_tools view_frames
-ros2 service call /planner/command interfaces/srv/Config "{command: 'generateTrajectory', value: 0.0}"
+
+# Request a plan by hand (target is x, y, z in metres, in the robot_base frame)
+ros2 service call /planner/command interfaces/srv/Planner \
+  "{command: 'generateTrajectory', value: [0.0, 0.0, 0.0]}"
+```

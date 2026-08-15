@@ -60,6 +60,7 @@ the nodes actually receive; the launch file does not shadow them.
 | `force_replan_threshold` | 0.12 | N — ‖f_now − f_at_plan‖ that triggers a deployment replan |
 | `replan_cooldown_s` | 2.0 | s between replan requests |
 | `min_remaining_waypoints` | 5 | Below this, a replan is not worth the pause |
+| `planner_timeout_s` | 15.0 | s to wait for a `planner/command` response before abandoning the request |
 | `targets_csv` | `random_interior_points.csv` | Target list in `<data_root>/Input_Files/` |
 | `data_root` | `""` | Empty → env `CTR_DATA_ROOT` → legacy workspace climb |
 
@@ -96,6 +97,19 @@ the nodes actually receive; the launch file does not shadow them.
 | `planner/command` | `interfaces/srv/Planner` | called by `master` |
 | `freeze_robot` | `std_srvs/srv/SetBool` | called by `master` |
 | `recording` | `interfaces/srv/Recording` | called by `master` |
+
+## How planning is triggered
+
+There is **no plan button**. `control_loop` (100 ms) issues `planner/command` on its own,
+but only when all of these hold simultaneously: the five services are ready, `m_procedure`
+is true (set by `robot_status`, i.e. after **Start Procedure**), the mode is `Planner`, both
+rotary joints are within `k_theta_threshold` (10°) of the target bearing, all four joints
+report `reached`, no request is outstanding, and the target moved more than
+`k_target_threshold` (2 mm) — or the joints moved.
+
+Each of those gates used to fail silently, which made a stalled workflow undiagnosable.
+`reportPlannerGate` / the `Control loop idle:` warnings now name the first closed gate on a
+throttle; see the troubleshooting table in the [root README](../../README.md#troubleshooting-nothing-happens).
 
 ## The deployment loop
 

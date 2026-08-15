@@ -22,6 +22,7 @@ MasterNode::MasterNode(QWidget *parent)
     m_min_remaining_waypoints =
         static_cast<size_t>(declare_parameter<int>("min_remaining_waypoints", static_cast<int>(m_min_remaining_waypoints)));
     m_targets_csv = declare_parameter<std::string>("targets_csv", m_targets_csv);
+    m_planner_timeout_s = declare_parameter<double>("planner_timeout_s", m_planner_timeout_s);
 
     m_gui_manager->initializeGui();
     initRosInterfaces();
@@ -220,7 +221,11 @@ void MasterNode::handleToggleTargetModeClicked()
         
         // Start with first target
         m_csv_target_index = 0;
-        m_Xd = m_csv_targets[m_csv_target_index];
+        {
+            // Qt thread; control_loop reads m_Xd under this mutex on an executor thread.
+            std::lock_guard<std::mutex> lock(m_feedback_mutex);
+            m_Xd = m_csv_targets[m_csv_target_index];
+        }
         
         // Publish target to task_space/target
         auto target_msg = interfaces::msg::Taskspace();
@@ -261,7 +266,11 @@ void MasterNode::handleNextTargetClicked()
     if (m_csv_target_index < m_csv_targets.size() - 1)
     {
         m_csv_target_index++;
-        m_Xd = m_csv_targets[m_csv_target_index];
+        {
+            // Qt thread; control_loop reads m_Xd under this mutex on an executor thread.
+            std::lock_guard<std::mutex> lock(m_feedback_mutex);
+            m_Xd = m_csv_targets[m_csv_target_index];
+        }
         
         // Publish target to task_space/target
         auto target_msg = interfaces::msg::Taskspace();
@@ -291,7 +300,11 @@ void MasterNode::handlePrevTargetClicked()
     if (m_csv_target_index > 0)
     {
         m_csv_target_index--;
-        m_Xd = m_csv_targets[m_csv_target_index];
+        {
+            // Qt thread; control_loop reads m_Xd under this mutex on an executor thread.
+            std::lock_guard<std::mutex> lock(m_feedback_mutex);
+            m_Xd = m_csv_targets[m_csv_target_index];
+        }
         
         // Publish target to task_space/target
         auto target_msg = interfaces::msg::Taskspace();
@@ -535,51 +548,67 @@ void MasterNode::updateForceEstimate(const interfaces::msg::Force::SharedPtr msg
 
 void MasterNode::tf2_receive_timer_callback()
 {
-    geometry_msgs::msg::TransformStamped tf2_tran;
-    std::string targetFrame = "robot_base";
-    std::string sourceFrame = "ctr_tip";
+    // The two frames are looked up independently. A missing `probe` (no probe sensor
+    // tracked - see EMtracker_node's get_probe_transform_in_em guard) used to return
+    // early and also skip the tip update below, freezing the whole Cartesian readout and
+    // breaking CSV-target mode, which needs no probe at all.
+    const std::string targetFrame = "robot_base";
 
-    try
+    const auto lookup = [this, &targetFrame](const char *sourceFrame, Eigen::Matrix4d &out,
+                                             std::string &error)
     {
-        tf2_tran = m_tf_buffer->lookupTransform(targetFrame, sourceFrame, tf2::TimePointZero);
-    }
-    catch (const tf2::TransformException &ex)
-    {
-        RCLCPP_INFO(this->get_logger(), "Could not transform %s to %s: %s",
-                    targetFrame.c_str(), sourceFrame.c_str(), ex.what());
-        return;
-    }
-    m_trans_tip = tf2::transformToEigen(tf2_tran).matrix();
+        try
+        {
+            out = tf2::transformToEigen(
+                      m_tf_buffer->lookupTransform(targetFrame, sourceFrame, tf2::TimePointZero))
+                      .matrix();
+            return true;
+        }
+        catch (const tf2::TransformException &ex)
+        {
+            error = ex.what();
+            return false;
+        }
+    };
 
-    sourceFrame = "probe";
-    try
+    std::string tip_error, probe_error;
+    const bool tip_valid = lookup("ctr_tip", m_trans_tip, tip_error);
+    const bool probe_valid = lookup("probe", m_trans_probe, probe_error);
+
+    // Logged from two distinct call sites so each frame gets its own throttle window -
+    // sharing one would let a ctr_tip failure mask a probe failure entirely. This is a
+    // 10 ms timer, so at INFO these flooded ~100 lines/s and buried everything else.
+    if (!tip_valid)
     {
-        tf2_tran = m_tf_buffer->lookupTransform(targetFrame, sourceFrame, tf2::TimePointZero);
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Could not transform robot_base to ctr_tip: %s", tip_error.c_str());
     }
-    catch (const tf2::TransformException &ex)
+    if (!probe_valid)
     {
-        RCLCPP_INFO(this->get_logger(), "Could not transform %s to %s: %s",
-                    targetFrame.c_str(), sourceFrame.c_str(), ex.what());
-        return;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Could not transform robot_base to probe: %s - probe targeting "
+                             "is unavailable; CSV target mode still works", probe_error.c_str());
     }
-    m_trans_probe = tf2::transformToEigen(tf2_tran).matrix();
 
     // Update positions
-    if (!m_test_running && !m_use_csv_target)
+    if (probe_valid && !m_test_running && !m_use_csv_target)
     {
+        Eigen::Vector3d Xd;
         {
             std::lock_guard<std::mutex> lock(m_feedback_mutex);
             m_Xd = m_trans_probe.block<3, 1>(0, 3); // target tip position
+            Xd = m_Xd;
         }
 
         // Publish target position
         auto target_msg = interfaces::msg::Taskspace();
-        target_msg.p[0] = m_Xd[0];
-        target_msg.p[1] = m_Xd[1];
-        target_msg.p[2] = m_Xd[2];
+        target_msg.p[0] = Xd[0];
+        target_msg.p[1] = Xd[1];
+        target_msg.p[2] = Xd[2];
         m_pub_task_target->publish(target_msg);
     }
 
+    if (tip_valid)
     {
         std::lock_guard<std::mutex> lock(m_feedback_mutex);
         m_X = m_trans_tip.block<3, 1>(0, 3); // Current tip position
@@ -744,6 +773,7 @@ void MasterNode::maybeRequestDeploymentReplan()
     }
 
     m_flag_planning = true; // pauses every deployment branch until the response arrives
+    m_planner_request_time_s = this->now().seconds();
     m_last_replan_request_time = this->now();
     m_replan_count++;
 
@@ -763,10 +793,103 @@ void MasterNode::maybeRequestDeploymentReplan()
     }
 }
 
+// Names the services the readiness timer is still waiting on, so a dead control loop
+// points at the node that has not come up rather than just going quiet.
+std::string MasterNode::missingServicesDescription() const
+{
+    std::string missing;
+    const auto note = [&missing](const char *name)
+    {
+        if (!missing.empty())
+            missing += ", ";
+        missing += name;
+    };
+
+    if (!m_robot_config_client->service_is_ready())
+        note("robot_config (ctr_robot)");
+    if (!m_robot_enable_client->service_is_ready())
+        note("robot_enable (ctr_robot)");
+    if (!m_planner_client->service_is_ready())
+        note("planner/command (planner)");
+    if (!m_freeze_robot_client->service_is_ready())
+        note("freeze_robot (emtracker)");
+    if (!m_recording_client->service_is_ready())
+        note("recording (record)");
+
+    return missing.empty() ? std::string("none") : missing;
+}
+
+// Called from the Planner-mode branch whenever a cycle ends without a plan request.
+// Reports the first gate that is closed, in the same order control_loop tests them.
+void MasterNode::reportPlannerGate(double tube_1_theta_diff, double tube_2_theta_diff,
+                                   bool target_changed, bool q_changed)
+{
+    constexpr auto kDeg = 180.0 / M_PI;
+
+    if (tube_1_theta_diff > k_theta_threshold || tube_2_theta_diff > k_theta_threshold)
+    {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+                             "Planner idle: rotating tubes toward the target bearing "
+                             "(off by %.1f deg and %.1f deg; both must be <= %.1f deg). "
+                             "If they are not moving, check the drives are enabled.",
+                             tube_1_theta_diff * kDeg, tube_2_theta_diff * kDeg,
+                             k_theta_threshold * kDeg);
+        return;
+    }
+
+    if (!m_reached)
+    {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+                             "Planner idle: joints have not reached their targets "
+                             "(reached = [%d %d %d %d], wire order [a1 b1 a2 b2])",
+                             static_cast<int>(m_reachedJoints[0]), static_cast<int>(m_reachedJoints[1]),
+                             static_cast<int>(m_reachedJoints[2]), static_cast<int>(m_reachedJoints[3]));
+        return;
+    }
+
+    if (m_flag_planning)
+    {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+                             "Planner idle: a plan request is still outstanding");
+        return;
+    }
+
+    if (!(target_changed || q_changed))
+    {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Planner idle: target unchanged - move the probe more than %.0f mm "
+                             "(or use Next/Previous in CSV mode) to request a new plan",
+                             k_target_threshold * 1e3);
+    }
+}
+
 void MasterNode::control_loop()
 {
     if (!m_services_ready)
+    {
+        // Gates the whole loop, including deployment and the auto test - not just planning.
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Control loop idle: waiting on services: %s",
+                             missingServicesDescription().c_str());
         return; // robot/planner/recorder services not up yet
+    }
+
+    // async_send_request never times out. Without this, a planner that dies or hangs
+    // mid-solve leaves m_flag_planning raised forever and blocks every branch below.
+    if (m_flag_planning)
+    {
+        const double outstanding_s = this->now().seconds() - m_planner_request_time_s.load();
+        if (outstanding_s > m_planner_timeout_s)
+        {
+            RCLCPP_ERROR(get_logger(),
+                         "No planner response after %.1f s (limit %.1f s) - abandoning the request. "
+                         "Check that the planner node is still alive.",
+                         outstanding_s, m_planner_timeout_s);
+            m_flag_planning = false;
+            m_planner_success = false;
+            emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
+        }
+    }
 
     // Update automated test state machine
     updateTestStateMachine();
@@ -807,7 +930,7 @@ void MasterNode::control_loop()
         {
             blaze::StaticVector<double, 6> q = blaze::StaticVector<double, 6>({m_q[1], m_q[3], 0.0, target_theta, target_theta, 0.0});
             publish_position(q);
-            // std::cout << "tube_1_theta_diff: " << tube_1_theta_diff << ", tube_2_theta_diff: " << tube_2_theta_diff << std::endl;
+            reportPlannerGate(tube_1_theta_diff, tube_2_theta_diff, target_changed, q_changed);
         }
         // If target position changed significantly, call planner to generate new path
         else
@@ -832,9 +955,14 @@ void MasterNode::control_loop()
                 m_Xd_prev = Xd;
                 m_q_prev = m_q;
                 m_flag_planning = true;
+                m_planner_request_time_s = this->now().seconds();
                 m_flag_planner_updated = true;
                 emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
                 RCLCPP_INFO(this->get_logger(), "Planner called.");
+            }
+            else
+            {
+                reportPlannerGate(tube_1_theta_diff, tube_2_theta_diff, target_changed, q_changed);
             }
         }
     }
@@ -848,7 +976,12 @@ void MasterNode::control_loop()
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
-                RCLCPP_WARN(this->get_logger(), "Adjusted deployment list is empty; cannot send positions.");
+                // Must return: the index arithmetic below computes size() - 1 on an empty
+                // vector, which underflows before being narrowed to int.
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                                     "Adjusted deployment list is empty; cannot send positions. "
+                                     "Plan a path in 'Select Target' mode first.");
+                return;
             }
 
             if (getReachStatus())
@@ -885,7 +1018,12 @@ void MasterNode::control_loop()
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
-                RCLCPP_WARN(this->get_logger(), "Adjusted deployment list is empty; cannot send positions.");
+                // Must return: the index arithmetic below computes size() - 1 on an empty
+                // vector, which underflows before being narrowed to int.
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                                     "Adjusted deployment list is empty; cannot send positions. "
+                                     "Plan a path in 'Select Target' mode first.");
+                return;
             }
 
             if (getReachStatus())
@@ -926,6 +1064,7 @@ void MasterNode::control_loop()
         if (m_reached && !m_flag_planning && (target_changed || q_changed) && !m_retracting && (Xe > (k_target_threshold / 2)))
         {
             m_flag_planning = true;
+            m_planner_request_time_s = this->now().seconds();
             emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
 
             {
@@ -956,7 +1095,12 @@ void MasterNode::control_loop()
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
-                RCLCPP_WARN(this->get_logger(), "Adjusted deployment list is empty; cannot send positions.");
+                // Must return: the index arithmetic below computes size() - 1 on an empty
+                // vector, which underflows before being narrowed to int.
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                                     "Adjusted deployment list is empty; cannot send positions. "
+                                     "Plan a path in 'Select Target' mode first.");
+                return;
             }
 
             if (getReachStatus())
@@ -1037,6 +1181,20 @@ void MasterNode::control_loop()
             }
         }
     }
+    else if (!m_procedure)
+    {
+        // Every branch above needs m_procedure, which mirrors robot_status.procedure and
+        // is set only by the robot's startProcedure (control mode -> Position).
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Control loop idle: robot is not in Procedure - press 'Enable' "
+                             "then 'Start Procedure' (Robot info table shows Procedure = ON)");
+    }
+    else
+    {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Control loop idle: high-level mode is None - click the "
+                             "'Select Target' or 'Deployment' radio to re-arm it");
+    }
 }
 
 void MasterNode::publish_position(const blaze::StaticVector<double, 6> &q)
@@ -1106,14 +1264,16 @@ void MasterNode::read_targets_from_csv(std::vector<Eigen::Vector3d> &target_list
     const std::filesystem::path file_path =
         ctr_common::resolveDataRoot(*this, "manager") / "Input_Files" / fileName;
 
+    // Clear first: returning early on a failed read used to leave the caller holding the
+    // previously loaded targets, which then looked like a successful reload.
+    target_list.clear();
+
     const auto rows = ctr_common::csv::readNumericCsv(file_path);
     if (!rows)
     {
         RCLCPP_ERROR(get_logger(), "Failed to open file: %s", file_path.c_str());
         return;
     }
-
-    target_list.clear();
 
     // Header line (x,y,z) is non-numeric and dropped by the parser.
     for (const auto &row : *rows)
@@ -1200,7 +1360,10 @@ void MasterNode::updateTestStateMachine()
         // Switch to Planner mode by clicking the radio button
         if (m_high_level_mode != HighLvlCtrMode::Planner)
         {
-            m_Xd = m_test_targets[m_current_target_index];
+            {
+                std::lock_guard<std::mutex> lock(m_feedback_mutex);
+                m_Xd = m_test_targets[m_current_target_index];
+            }
             RCLCPP_INFO(get_logger(), "[Test] Target %zu/%zu selected",
                         m_current_target_index + 1, m_test_targets.size());
             log_position(m_Xd, "Target");

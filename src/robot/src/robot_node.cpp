@@ -1553,15 +1553,23 @@ private:
   // member variables
   std::atomic<bool> m_stop_worker{false};
   std::array<bool, 4> m_enable_fault_prev = {0, 0, 0, 0}; // for edge-triggered fault logging
-  bool m_flag_manual, m_flag_use_target_action, m_trans_limit = false;
-  bool m_emtracker_alive, m_targpublisher_alive, m_targpublisher_alive_tmep = false;
-  bool m_flag_readyToEngage, m_flagEngaged, m_head_attached = false;
+  // One initializer per declarator: `bool a, b, c = false;` initializes only `c`, and a
+  // stray `true` in m_flag_manual silently drops every joint_space/target message.
+  bool m_flag_manual = false;
+  bool m_flag_use_target_action = false;
+  bool m_trans_limit = false;
+  bool m_emtracker_alive = false;
+  bool m_targpublisher_alive = false;
+  bool m_targpublisher_alive_tmep = false;
+  bool m_flag_readyToEngage = false;
+  bool m_flagEngaged = false;
+  bool m_head_attached = false;
   int m_locked = 0;
   double m_kp = 0.00, m_ki = 0.00;
   bool m_procedure = false;
   std::array<bool, 7> m_interface_key = {0, 0, 0, 0, 0, 0, 0};
   std::array<bool, 4> m_encoders_set = {0, 0, 0, 0};
-  CtrlMode m_mode; // controller mode (manual, velocity, position)
+  CtrlMode m_mode = CtrlMode::Config; // controller mode; Config is the power-on state
   size_t publisher_count;
   blaze::StaticVector<double, 4UL> m_x, m_x_des, m_x_error;           // in SI units
   blaze::StaticVector<double, 4UL> m_xdot, m_xdot_manual, m_xdot_des; // in SI units
