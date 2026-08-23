@@ -472,7 +472,12 @@ private:
     blaze::StaticVector<double, m> x;
     blaze::StaticMatrix<double, h, m, blaze::columnMajor> x_ref(0.0);
 
-    auto q_bound = m_mpc_model->getInputPosBounds();
+    // Dataset-native ranges, preserving the pre-refactor MPC constraint set exactly.
+    // NOTE: for 4 inputs the beta1 entry is the beta2-RELATIVE coupling window, not an
+    // absolute joint limit (see ctr_kinematics_pinn/dataset_bounds.hpp), so this QP
+    // bound is off by beta2. Switching to getInputPosBounds() is the correct fix but
+    // changes the constraint set and needs its own lab validation.
+    auto q_bound = m_mpc_model->getDatasetInputRanges();
     m_q_min = std::get<0UL>(q_bound);
     m_q_max = std::get<1UL>(q_bound);
 

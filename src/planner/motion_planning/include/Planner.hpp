@@ -344,6 +344,26 @@ private:
 	const Waypoints *selectBestSchedule(const std::vector<DeploymentCandidate> &candidates, bool fallbackToSynchronized,
 	                                    const char *&bestNameOut, double &bestCostOut) const;
 
+	// Renders a rejected joint vector against the active bounds. An operator reading
+	// "Start State is invalid!" cannot tell which term failed, and the β₁ bounds have
+	// silently regressed once already (see ctr_kinematics_pinn/dataset_bounds.hpp).
+	std::string describeRejectedState(const char *label, const JointVector &q) const;
+
+	// The START state is MEASURED, not sampled: it comes from live encoder feedback. The
+	// dataset's prismatic range and the stage's mechanical travel are the same interval
+	// (β₁ ∈ [-0.156, -0.064] on the handheld set), so a homed carriage sits ON the bound
+	// with sub-millimetre margin and noise can put it a hair outside. Both rejections that
+	// follow are silent: isValid() fails here, and OMPL's own start-state check ("Discarded
+	// start state") is suppressed by setLogLevel(LOG_NONE) in planner_node. Nudge the
+	// prismatic entries back inside the box and report how far; α is NEVER touched, since
+	// α₁ ∈ [α₂ - π, α₂ + π] is a hard PINN training constraint, not a box bound.
+	// Returns the largest correction applied, in metres.
+	double clampMeasuredPrismatics(JointVector &q) const;
+
+	static constexpr size_t k_numPrismatic = controlInputs / 2UL;
+	static constexpr double k_startClampWarn = 5.00E-4;  // 0.5 mm - report it
+	static constexpr double k_startClampLimit = 2.00E-3; // 2 mm - refuse instead
+
 	PINNs<controlInputs> &m_CTR_model;
 	blaze::StaticVector<double, 3UL> m_externalForce;
 	ompl::base::StateSpacePtr m_space;
@@ -443,14 +463,18 @@ template <size_t controlInputs>
 bool Planner<controlInputs>::resetStartState(const blaze::StaticVector<double, controlInputs> &q0)
 {
 	// Update our internal start‐state storage
+	JointVector q = q0;
+	if (this->clampMeasuredPrismatics(q) > k_startClampLimit)
+		throw std::runtime_error(this->describeRejectedState("New start", q0));
+
 	auto *stored = m_startState->get()->as<ompl::base::RealVectorStateSpace::StateType>();
 
 	for (size_t i = 0; i < controlInputs; ++i)
-		stored->values[i] = q0[i];
+		stored->values[i] = q[i];
 
 	// Validate start state
 	if (!m_stateValidityChecker->isValid(stored))
-		throw std::runtime_error("New start state is invalid!");
+		throw std::runtime_error(this->describeRejectedState("New start", q0));
 
 	// Clear out the old start, add the new one
 	m_pdef->clearStartStates();
@@ -492,7 +516,7 @@ bool Planner<controlInputs>::resetGoalState(const blaze::StaticVector<double, co
 		throw std::runtime_error("New goal state violates state space bounds (check alpha values)!");
 
 	if (!m_stateValidityChecker->isValid(stored))
-		throw std::runtime_error("New goal state is invalid!");
+		throw std::runtime_error(this->describeRejectedState("New goal", qf));
 
 	// Replace existing goal with the updated state
 	m_pdef->clearGoal();
@@ -544,12 +568,62 @@ bool Planner<controlInputs>::resetStartAndGoalStates(const JointVector &q0, cons
 }
 
 template <size_t controlInputs>
+double Planner<controlInputs>::clampMeasuredPrismatics(JointVector &q) const
+{
+	const auto [lb, ub] = m_CTR_model.getInputPosBounds();
+
+	double worst = 0.0;
+	for (size_t i = 0; i < k_numPrismatic; ++i)
+	{
+		const double clamped = std::clamp(q[i], lb[i], ub[i]);
+		const double correction = std::fabs(clamped - q[i]);
+		if (correction > worst)
+			worst = correction;
+
+		if (correction > k_startClampWarn && correction <= k_startClampLimit)
+		{
+			std::cout << "[Planner] measured start beta" << (i + 1) << " = " << std::fixed
+			          << std::setprecision(6) << q[i] << " m is outside ["
+			          << lb[i] << ", " << ub[i] << "] by " << (correction * 1.00E3)
+			          << " mm; clamping into bounds. A persistent offset this large means the"
+			          << " homing reference and the dataset range disagree." << std::endl;
+		}
+		q[i] = clamped;
+	}
+	return worst;
+}
+
+template <size_t controlInputs>
+std::string Planner<controlInputs>::describeRejectedState(const char *label, const JointVector &q) const
+{
+	const auto [lb, ub] = m_CTR_model.getInputPosBounds();
+	const double clr = m_CTR_model.getStageThickness();
+
+	std::ostringstream os;
+	os << std::fixed << std::setprecision(4);
+	os << label << " state is invalid! q = [";
+	for (size_t i = 0; i < controlInputs; ++i)
+		os << (i ? ", " : "") << q[i];
+	os << "]; bounds b1 = [" << lb[0UL] << ", " << ub[0UL]
+	   << "], b2 = [" << lb[1UL] << ", " << ub[1UL] << "], stage clearance = " << clr
+	   << " -> b1 must also be <= b2 - clr = " << (q[1UL] - clr);
+	if constexpr (controlInputs == 4)
+		os << ", and |a2 - a1| = " << std::fabs(q[3UL] - q[2UL]) << " must be <= pi"
+		   << " (order [b1, b2, a1, a2])";
+	return os.str();
+}
+
+template <size_t controlInputs>
 bool Planner<controlInputs>::setStartState(const blaze::StaticVector<double, controlInputs> &q_0)
 {
 	// setting the start state for the CTR robot
+	JointVector q = q_0;
+	if (this->clampMeasuredPrismatics(q) > k_startClampLimit)
+		throw std::runtime_error(this->describeRejectedState("Start", q_0));
+
 	auto *state = m_startState->get()->as<ompl::base::RealVectorStateSpace::StateType>();
 	for (size_t i = 0; i < controlInputs; ++i)
-		state->values[i] = q_0[i]; // Simplified assignment loop
+		state->values[i] = q[i]; // Simplified assignment loop
 
 	if (m_stateValidityChecker->isValid(state))
 	{
@@ -562,8 +636,7 @@ bool Planner<controlInputs>::setStartState(const blaze::StaticVector<double, con
 	}
 	else
 	{
-		throw std::runtime_error("Start State is invalid!");
-		return false;
+		throw std::runtime_error(this->describeRejectedState("Start", q_0));
 	}
 }
 
@@ -636,8 +709,7 @@ bool Planner<controlInputs>::setGoalState(const blaze::StaticVector<double, cont
 	}
 	else
 	{
-		throw std::runtime_error("Goal State is invalid!");
-		return false;
+		throw std::runtime_error(this->describeRejectedState("Goal", q_f));
 	}
 }
 

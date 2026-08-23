@@ -428,6 +428,13 @@ follows:
 | `Planner idle: joints have not reached their targets` | Motion has not settled, or a joint is stalled/limited. The message lists which joints. |
 | `Planner idle: a plan request is still outstanding` | A solve is in flight (~3 s). If it never clears, the planner died; the request is abandoned after `planner_timeout_s` (15 s). |
 | `Planner idle: target unchanged` | Move the probe further, or use **Next ►** in CSV mode. |
+| `Planner idle: last plan was rejected - retrying ...` | The planner refused the last request; the same target is re-sent after `plan_retry_cooldown_s` (5 s). The reason is on the `Plan rejected:` line just above, and in the `planner` terminal. |
+| `Plan rejected: Start state is invalid! q = [...]` | The current joint configuration is outside what the planner accepts. The message prints the live `q` and the active β₁/β₂ bounds and stage clearance — compare them: β₁ must satisfy both its own bounds and `β₁ ≤ β₂ − clearance`. |
+| `Plan rejected: IK error ... exceeds the ... limit` | A solution was found but its tip error is above `k_ik_error_threshold` (3 mm). The target is likely outside the reachable workspace. |
+| `Deployment idle: no waypoint list` | You are on the **Deployment** radio, which never requests a plan. Switch to **Select Target** and let the planner run first. |
+| `Deployment idle: holding at waypoint i/N` | Normal. Hold an insert/retract button on the robot, or click **Auto Insert** / **Auto Retract**. |
+| `Force-drift replanning suppressed after N consecutive rejections` | The planner rejected several replans in a row. Deployment continues on the previous plan; it re-arms when the drift halves or a plan is accepted. |
+| `Force-drift replanning is inactive: no plan force baseline` | A full retraction cleared the baseline. Plan again to re-establish it. |
 | `Could not transform robot_base to probe` | No probe sensor is tracked. Probe-mode targeting will not work; CSV mode still will. |
 
 ---

@@ -23,6 +23,7 @@ MasterNode::MasterNode(QWidget *parent)
         static_cast<size_t>(declare_parameter<int>("min_remaining_waypoints", static_cast<int>(m_min_remaining_waypoints)));
     m_targets_csv = declare_parameter<std::string>("targets_csv", m_targets_csv);
     m_planner_timeout_s = declare_parameter<double>("planner_timeout_s", m_planner_timeout_s);
+    m_plan_retry_cooldown_s = declare_parameter<double>("plan_retry_cooldown_s", m_plan_retry_cooldown_s);
 
     m_gui_manager->initializeGui();
     initRosInterfaces();
@@ -652,21 +653,33 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
 
     RCLCPP_INFO(this->get_logger(), "Planner bypass_error_check=%s", bypass_error_check ? "true" : "false");
     
-    if ((m_planner_success || bypass_error_check) && m_planner_ik_error < k_ik_error_threshold)
+    if (!(m_planner_success || bypass_error_check))
     {
-        if (loadPlannedPath())
-        {
-            std::lock_guard<std::mutex> lock(m_force_mutex);
-            m_f_at_plan = m_f_pending;
-            m_f_at_plan_valid = true;
-            m_replan_attempts = 0;
-            m_replan_backoff_s = m_replan_cooldown_s;
-        }
-        else
-        {
-            RCLCPP_ERROR(this->get_logger(), "Failed to load plannedPath.csv - path will be empty");
-            m_planner_success = false;
-        }
+        // The planner's own message names the gate that failed (start state, goal
+        // state, IK, or no solution) - carry it through rather than dropping it.
+        armPlanRetry(response->message);
+    }
+    else if (m_planner_ik_error >= k_ik_error_threshold)
+    {
+        // Previously silent: the planner reported success, the GUI showed success, and
+        // the path was quietly never loaded.
+        armPlanRetry("IK error " + std::to_string(m_planner_ik_error.load()) + " m exceeds the " +
+                     std::to_string(k_ik_error_threshold) + " m limit");
+        m_planner_success = false;
+    }
+    else if (loadPlannedPath())
+    {
+        m_plan_retry_armed = false;
+        std::lock_guard<std::mutex> lock(m_force_mutex);
+        m_f_at_plan = m_f_pending;
+        m_f_at_plan_valid = true;
+        m_replan_attempts = 0;
+        m_replan_backoff_s = m_replan_cooldown_s;
+    }
+    else
+    {
+        armPlanRetry("could not load plannedPath.csv - path will be empty");
+        m_planner_success = false;
     }
 
     std::this_thread::sleep_for(10ms);
@@ -749,7 +762,13 @@ void MasterNode::maybeRequestDeploymentReplan()
     {
         std::lock_guard<std::mutex> lock(m_force_mutex);
         if (!m_f_at_plan_valid)
+        {
+            // Invalidated by a full retraction; only a fresh accepted plan restores it.
+            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 10000,
+                                 "Force-drift replanning is inactive: no plan force baseline "
+                                 "(replan a path to re-establish it)");
             return;
+        }
         df = (m_f_est - m_f_at_plan).norm();
 
         // Hysteresis re-arm: once the drift recovers to half the trigger
@@ -766,7 +785,16 @@ void MasterNode::maybeRequestDeploymentReplan()
     {
         std::lock_guard<std::mutex> lock(m_force_mutex);
         if (m_replan_attempts >= k_max_replan_attempts)
-            return; // suppressed until hysteresis re-arm or an accepted plan
+        {
+            // Suppressed until hysteresis re-arm or an accepted plan. Silent until now,
+            // which is the one replan state an operator most needs to see.
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                                 "Force-drift replanning suppressed after %d consecutive "
+                                 "rejections (|df| = %.3f N); it re-arms when the drift falls "
+                                 "below %.3f N or a plan is accepted",
+                                 m_replan_attempts, df, 0.5 * m_force_replan_threshold);
+            return;
+        }
         if ((this->now() - m_last_replan_request_time).seconds() < m_replan_backoff_s)
             return;
         m_f_pending = m_f_est;
@@ -819,6 +847,55 @@ std::string MasterNode::missingServicesDescription() const
     return missing.empty() ? std::string("none") : missing;
 }
 
+// A rejected plan must not look like a satisfied gate. control_loop latches m_Xd_prev at
+// request time (that is what stops a 100 ms request storm while a solve is in flight), so
+// without this the same target is never asked for again.
+void MasterNode::armPlanRetry(const std::string &reason)
+{
+    RCLCPP_ERROR(get_logger(), "Plan rejected: %s - retrying the same target in %.1f s",
+                 reason.c_str(), m_plan_retry_cooldown_s);
+    m_plan_retry_after_s = this->now().seconds() + m_plan_retry_cooldown_s;
+    m_plan_retry_armed = true;
+}
+
+bool MasterNode::planRetryDue() const
+{
+    return m_plan_retry_armed && this->now().seconds() >= m_plan_retry_after_s.load();
+}
+
+// Called from the open-loop Deployment branch whenever a cycle sends no waypoint.
+void MasterNode::reportDeploymentGate()
+{
+    if (m_flag_planning)
+    {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+                             "Deployment idle: a plan or replan request is still outstanding");
+        return;
+    }
+
+    size_t total = 0;
+    int index = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_deploy_mutex);
+        total = m_q_list_adjusted.size();
+        index = m_current_config_index;
+    }
+
+    if (total == 0)
+    {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Deployment idle: no waypoint list. Switch to the 'Select Target' "
+                             "radio and let the planner run first - the Deployment branch never "
+                             "requests a plan by itself.");
+        return;
+    }
+
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "Deployment idle: holding at waypoint %d/%zu. Hold an insert/retract "
+                         "button on the robot, or click Auto Insert / Auto Retract.",
+                         index + 1, total);
+}
+
 // Called from the Planner-mode branch whenever a cycle ends without a plan request.
 // Reports the first gate that is closed, in the same order control_loop tests them.
 void MasterNode::reportPlannerGate(double tube_1_theta_diff, double tube_2_theta_diff,
@@ -856,6 +933,14 @@ void MasterNode::reportPlannerGate(double tube_1_theta_diff, double tube_2_theta
 
     if (!(target_changed || q_changed))
     {
+        if (m_plan_retry_armed)
+        {
+            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+                                 "Planner idle: last plan was rejected - retrying the same target "
+                                 "in %.1f s",
+                                 std::max(0.0, m_plan_retry_after_s.load() - this->now().seconds()));
+            return;
+        }
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
                              "Planner idle: target unchanged - move the probe more than %.0f mm "
                              "(or use Next/Previous in CSV mode) to request a new plan",
@@ -887,6 +972,9 @@ void MasterNode::control_loop()
                          outstanding_s, m_planner_timeout_s);
             m_flag_planning = false;
             m_planner_success = false;
+            // Same reasoning as a rejected response: the target is already latched, so
+            // without a retry this target is never asked for again.
+            armPlanRetry("planner did not respond within " + std::to_string(m_planner_timeout_s) + " s");
             emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
         }
     }
@@ -936,8 +1024,9 @@ void MasterNode::control_loop()
         else
         {
             // std::cout << "m_reached: " << m_reached << ", !m_flag_planning: " << (!m_flag_planning) << ", target_changed: " << target_changed << ", q_changed: " << q_changed << std::endl;
-            if (m_reached && (!m_flag_planning) && (target_changed || q_changed))
+            if (m_reached && (!m_flag_planning) && (target_changed || q_changed || planRetryDue()))
             {
+                m_plan_retry_armed = false;
                 {
                     std::lock_guard<std::mutex> lock(m_force_mutex);
                     m_f_pending = m_f_est; // baseline promoted to m_f_at_plan when the plan is accepted
@@ -1050,6 +1139,10 @@ void MasterNode::control_loop()
                 }
             }
         }
+        else
+        {
+            reportDeploymentGate();
+        }
     }
     else if (m_procedure && m_high_level_mode == HighLvlCtrMode::Deployment && m_closed_loop_enabled)
     {
@@ -1061,8 +1154,10 @@ void MasterNode::control_loop()
         double Xe = (X - Xd).norm();
 
         // Call planner if target changed significantly
-        if (m_reached && !m_flag_planning && (target_changed || q_changed) && !m_retracting && (Xe > (k_target_threshold / 2)))
+        if (m_reached && !m_flag_planning && (target_changed || q_changed || planRetryDue()) &&
+            !m_retracting && (Xe > (k_target_threshold / 2)))
         {
+            m_plan_retry_armed = false;
             m_flag_planning = true;
             m_planner_request_time_s = this->now().seconds();
             emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);

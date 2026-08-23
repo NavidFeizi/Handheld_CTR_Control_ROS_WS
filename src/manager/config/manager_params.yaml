@@ -6,6 +6,7 @@ master_node:
     replan_cooldown_s: 2.0         # s between replan requests
     min_remaining_waypoints: 5     # below this a replan is not worth the pause
     planner_timeout_s: 15.0        # s to wait for a planner/command response before giving up
+    plan_retry_cooldown_s: 5.0     # s before a rejected plan is re-requested for the same target
     targets_csv: "random_interior_points.csv"  # target list in <data_root>/Input_Files/
     data_root: ""                  # empty -> env CTR_DATA_ROOT -> legacy workspace climb
 

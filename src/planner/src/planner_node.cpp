@@ -299,7 +299,7 @@ public:
       }
       catch (const std::exception &e)
       {
-        std::cout << "Planning error: " << e.what() << '\n';
+        RCLCPP_ERROR(this->get_logger(), "Planning failed: %s", e.what());
         response->success = false;
         response->value = error;
         response->message = e.what();
@@ -369,7 +369,7 @@ public:
       }
       catch (const std::exception &e)
       {
-        std::cout << "Replanning error: " << e.what() << '\n';
+        RCLCPP_ERROR(this->get_logger(), "Deployment replanning failed: %s", e.what());
         response->success = false;
         response->value = 0.0;
         response->message = e.what();
@@ -377,6 +377,9 @@ public:
     }
     else
     {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Invalid planner command '%s' - expected 'generateTrajectory' or 'replanDeployment'",
+                   request->command.c_str());
       response->success = false;
       response->value = 0.0;
       response->message = "Invalid planner command";

@@ -109,15 +109,33 @@ OMPL headers must be reachable as `/usr/local/include/ompl`.
 ## Tests
 
 ```bash
-colcon test --packages-select planner --ctest-args -R test_deployment_schedule
+colcon test --packages-select planner
 ```
 
-`test/test_deployment_schedule.cpp` is pure geometry and links neither OMPL nor
-Torch: candidate start/end correctness, monotonicity and step bounds, the degenerate
-zero-displacement case, swept-cost segment summation, and empty/no-function edges.
+Two targets, neither linking OMPL or Torch:
+
+- `test/test_deployment_schedule.cpp` — pure geometry: candidate start/end correctness,
+  monotonicity and step bounds, the degenerate zero-displacement case, swept-cost segment
+  summation, and empty/no-function edges.
+- `test/test_dataset_bounds.cpp` — pins the dataset β₁ convention that
+  `ctr_kinematics_pinn::PINNs::getInputPosBounds()` feeds into this package's OMPL bounds
+  and `CTR_StateValidityChecker`. β₁ is stored *relative* to β₂; using it as an absolute
+  bound empties the admissible β₁ interval at the retracted pose and every
+  `setStartState()` throws. See `ctr_kinematics_pinn/README.md`.
 
 ## Status notes
 
 The `manual_target` service registration is commented out in `planner_node.cpp` — the
 `interfaces/srv/Config` service named `manual_target` is **not** available at runtime.
 `planner/command` is the only service this node provides.
+
+Dead inputs that mislead triage: the 50 ms tf2 timer fills `m_manual_target` and nothing
+reads it; the `task_space/feedback/base_tool` subscription fills `m_x` and nothing reads
+it; the `joint_space/target` publisher is created and never published to. The node's only
+live inputs are `joint_space/feedback`, `task_space/force_estimate`, and the service
+request itself — and neither feedback topic is checked for "never received", so a request
+that arrives before the robot is up plans from `q = 0` and `f = 0`.
+
+`igtlink_bridge` also holds a `planner/command` client, so the "single outstanding
+request" note above is enforced only by the manager. A Slicer-injected request serialises
+against the manager's in the service's (mutually exclusive) callback group.

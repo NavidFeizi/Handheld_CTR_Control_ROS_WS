@@ -46,15 +46,67 @@ zero-force overload that omits `wf`.
 | Shape | `getShape(tau[, wf], shape)` (`num_nodes × 3`); `getAllTubesShape(tau, wf)` → tuple of three matrices; `getEntireState(tau[, wf], states)` (`num_nodes × 15`) |
 | Jacobians | `jacobian(tau[, wf], J)` (3×N, autograd); `jacobianBatched(tau_batch, J)`; `jacobianFinDif(tau, J)` (central differences); `jacobian_wrt_force(tau, wf, J)` |
 | Inverse kinematics | `posCTRL(tau, target, posTol[, wf])` — resolved-rate IK, mutates `tau` in place |
-| Geometry / limits | `getArclengthEnd`, `getStraightLen`, `getOverallLen`, `getInputPosBounds()` → `(lb, ub)`, `getPrismaticJointRanges`, `getRevoluteJointRanges`, `getNumNodes`, `getStageThickness` |
+| Geometry / limits | `getArclengthEnd`, `getStraightLen`, `getOverallLen`, `getInputPosBounds()` → `(lb, ub)`, `getDatasetInputRanges()` → `(lb, ub)`, `getPrismaticJointRanges`, `getRevoluteJointRanges`, `getNumNodes`, `getStageThickness` |
 | Pseudoinverse | `pInv` (fixed 3×6) and `static pInvN<N>` (damped, λ = 1e-12) |
 
 `posCTRL` is resolved-rate with a null-space joint-limit-avoidance term and a hard
 cap of 750 iterations, so it can return without reaching `posTol` — check the
 resulting tip position if convergence matters.
 
-Note that `getPrismaticJointRanges` accounts for `beta1_range` storing offsets
-**relative to β2**, not absolute values.
+### β₁ is stored relative to β₂ — pick the right accessor
+
+In the 4-DoF datasets `parameters.json` stores `beta1_range` as an offset **relative to
+β₂**, not as an absolute bound. For the shipped handheld model that is
+`[-0.084, -0.030]` against `beta2_range = [-0.072, -0.034]`, so β₁'s absolute travel is
+`[-0.156, -0.064]` — exactly `robot_node`'s `k_home_pos[1]` … `k_pos_preEngage[1]`. The
+relative window *is* the tube-coupling window: 30 mm stage thickness at the top, the
+216 mm − 132 mm active-length difference at the bottom.
+
+Two accessors, and they are not interchangeable:
+
+| Accessor | β₁ frame | Use it when |
+|---|---|---|
+| `getInputPosBounds()` | **absolute** | you constrain a joint value directly — OMPL state-space bounds, `CTR_StateValidityChecker`, the samplers, `posCTRL`'s joint-limit avoidance |
+| `getDatasetInputRanges()` | dataset-native (**relative**) | the caller re-applies the coupling itself by shifting the window by the live β₂ — `ctr_common::clampJointPositions`, used by `pinn_fk` |
+
+`getPrismaticJointRanges` reports absolute travel and converts internally. The
+conversion itself lives in `dataset_bounds.hpp`, which is deliberately Torch-free so it
+can be unit tested (`planner`'s `test_dataset_bounds`).
+
+Mixing the two is not a rounding error: feeding the relative window in where an absolute
+bound is expected collapses β₁'s admissible interval to the empty set at the retracted
+pose, and every `setStartState()` throws `Start state is invalid!`. That was a real
+regression in this workspace — `3efc430` dropped the conversion when it merged the three
+PINN copies, and the planner could not plan from home until it was restored.
+
+### α₁ is relative to α₂ — and that one is a HARD constraint
+
+The loader prints the convention for every joint, not just β₁:
+
+```
+Dataset parameters:
+    beta1_range: beta2 + [-0.084, -0.03]
+    beta2_range: beta3 + [-0.072, -0.034]
+    alpha1_range: alpha2 + [-3.14159, 3.14159]
+    alpha2_range: alpha3 + [-6.28319, 6.28319]
+```
+
+Every range is stored relative to the next-outer tube; β₃ and α₃ are always 0, so β₂ and
+α₂ are effectively absolute and only β₁ and α₁ carry an offset.
+
+For α₁ the relative form is not a bookkeeping detail to be converted away — it is the
+constraint the model was **trained** under:
+
+> **α₂ − π ≤ α₁ ≤ α₂ + π must hold for every configuration**, everywhere: sampled states,
+> interpolated motions, IK outputs, planned waypoints, and joint targets sent to hardware.
+
+Feed the PINN a configuration outside that band and its output is not merely inaccurate,
+it is unconstrained extrapolation. Do **not** "fix" α₁'s bound the way β₁'s was fixed:
+the planner enforces the band through `CTR_StateValidityChecker`'s `conditionAngle` term
+and `CTR_DiscreteMotionValidator`, which is the correct place for a relative constraint.
+Widening α₁'s box bound would also change `m_space->getMaximumExtent()`, which sets both
+the planner's step range and `setLongestValidSegmentFraction` (`Planner.hpp:417-424`,
+`:864`) — retuning the motion validator's granularity as a side effect.
 
 ## LibTorch pin
 
@@ -93,6 +145,8 @@ by setting the owning node's `model_name` parameter.
 
 ## Tests
 
-None. Exercising this package requires LibTorch and a loaded TorchScript model, which
-the workspace's hardware- and Torch-free test suites deliberately avoid. `mpc`'s
-`test_mpc_qp` covers the QP layer by substituting a linear plant for the PINN.
+No test target in this package: exercising the inference path requires LibTorch and a
+loaded TorchScript model, which the workspace's hardware- and Torch-free test suites
+deliberately avoid. `mpc`'s `test_mpc_qp` covers the QP layer by substituting a linear
+plant for the PINN, and `planner`'s `test_dataset_bounds` covers `dataset_bounds.hpp`
+(the β₁ relative→absolute conversion), which is kept Torch-free for exactly that reason.

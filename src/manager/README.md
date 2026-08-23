@@ -61,6 +61,7 @@ the nodes actually receive; the launch file does not shadow them.
 | `replan_cooldown_s` | 2.0 | s between replan requests |
 | `min_remaining_waypoints` | 5 | Below this, a replan is not worth the pause |
 | `planner_timeout_s` | 15.0 | s to wait for a `planner/command` response before abandoning the request |
+| `plan_retry_cooldown_s` | 5.0 | s before a rejected (or timed-out) plan is re-requested for the same target |
 | `targets_csv` | `random_interior_points.csv` | Target list in `<data_root>/Input_Files/` |
 | `data_root` | `""` | Empty → env `CTR_DATA_ROOT` → legacy workspace climb |
 
@@ -118,8 +119,10 @@ throttle; see the troubleshooting table in the [root README](../../README.md#tro
 1. **The service** — `master` sends a `planner/command` request and waits. Only one
    request is outstanding at a time, by design.
 2. **The file** — `planner` writes `Shared_Files/plannedPath.csv` atomically (write
-   `.tmp`, then rename) and `master` polls for it. The atomic rename is what makes
-   the poll safe; a partially written file is never visible under the final name.
+   `.tmp`, then rename); `master` reads it once, from the service-response callback.
+   There is no polling timer: a CSV that appears without a corresponding accepted
+   response is never picked up. The atomic rename is what makes the read safe; a
+   partially written file is never visible under the final name.
 
 With a path in hand, `master` steps through the waypoints. On each step it compares
 the current EKF force estimate against the baseline captured when the plan was made.

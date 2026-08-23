@@ -20,6 +20,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ctr_kinematics_pinn/dataset_bounds.hpp"
+
 // Custom exception for parameter loading errors
 struct ParameterLoadError : public std::runtime_error
 {
@@ -250,7 +252,18 @@ public:
     // function that returns the overall lengths of the CTRcomponent tubes
     [[nodiscard]] blaze::StaticVector<double, 3UL> getOverallLen() const;
 
+    /// ABSOLUTE joint box bounds in the robot's own joint frame, ordered
+    /// [β₁, β₂, α₁, α₂] (4 inputs) or [β₁, β₂, β₃, α₁, α₂, α₃] (6 inputs).
+    /// For 4 inputs β₁ is converted out of the dataset's β₂-relative frame -- see
+    /// dataset_bounds.hpp. Use this for anything that constrains a joint value
+    /// directly (OMPL bounds, validity checks, IK joint-limit avoidance).
     [[nodiscard]] std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<double, controlInputs>> getInputPosBounds() const;
+
+    /// The training dataset's own sampling ranges, verbatim. For 4 inputs the β₁
+    /// entry is the β₂-RELATIVE coupling window, not an absolute bound. Use this
+    /// only where the caller re-applies the coupling itself by shifting the
+    /// window by the live β₂ (ctr_common::clampJointPositions).
+    [[nodiscard]] std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<double, controlInputs>> getDatasetInputRanges() const;
 
     // function that returns the number of nodes (discrete points) along the CTR backbone
     [[nodiscard]] size_t getNumNodes() const { return m_num_nodes; }
@@ -1074,12 +1087,12 @@ blaze::StaticVector<double, 3UL> PINNs<controlInputs>::getOverallLen() const
 }
 
 template <size_t controlInputs>
-std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<double, controlInputs>> PINNs<controlInputs>::getInputPosBounds() const
+std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<double, controlInputs>> PINNs<controlInputs>::getDatasetInputRanges() const
 {
     blaze::StaticVector<double, controlInputs> lb;
     blaze::StaticVector<double, controlInputs> ub;
 
-    if (controlInputs == 6)
+    if constexpr (controlInputs == 6)
     {
         lb[0UL] = m_dataset_params.beta1_range[0];
         lb[1UL] = m_dataset_params.beta2_range[0];
@@ -1095,7 +1108,7 @@ std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<doubl
         ub[4UL] = m_dataset_params.alpha2_range[1];
         ub[5UL] = m_dataset_params.alpha3_range[1];
     }
-    else if (controlInputs == 4)
+    else if constexpr (controlInputs == 4)
     {
         lb[0UL] = m_dataset_params.beta1_range[0];
         lb[1UL] = m_dataset_params.beta2_range[0];
@@ -1111,6 +1124,26 @@ std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<doubl
     return std::make_tuple(lb, ub);
 }
 
+template <size_t controlInputs>
+std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<double, controlInputs>> PINNs<controlInputs>::getInputPosBounds() const
+{
+    auto [lb, ub] = this->getDatasetInputRanges();
+
+    if constexpr (controlInputs == 4)
+    {
+        // beta1_range is stored RELATIVE to beta2 in the 4-DoF datasets, so the
+        // absolute box bound has to be recovered before use. Dropping this
+        // conversion empties the reachable beta1 interval at the retracted pose,
+        // and every setStartState() throws "Start State is invalid!".
+        const auto beta1 = ctr_kinematics_pinn::absoluteBeta1Range(m_dataset_params.beta1_range,
+                                                                   m_dataset_params.beta2_range);
+        lb[0UL] = beta1[0UL];
+        ub[0UL] = beta1[1UL];
+    }
+
+    return std::make_tuple(lb, ub);
+}
+
 // ---------------- grafted from the planner fork (PINNs.hpp) ----------------//
 
 template <size_t controlInputs>
@@ -1119,10 +1152,12 @@ blaze::StaticVector<double, controlInputs> PINNs<controlInputs>::getPrismaticJoi
     // Packed as [min, max] pairs per actuated prismatic joint.
     if constexpr (controlInputs == 4)
     {
-        // beta1_range stores RELATIVE offsets from beta2 (see getInputPosBounds).
+        // beta1_range stores RELATIVE offsets from beta2 (see dataset_bounds.hpp);
+        // this getter reports absolute travel, so convert.
+        const auto beta1 = ctr_kinematics_pinn::absoluteBeta1Range(m_dataset_params.beta1_range,
+                                                                   m_dataset_params.beta2_range);
         return {
-            m_dataset_params.beta2_range[0UL] + m_dataset_params.beta1_range[0UL],
-            m_dataset_params.beta2_range[1UL] + m_dataset_params.beta1_range[1UL],
+            beta1[0UL], beta1[1UL],
             m_dataset_params.beta2_range[0UL], m_dataset_params.beta2_range[1UL]};
     }
     else
@@ -1284,7 +1319,8 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     const blaze::StaticVector<double, 3UL> Ls = this->getStraightLen();
     const double stageThickness               = this->getStageThickness();
 
-    // Absolute prismatic-joint bounds from the training dataset
+    // Absolute prismatic-joint bounds (beta1 already converted out of the
+    // dataset's beta2-relative frame -- see dataset_bounds.hpp)
     const auto [lb, ub] = this->getInputPosBounds();
 
     // Prismatic joint limit vectors (controlInputs-sized; revolute slots stay 0)
@@ -1378,7 +1414,9 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         // ---- Layout-specific: angle wrapping ----
         if constexpr (controlInputs == 4)
         {
-            // α₁ ∈ [−π, π] 
+            // α₁ wrapped first; α₂'s window is anchored to the already-wrapped α₁, which
+            // is what keeps the hard constraint α₂ − π ≤ α₁ ≤ α₂ + π true every iteration.
+            // α₁ ∈ [−π, π]
             tau[2UL] = wrapToRange(tau[2UL], -M_PI, M_PI);
             // α₂ ∈ [α₁ − π, α₁ + π]
             tau[3UL] = wrapToRange(tau[3UL], tau[2UL] - M_PI, tau[2UL] + M_PI);
@@ -1389,10 +1427,14 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             tau[2UL] = 0.00;
             // α₃ (outermost tube) remains unactuated
             tau[5UL] = 0.00;
+            // Order matters, and it is the reverse of what reads naturally: α₁ must be
+            // wrapped FIRST, because α₂'s window is anchored to it. Anchoring α₂ to the
+            // un-wrapped α₁ and then shifting α₁ by 2πk leaves |α₁ − α₂| up to 3π, which
+            // breaks the hard PINN training constraint α₂ − π ≤ α₁ ≤ α₂ + π.
+            // α₁ ∈ [−π, π]
+            tau[3UL] = wrapToRange(tau[3UL], -M_PI, M_PI);
             // α₂ ∈ [α₁ − π, α₁ + π]
             tau[4UL] = wrapToRange(tau[4UL], tau[3UL] - M_PI, tau[3UL] + M_PI);
-            // α₁ ∈ [−π, π] 
-            tau[3UL] = wrapToRange(tau[3UL], -M_PI, M_PI);
         }
 
         // tip position as predicted by the model

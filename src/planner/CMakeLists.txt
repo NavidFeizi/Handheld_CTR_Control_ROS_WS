@@ -102,6 +102,15 @@ if(BUILD_TESTING)
   # Pure geometry — no OMPL/Torch link needed.
   ament_add_gtest(test_deployment_schedule test/test_deployment_schedule.cpp)
   target_include_directories(test_deployment_schedule PRIVATE motion_planning/include)
+
+  # Pins the dataset beta1 convention the OMPL bounds/validity checker depend on.
+  # dataset_bounds.hpp is deliberately Torch-free, so no PINN link is needed.
+  ament_add_gtest(test_dataset_bounds test/test_dataset_bounds.cpp)
+  # Include path only, never the link interface: linking the PINN target would drag
+  # LibTorch into a test suite that is Torch-free by design.
+  get_target_property(_pinn_include_dirs ctr_kinematics_pinn::ctr_kinematics_pinn
+                      INTERFACE_INCLUDE_DIRECTORIES)
+  target_include_directories(test_dataset_bounds PRIVATE ${_pinn_include_dirs})
 endif()
 
 ament_package()

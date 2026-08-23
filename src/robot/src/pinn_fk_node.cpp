@@ -184,7 +184,10 @@ public:
     RCLCPP_INFO(this->get_logger(), "Model: %s, Backbone Points: %zu", m_model_name.c_str(), m_backbonePoints);
     m_ctr_pinns = std::make_shared<PINNs<N>>(ctr_common::resolveModelsDir(*this).string(), m_model_name, 1UL, m_backbonePoints);
 
-    std::tie(m_q_min, m_q_max) = m_ctr_pinns->getInputPosBounds();
+    // Dataset-native ranges: clampJointPositions() re-applies the tube coupling by
+    // shifting beta1's window by the live beta2, so it needs the RELATIVE window,
+    // not the absolute box bound getInputPosBounds() returns.
+    std::tie(m_q_min, m_q_max) = m_ctr_pinns->getDatasetInputRanges();
 
     // warm up the model
     blaze::StaticVector<double, M> x;

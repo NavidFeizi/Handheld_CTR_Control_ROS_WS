@@ -24,6 +24,7 @@
 #include "tf2/exceptions.h"
 #include "tf2_eigen/tf2_eigen.hpp"
 
+#include <algorithm>
 #include <vector>
 #include <array>
 #include <memory>
@@ -141,7 +142,15 @@ private:
     // reported promptly instead of being swallowed by a shared throttle window.
     void reportPlannerGate(double tube_1_theta_diff, double tube_2_theta_diff,
                            bool target_changed, bool q_changed);
+    // True once a rejected plan's cooldown has elapsed, so the same target is retried.
+    bool planRetryDue() const;
+    // Deployment's counterpart to reportPlannerGate. Without it the Deployment branch
+    // falls through every condition and logs nothing, so "waiting for the operator" and
+    // "the control loop is dead" look identical from the terminal.
+    void reportDeploymentGate();
     std::string missingServicesDescription() const;
+    // Arms the cooldown retry and says why the plan was dropped. `reason` is logged verbatim.
+    void armPlanRetry(const std::string &reason);
     void maybeRequestDeploymentReplan();
     void invalidateForceBaseline();
     void publish_position(const blaze::StaticVector<double, 6>& q);
@@ -182,6 +191,10 @@ private:
     // async_send_request has no timeout: if the planner dies mid-request m_flag_planning
     // never clears and every deployment branch is blocked for the rest of the session.
     double m_planner_timeout_s = 15.0;
+    // A rejected plan latches m_Xd_prev just like an accepted one, so without a retry the
+    // loop reports "target unchanged" for the rest of the session unless the operator moves
+    // the probe. Re-arm the same target after this cooldown instead of going quiet.
+    double m_plan_retry_cooldown_s = 5.0;
 
     // Member variables
     CtrlMode m_ctrl_mode = CtrlMode::Config;
@@ -196,6 +209,10 @@ private:
     bool m_flag_planner_updated = false;
     std::atomic<bool> m_planner_success{false};
     std::atomic<double> m_planner_ik_error{0.0};
+    // Set by the response handlers when a plan is rejected; consumed by control_loop as an
+    // extra request trigger once the cooldown has elapsed.
+    std::atomic<bool> m_plan_retry_armed{false};
+    std::atomic<double> m_plan_retry_after_s{0.0};
     
     blaze::StaticVector<double, 4> m_com_vel;
     blaze::StaticVector<double, 4UL> m_q, m_q_des, m_q_error, m_q_abs, m_q_prev;
