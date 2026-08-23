@@ -49,9 +49,36 @@ zero-force overload that omits `wf`.
 | Geometry / limits | `getArclengthEnd`, `getStraightLen`, `getOverallLen`, `getInputPosBounds()` → `(lb, ub)`, `getDatasetInputRanges()` → `(lb, ub)`, `getPrismaticJointRanges`, `getRevoluteJointRanges`, `getNumNodes`, `getStageThickness` |
 | Pseudoinverse | `pInv` (fixed 3×6) and `static pInvN<N>` (damped, λ = 1e-12) |
 
-`posCTRL` is resolved-rate with a null-space joint-limit-avoidance term and a hard
-cap of 750 iterations, so it can return without reaching `posTol` — check the
-resulting tip position if convergence matters.
+`posCTRL` is resolved-rate with a null-space joint-limit-avoidance term. It is
+**best-effort and returns `void`**: on failure it silently writes back the
+closest-seen configuration, so callers must check the resulting tip position if
+convergence matters (`Planner::solveInverseKinematics` does this and returns a
+`bool`).
+
+Its budget is a **total of 3000 descent steps** per call, split into attempts of
+at most 750 (the historical cap). When an attempt stalls — the resolved rate
+falls below `linfNorm(dtau_dt) ≤ 1e-6` — it is abandoned and the joint vector is
+re-seeded from a random feasible configuration, up to 3 extra seeds. A single
+resolved-rate descent is a local method, so a poor initial guess cannot be
+rescued by more steps in the same basin; re-seeding is what actually reaches
+distant targets. The best-seen configuration is tracked across *all* attempts, so
+re-seeding can never return a worse answer than a single descent would have.
+
+Re-seeding is **deterministic**: the RNG is function-local with a fixed seed, so
+the same target from the same initial guess always yields the same joint vector.
+Do not make that seed time- or state-dependent — two identical plan requests
+would then deploy the robot differently.
+
+The integral term is anti-windup limited: integration freezes while a prismatic
+joint is saturated against its limit, and the accumulator is capped so `ki·∫e`
+cannot outgrow `kp·e`. Without this the descent limit-cycles rather than
+converging, and a larger iteration budget just buys more oscillation.
+
+Cost per step is one `jacobian` (a TorchScript forward plus three autograd
+backward passes) and one `getPosDistal`, so worst-case latency scales linearly in
+the total budget. `planner_node` prints `IK time:` for every solve; keep it well
+under the manager's `planner_timeout_s` (15 s), which also has to cover the OMPL
+solve.
 
 ### β₁ is stored relative to β₂ — pick the right accessor
 

@@ -389,26 +389,45 @@ public:
   // Service callback to triget tasks, enable, and control mode section
   double inverseKin(const blaze::StaticVector<double, 3UL> &target, blaze::StaticVector<double, 4UL> &q, const blaze::StaticVector<double, 3UL> &force)
   {
-    // run IK to compute q_final
-    constexpr double posTolerance = 5.00E-4;
+    // run IK to compute q_final. 1 mm, not the tighter 0.5 mm this used to ask
+    // for: the extra 0.5 mm is well inside the manager's own 3 mm acceptance gate
+    // (k_ik_error_threshold), so a solve that lands between 0.5 and 1 mm is a
+    // perfectly plannable target and should be reported as converged rather than
+    // ground on until the iteration budget runs out.
+    constexpr double posTolerance = 1.00E-3;
     blaze::StaticVector<double, 3UL> tipPosition;
 
     std::cout << "\nRunning IK..." << std::endl;
     auto start = std::chrono::high_resolution_clock::now();
     // force-aware IK: uses the force registered via setCTR_externalForce()
-    m_motionPlan.solveInverseKinematics(q, target, posTolerance);
+    const bool converged = m_motionPlan.solveInverseKinematics(q, target, posTolerance);
     auto end = std::chrono::high_resolution_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
     std::cout << "IK time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
 
     m_ctr_pinn.getPosDistal(q, force, tipPosition);
+    const double residual = blaze::norm(target - tipPosition);
     std::cout << "CTR target joints are: q = " << blaze::trans(q)
               << "target: " << blaze::trans(target)
               << "tip position (after IK): " << blaze::trans(tipPosition)
-              << "error: " << blaze::norm(target - tipPosition) * 1.00E3 << " mm\n"
+              << "error: " << residual * 1.00E3 << " mm\n"
               << std::endl;
 
-    return blaze::norm(target - tipPosition);
+    // posCTRL is best-effort: it returns its closest-seen configuration without
+    // signalling failure. Planning still proceeds with that configuration (as it
+    // always has), but a miss must be visible in the ROS log -- the manager
+    // silently rejects any plan whose residual exceeds its own 3 mm gate
+    // (k_ik_error_threshold, manager/include/manager/master_node.hpp).
+    if (!converged)
+    {
+      RCLCPP_WARN(this->get_logger(),
+                  "IK did not converge in %.3f s: residual %.3f mm (tol %.3f mm) for target [%.4f, %.4f, %.4f] "
+                  "- the manager rejects plans above 3.000 mm",
+                  elapsed * 1.00E-3, residual * 1.00E3, posTolerance * 1.00E3,
+                  target[0UL], target[1UL], target[2UL]);
+    }
+
+    return residual;
   }
 
   // Service callback to triget tasks, enable, and control mode section

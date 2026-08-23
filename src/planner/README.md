@@ -139,3 +139,17 @@ that arrives before the robot is up plans from `q = 0` and `f = 0`.
 `igtlink_bridge` also holds a `planner/command` client, so the "single outstanding
 request" note above is enforced only by the manager. A Slicer-injected request serialises
 against the manager's in the service's (mutually exclusive) callback group.
+
+IK non-convergence now warns. `inverseKin` uses the `bool` from
+`Planner::solveInverseKinematics` and logs an `RCLCPP_WARN` with the residual when the
+solve misses its 1 mm tolerance; planning still proceeds with the best-effort
+configuration, exactly as before. The residual is also `response->value`, and
+`manager/master` rejects the plan outright above 3 mm (`k_ik_error_threshold`), so that
+warning is the first place a "target unreachable" retry loop shows up.
+
+IK latency is **not** covered by `solve_time` — it is additive to the service
+round-trip, and `posCTRL`'s budget is up to 3000 descent steps
+(`ctr_kinematics_pinn/README.md`). Worst-case planning is 1.5 × `solve_time`, and the
+manager gives up after `planner_timeout_s` (15 s), after which the planner keeps
+computing and answers a request nobody is waiting for. Watch the `IK time:` line if
+either budget is raised.

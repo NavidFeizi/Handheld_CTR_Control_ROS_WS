@@ -17,6 +17,10 @@
 #include <vector>
 #include <type_traits>
 #include <iomanip>
+#include <algorithm>
+#include <cstdint>
+#include <random>
+#include <tuple>
 
 #include <nlohmann/json.hpp>
 
@@ -1258,7 +1262,6 @@ template <size_t controlInputs>
 void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target, const double posTol,
                                    const blaze::StaticVector<double, kForceDim> &wf)
 {
-    double minError = 1.00E3;                                                                    // minimum distance to target
     blaze::StaticMatrix<double, 3UL, controlInputs, blaze::columnMajor> J;                       // Jacobian matrix (3 × controlInputs)
     blaze::StaticMatrix<double, controlInputs, 3UL, blaze::columnMajor> J_inv;                   // Jacobian pseudoinverse (controlInputs × 3)
     const blaze::IdentityMatrix<double, blaze::columnMajor> I(controlInputs);                    // Identity matrix
@@ -1281,9 +1284,40 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         {0.00, kd, 0.00},
         {0.00, 0.00, kd}};
 
-    // Capturing the CTR's current joint configuration
-    blaze::StaticVector<double, controlInputs> dtau_dt, tau_min(tau);
+    // ---------------- iteration budget ----------------
+    // TOTAL number of descent steps this call may spend, summed over the initial
+    // attempt and every re-seeded retry. This is the knob that bounds latency:
+    // each step costs one Jacobian (a TorchScript forward plus three autograd
+    // backward passes) and one forward pass.
+    static constexpr size_t maxIter = 3000UL;
+    // Per-attempt cap, deliberately the historical value. A single descent
+    // therefore gets exactly the budget it always had; the rest of maxIter funds
+    // re-seeds instead of letting one stuck attempt burn everything.
+    static constexpr size_t maxIterPerTry = 750UL;
+    // Extra seeds tried after the caller's initial guess.
+    static constexpr size_t maxRestarts = 3UL;
+    // Fixed RNG seed. Re-seeding has to be reproducible: the same target from the
+    // same initial guess must always return the same joint vector, or two
+    // identical plan requests would deploy the robot differently.
+    static constexpr std::uint32_t restartSeed = 0x5EEDU;
+    // parameters for local optimization (joint limits avoidance)
+    static constexpr double ke = 4.00;
+    // Anti-windup ceiling on the integral term's contribution to the commanded
+    // tip rate [m]. The accumulator is otherwise unbounded, and once ki * ∫e
+    // outgrows kp * e the descent limit-cycles instead of converging -- so extra
+    // iterations would buy oscillation rather than accuracy.
+    static constexpr double integralTipCap = 2.00E-3;
+    static constexpr double iLim = integralTipCap / ki;
 
+    constexpr size_t nPrismatic = controlInputs / 2UL;
+
+    // Best-seen configuration across ALL attempts. Hoisting this out of the retry
+    // loop is what makes re-seeding safe: the value written back at the end can
+    // never be worse than what a single descent would have produced.
+    double minError = 1.00E3;
+    blaze::StaticVector<double, controlInputs> tau_min(tau);
+
+    blaze::StaticVector<double, controlInputs> dtau_dt;
     blaze::StaticVector<double, 3UL> x_CTR;
 
     this->getPosDistal(tau, wf, x_CTR);
@@ -1308,23 +1342,53 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     // only the prismatic-joint entries are filled each iteration.
     blaze::StaticVector<double, controlInputs> f{0.0};
 
-    // iterations counter
-    size_t N_itr = 0UL;
-    // maximum admissible number of iterations in the position control loop
-    static constexpr size_t maxIter = 750UL;
-    // parameters for local optimization (joint limits avoidance)
-    static constexpr double ke = 4.00;
-
     const blaze::StaticVector<double, 3UL> L  = this->getOverallLen();
     const blaze::StaticVector<double, 3UL> Ls = this->getStraightLen();
     const double stageThickness               = this->getStageThickness();
 
     // Absolute prismatic-joint bounds (beta1 already converted out of the
-    // dataset's beta2-relative frame -- see dataset_bounds.hpp)
-    const auto [lb, ub] = this->getInputPosBounds();
+    // dataset's beta2-relative frame -- see dataset_bounds.hpp). Bound to plain
+    // references rather than a structured binding: capturing a structured binding
+    // in a lambda is only well-formed from C++20, and this is a C++17 workspace.
+    const auto inputPosBounds = this->getInputPosBounds();
+    const blaze::StaticVector<double, controlInputs> &lb = std::get<0UL>(inputPosBounds);
+    const blaze::StaticVector<double, controlInputs> &ub = std::get<1UL>(inputPosBounds);
 
-    // Prismatic joint limit vectors (controlInputs-sized; revolute slots stay 0)
-    blaze::StaticVector<double, controlInputs> betaMin{0.0}, betaMax{0.0};
+    // Prismatic joint limit vectors, recomputed every iteration because the
+    // tube-ordering constraints couple each joint's window to its neighbours'.
+    blaze::StaticVector<double, nPrismatic> betaMin, betaMax;
+
+    // Single definition of the coupling algebra, shared by the descent and by the
+    // re-seeding step so the two can never drift apart.
+    auto computeBetaBounds = [&](const blaze::StaticVector<double, controlInputs> &tauCur,
+                                 blaze::StaticVector<double, nPrismatic> &bMin,
+                                 blaze::StaticVector<double, nPrismatic> &bMax)
+    {
+        if constexpr (controlInputs == 4)
+        {
+            // 2 prismatic joints: tauCur[0] = β₁ (inner), tauCur[1] = β₂ (middle)
+            // Outermost tube is static at β₃ = 0.
+            const double b1 = tauCur[0UL], b2 = tauCur[1UL];
+
+            bMin[0UL] = std::max({lb[0UL], L[1UL] + b2 - L[0UL], L[2UL] - L[0UL]});
+            bMin[1UL] = std::max({lb[1UL], b1 + stageThickness, L[2UL] - L[1UL]});
+
+            bMax[0UL] = std::min(ub[0UL], b2 - stageThickness);
+            bMax[1UL] = std::min(-stageThickness, L[0UL] + b1 - L[1UL]); // β₃ = 0 ⟹ upper = 0 - stageThickness
+        }
+        else // controlInputs == 6
+        {
+            // 3 prismatic joints: tauCur[0]=β₁, tauCur[1]=β₂, tauCur[2]=β₃(static)
+            const double b1 = tauCur[0UL], b2 = tauCur[1UL], b3 = tauCur[2UL];
+
+            bMin[0UL] = std::max({-Ls[0UL], L[1UL] + b2 - L[0UL], L[2UL] + b3 - L[0UL]});
+            bMin[1UL] = std::max({-Ls[1UL], b1 + stageThickness, L[2UL] + b3 - L[1UL]});
+            bMin[2UL] = std::max(-Ls[2UL], b2 + stageThickness);
+            bMax[0UL] = b2 - stageThickness;
+            bMax[1UL] = std::min(b3 - stageThickness, L[0UL] + b1 - L[1UL]);
+            bMax[2UL] = std::min(L[1UL] + b2 - L[2UL], L[0UL] + b1 - L[2UL]);
+        }
+    };
 
     // Helper: wrap an angle to any [low, high) interval
     auto wrapToRange = [](double theta, double low, double high) -> double
@@ -1334,135 +1398,194 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         return low + (theta - low) - width * std::floor((theta - low) * inv_width);
     };
 
-    // position control loop
-    while ((dist2Tgt > posTol) && (N_itr < maxIter))
+    // Enforce the revolute-joint invariants the PINN was trained under. Order
+    // matters, and it is the reverse of what reads naturally: α₁ must be wrapped
+    // FIRST, because α₂'s window is anchored to it. Anchoring α₂ to the un-wrapped
+    // α₁ and then shifting α₁ by 2πk leaves |α₁ − α₂| up to 3π, which breaks the
+    // hard training constraint α₂ − π ≤ α₁ ≤ α₂ + π.
+    auto wrapAngles = [&](blaze::StaticVector<double, controlInputs> &tauCur)
     {
-        // incrementing the number of iterations
-        N_itr++;
-
-        // compute the Jacobian in the present configuration
-        this->getPosDistal(tau, wf, x_CTR);
-        this->jacobian(tau, wf, J);
-
-        // Pseudo-inverse of Jacobian for resolving CTR joint motion rates
-        J_inv = PINNs<controlInputs>::pInvN(J);
-
-        // ---- Layout-specific: compute betaMin/betaMax and nullspace gradient ----
         if constexpr (controlInputs == 4)
         {
-            // 2 prismatic joints: tau[0] = β₁ (inner), tau[1] = β₂ (middle)
-            // Outermost tube is static at β₃ = 0.
-            blaze::StaticVector<double, 2UL> beta{tau[0UL], tau[1UL]};
-            blaze::StaticVector<double, 2UL> bMin, bMax;
-
-            bMin[0UL] = std::max({lb[0UL], L[1UL] + beta[1UL] - L[0UL], L[2UL] - L[0UL]});
-            bMin[1UL] = std::max({lb[1UL], beta[0UL] + stageThickness, L[2UL] - L[1UL]});
-
-            bMax[0UL] = std::min(ub[0UL], beta[1UL] - stageThickness);            
-            bMax[1UL] = std::min( -stageThickness, L[0UL] + beta[0UL] - L[1UL]); // β₃ = 0 ⟹ upper = 0 - stageThickness
-
-            betaMin[0UL] = bMin[0UL]; betaMin[1UL] = bMin[1UL];
-            betaMax[0UL] = bMax[0UL]; betaMax[1UL] = bMax[1UL];
-
-            auto f1 = blaze::subvector<0UL, 2UL>(f);
-            f1 = blaze::pow(blaze::abs((bMax + bMin - 2.00 * beta) / (bMax - bMin + 1.00E-10)), ke)
-               * blaze::sign(beta - (bMax + bMin) * 0.50);
-        }
-        else // controlInputs == 6
-        {
-            // 3 prismatic joints: tau[0]=β₁, tau[1]=β₂, tau[2]=β₃(static)
-            blaze::StaticVector<double, 3UL> beta{tau[0UL], tau[1UL], tau[2UL]};
-            blaze::StaticVector<double, 3UL> bMin, bMax;
-
-            bMin[0UL] = std::max({-Ls[0UL], L[1UL] + beta[1UL] - L[0UL], L[2UL] + beta[2UL] - L[0UL]});
-            bMin[1UL] = std::max({-Ls[1UL], beta[0UL] + stageThickness, L[2UL] + beta[2UL] - L[1UL]});
-            bMin[2UL] = std::max(-Ls[2UL], beta[1UL] + stageThickness);
-            bMax[0UL] = beta[1UL] - stageThickness;
-            bMax[1UL] = std::min(beta[2UL] - stageThickness, L[0UL] + beta[0UL] - L[1UL]);
-            bMax[2UL] = std::min(L[1UL] + beta[1UL] - L[2UL], L[0UL] + beta[0UL] - L[2UL]);
-
-            betaMin[0UL] = bMin[0UL]; betaMin[1UL] = bMin[1UL]; betaMin[2UL] = bMin[2UL];
-            betaMax[0UL] = bMax[0UL]; betaMax[1UL] = bMax[1UL]; betaMax[2UL] = bMax[2UL];
-
-            auto f1 = blaze::subvector<0UL, 3UL>(f);
-            f1 = blaze::pow(blaze::abs((bMax + bMin - 2.00 * beta) / (bMax - bMin + 1.00E-10)), ke)
-               * blaze::sign(beta - (bMax + bMin) * 0.50);
-        }
-
-        // Resolved rates with null-space local optimization (joint-limit avoidance).
-        dtau_dt = J_inv * (Kp * tipError + Kd * d_tipError + Ki * int_tipError) + (I - blaze::trans(J_inv * J)) * (-f);
-
-        // rescaling linear joint variables for limit avoidance
-        // nPrismatic = controlInputs/2: 2 for 4-DoF, 3 for 6-DoF
-        constexpr size_t nPrismatic = controlInputs / 2UL;
-        for (size_t i = 0; i < nPrismatic; ++i)
-        {
-            const double proposed = tau[i] + dtau_dt[i];
-            if (proposed > betaMax[i])
-            {
-                dtau_dt[i] = (betaMax[i] - tau[i]) * 0.50;
-            }
-            else if (proposed < betaMin[i])
-            {
-                dtau_dt[i] = (betaMin[i] - tau[i]) * 0.50;
-            }
-        }
-
-        // updating the CTR joints: q = [beta, theta]
-        tau += dtau_dt;
-
-        // ---- Layout-specific: angle wrapping ----
-        if constexpr (controlInputs == 4)
-        {
-            // α₁ wrapped first; α₂'s window is anchored to the already-wrapped α₁, which
-            // is what keeps the hard constraint α₂ − π ≤ α₁ ≤ α₂ + π true every iteration.
             // α₁ ∈ [−π, π]
-            tau[2UL] = wrapToRange(tau[2UL], -M_PI, M_PI);
+            tauCur[2UL] = wrapToRange(tauCur[2UL], -M_PI, M_PI);
             // α₂ ∈ [α₁ − π, α₁ + π]
-            tau[3UL] = wrapToRange(tau[3UL], tau[2UL] - M_PI, tau[2UL] + M_PI);
+            tauCur[3UL] = wrapToRange(tauCur[3UL], tauCur[2UL] - M_PI, tauCur[2UL] + M_PI);
         }
         else // controlInputs == 6
         {
             // β₃ (outermost tube) remains unactuated
-            tau[2UL] = 0.00;
+            tauCur[2UL] = 0.00;
             // α₃ (outermost tube) remains unactuated
-            tau[5UL] = 0.00;
-            // Order matters, and it is the reverse of what reads naturally: α₁ must be
-            // wrapped FIRST, because α₂'s window is anchored to it. Anchoring α₂ to the
-            // un-wrapped α₁ and then shifting α₁ by 2πk leaves |α₁ − α₂| up to 3π, which
-            // breaks the hard PINN training constraint α₂ − π ≤ α₁ ≤ α₂ + π.
+            tauCur[5UL] = 0.00;
             // α₁ ∈ [−π, π]
-            tau[3UL] = wrapToRange(tau[3UL], -M_PI, M_PI);
+            tauCur[3UL] = wrapToRange(tauCur[3UL], -M_PI, M_PI);
             // α₂ ∈ [α₁ − π, α₁ + π]
-            tau[4UL] = wrapToRange(tau[4UL], tau[3UL] - M_PI, tau[3UL] + M_PI);
+            tauCur[4UL] = wrapToRange(tauCur[4UL], tauCur[3UL] - M_PI, tauCur[3UL] + M_PI);
         }
+    };
 
-        // tip position as predicted by the model
-        this->getPosDistal(tau, wf, x_CTR);
+    // Deterministic restart seeding. A resolved-rate descent is a local method, so
+    // an attempt that stalls in a bad basin cannot be rescued by more steps -- only
+    // by starting somewhere else.
+    std::mt19937 rng(restartSeed);
+    std::uniform_real_distribution<double> unit(0.00, 1.00);
 
-        // current position error
-        tipError = target - x_CTR;
-        // integrating the position error
-        int_tipError += tipError;
-        // derivative of the position error
-        d_tipError = tipError - last_tipError;
-        // updating the last tip error variable
-        last_tipError = tipError;
+    auto reseed = [&](blaze::StaticVector<double, controlInputs> &tauCur)
+    {
+        if constexpr (controlInputs == 6)
+            tauCur[2UL] = 0.00; // β₃ is static; never re-seed it
 
-        dist2Tgt = blaze::norm(tipError);
-
-        if (dist2Tgt < minError)
+        // Prismatic joints in index order: each draw uses bounds evaluated on the
+        // partially re-seeded vector, so the inter-tube coupling windows stay
+        // consistent as we go.
+        for (size_t i = 0UL; i < nPrismatic; ++i)
         {
-            minError = dist2Tgt;
-            tau_min = tau;
+            if constexpr (controlInputs == 6)
+            {
+                if (i == 2UL)
+                    continue;
+            }
+
+            blaze::StaticVector<double, nPrismatic> bMin, bMax;
+            computeBetaBounds(tauCur, bMin, bMax);
+
+            tauCur[i] = (bMax[i] > bMin[i]) ? bMin[i] + unit(rng) * (bMax[i] - bMin[i])
+                                            : 0.50 * (bMin[i] + bMax[i]); // degenerate window: take its midpoint
         }
 
-        // stops the control loop when the position update becomes significantly small
-        if (blaze::linfNorm(dtau_dt) <= 1.00E-6)
+        // Revolute joints: α₁ uniform, then α₂ anchored to it.
+        if constexpr (controlInputs == 4)
         {
-            tau = tau_min;
-            return;
+            tauCur[2UL] = -M_PI + unit(rng) * 2.00 * M_PI;
+            tauCur[3UL] = tauCur[2UL] - M_PI + unit(rng) * 2.00 * M_PI;
         }
+        else // controlInputs == 6
+        {
+            tauCur[3UL] = -M_PI + unit(rng) * 2.00 * M_PI;
+            tauCur[4UL] = tauCur[3UL] - M_PI + unit(rng) * 2.00 * M_PI;
+        }
+
+        wrapAngles(tauCur);
+    };
+
+    // total iterations consumed across every attempt
+    size_t N_itr_total = 0UL;
+
+    for (size_t attempt = 0UL; attempt <= maxRestarts; ++attempt)
+    {
+        if (attempt > 0UL)
+        {
+            reseed(tau);
+            this->getPosDistal(tau, wf, x_CTR);
+
+            tipError      = target - x_CTR;
+            last_tipError = tipError;
+            d_tipError    = blaze::StaticVector<double, 3UL>(0.00);
+            // A wound-up integral carried across a restart would immediately
+            // poison the new attempt, so the PID state resets with the seed.
+            int_tipError  = blaze::StaticVector<double, 3UL>(0.00);
+            dist2Tgt      = blaze::norm(tipError);
+
+            if (dist2Tgt < minError)
+            {
+                minError = dist2Tgt;
+                tau_min = tau;
+            }
+        }
+
+        // iterations counter for this attempt
+        size_t N_itr = 0UL;
+
+        // position control loop
+        while ((dist2Tgt > posTol) && (N_itr < maxIterPerTry) && (N_itr_total < maxIter))
+        {
+            // incrementing the number of iterations
+            N_itr++;
+            N_itr_total++;
+
+            // Compute the Jacobian in the present configuration. x_CTR and tipError
+            // are already current for this tau -- set before the loop, or at the
+            // end of the previous iteration -- so no forward pass is needed here.
+            this->jacobian(tau, wf, J);
+
+            // Pseudo-inverse of Jacobian for resolving CTR joint motion rates
+            J_inv = PINNs<controlInputs>::pInvN(J);
+
+            // Joint-limit windows and the nullspace gradient that pushes each
+            // prismatic joint toward the middle of its own window.
+            computeBetaBounds(tau, betaMin, betaMax);
+            {
+                const blaze::StaticVector<double, nPrismatic> beta = blaze::subvector<0UL, nPrismatic>(tau);
+                auto f1 = blaze::subvector<0UL, nPrismatic>(f);
+                f1 = blaze::pow(blaze::abs((betaMax + betaMin - 2.00 * beta) / (betaMax - betaMin + 1.00E-10)), ke)
+                   * blaze::sign(beta - (betaMax + betaMin) * 0.50);
+            }
+
+            // Resolved rates with null-space local optimization (joint-limit avoidance).
+            dtau_dt = J_inv * (Kp * tipError + Kd * d_tipError + Ki * int_tipError) + (I - blaze::trans(J_inv * J)) * (-f);
+
+            // rescaling linear joint variables for limit avoidance
+            bool stepClamped = false;
+            for (size_t i = 0; i < nPrismatic; ++i)
+            {
+                const double proposed = tau[i] + dtau_dt[i];
+                if (proposed > betaMax[i])
+                {
+                    dtau_dt[i] = (betaMax[i] - tau[i]) * 0.50;
+                    stepClamped = true;
+                }
+                else if (proposed < betaMin[i])
+                {
+                    dtau_dt[i] = (betaMin[i] - tau[i]) * 0.50;
+                    stepClamped = true;
+                }
+            }
+
+            // updating the CTR joints: q = [beta, theta]
+            tau += dtau_dt;
+
+            wrapAngles(tau);
+
+            // tip position as predicted by the model
+            this->getPosDistal(tau, wf, x_CTR);
+
+            // current position error
+            tipError = target - x_CTR;
+
+            // Integrate the position error, with anti-windup: integration freezes
+            // while a prismatic joint is saturated against its limit (the classic
+            // remedy for a saturated actuator), and the accumulator is capped
+            // either way so ki * ∫e can never swamp the proportional term.
+            if (!stepClamped)
+            {
+                int_tipError += tipError;
+                for (size_t k = 0UL; k < 3UL; ++k)
+                    int_tipError[k] = std::clamp(int_tipError[k], -iLim, iLim);
+            }
+
+            // derivative of the position error
+            d_tipError = tipError - last_tipError;
+            // updating the last tip error variable
+            last_tipError = tipError;
+
+            dist2Tgt = blaze::norm(tipError);
+
+            if (dist2Tgt < minError)
+            {
+                minError = dist2Tgt;
+                tau_min = tau;
+            }
+
+            // The position update has become vanishingly small: this attempt has
+            // stalled. Leave it so the retry loop can re-seed -- more steps in the
+            // same basin would achieve nothing.
+            if (blaze::linfNorm(dtau_dt) <= 1.00E-6)
+                break;
+        }
+
+        if ((dist2Tgt <= posTol) || (N_itr_total >= maxIter))
+            break;
     }
 
     tau = tau_min;
