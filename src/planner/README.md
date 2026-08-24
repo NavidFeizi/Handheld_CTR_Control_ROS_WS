@@ -152,4 +152,22 @@ round-trip, and `posCTRL`'s budget is up to 3000 descent steps
 (`ctr_kinematics_pinn/README.md`). Worst-case planning is 1.5 × `solve_time`, and the
 manager gives up after `planner_timeout_s` (15 s), after which the planner keeps
 computing and answers a request nobody is waiting for. Watch the `IK time:` line if
-either budget is raised.
+either budget is raised — measured worst case is currently ~4.5 s.
+
+`CTR_StateValidityChecker::isValid` delegates to `ctr_kinematics_pinn::isFeasible4`
+(4-DoF layout) so it cannot disagree with the IK about which configurations are
+legal. It previously enforced only the β₁ ≤ β₂ − clearance half of β₁'s coupled
+window and omitted the β₁ ≥ β₂ − 0.084 half — the tube-protrusion constraint — so the
+planner explored states where the inner tube retracts inside the middle one, outside
+the box the PINN was trained on. Adding it **shrinks the valid set**: plans that used
+to route through non-protruding states will not any more. Both poses the hardware
+homes to remain valid (they sit exactly on opposite corners of the set, which
+`test/test_dataset_bounds.cpp` pins).
+
+The reverse disagreement was worse and is what actually blocked planning: `posCTRL`
+capped β₂ 4 mm looser than this checker, so **21% of converged IK solutions made
+`setGoalState` throw** — measured with `ctr_kinematics_pinn/benchmark/ik_bench.cpp`.
+`posCTRL` now projects its result into the feasible set, so that rate is a hard zero
+by construction rather than a small number. If you ever see `setGoalState` reject an
+IK result again, that projection or this checker has drifted from the shared
+predicate.

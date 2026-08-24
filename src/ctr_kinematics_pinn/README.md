@@ -45,8 +45,8 @@ zero-force overload that omits `wf`.
 | Forward kinematics | `getPosDistal(tau[, wf], pos)` — `pos` is 3-element (position) or 7-element (position + quaternion); `getPosDistalBatched`; `getPosTubes(tau[, wf], pos_t3, pos_t2, pos_t1)` |
 | Shape | `getShape(tau[, wf], shape)` (`num_nodes × 3`); `getAllTubesShape(tau, wf)` → tuple of three matrices; `getEntireState(tau[, wf], states)` (`num_nodes × 15`) |
 | Jacobians | `jacobian(tau[, wf], J)` (3×N, autograd); `jacobianBatched(tau_batch, J)`; `jacobianFinDif(tau, J)` (central differences); `jacobian_wrt_force(tau, wf, J)` |
-| Inverse kinematics | `posCTRL(tau, target, posTol[, wf])` — resolved-rate IK, mutates `tau` in place |
-| Geometry / limits | `getArclengthEnd`, `getStraightLen`, `getOverallLen`, `getInputPosBounds()` → `(lb, ub)`, `getDatasetInputRanges()` → `(lb, ub)`, `getPrismaticJointRanges`, `getRevoluteJointRanges`, `getNumNodes`, `getStageThickness` |
+| Inverse kinematics | `posCTRL(tau, target, posTol[, wf][, IkDiagnostics*])` — resolved-rate IK, mutates `tau` in place; the optional out-param reports iterations, restarts, clamp/uphill-step counts and conditioning |
+| Geometry / limits | `getArclengthEnd`, `getStraightLen`, `getOverallLen`, `getInputPosBounds()` → `(lb, ub)`, `getDatasetInputRanges()` → `(lb, ub)`, `getJointLimits4()` → the shared feasible set, `getPrismaticJointRanges`, `getRevoluteJointRanges`, `getNumNodes`, `getStageThickness` |
 | Pseudoinverse | `pInv` (fixed 3×6) and `static pInvN<N>` (damped, λ = 1e-12) |
 
 `posCTRL` is resolved-rate with a null-space joint-limit-avoidance term. It is
@@ -55,30 +55,114 @@ closest-seen configuration, so callers must check the resulting tip position if
 convergence matters (`Planner::solveInverseKinematics` does this and returns a
 `bool`).
 
+It **never returns a configuration the planner would reject**: the value written
+back is projected into the feasible set (see the shared predicate below) before
+`finish()` reports. That is a guarantee by construction, not a statistical claim,
+and it matters because `Planner::setGoalState` *throws* on an infeasible goal — a
+solution a few millimetres out is not a slightly worse answer, it is no plan at
+all.
+
 Its budget is a **total of 3000 descent steps** per call, split into attempts of
-at most 750 (the historical cap). When an attempt stalls — the resolved rate
-falls below `linfNorm(dtau_dt) ≤ 1e-6` — it is abandoned and the joint vector is
-re-seeded from a random feasible configuration, up to 3 extra seeds. A single
-resolved-rate descent is a local method, so a poor initial guess cannot be
-rescued by more steps in the same basin; re-seeding is what actually reaches
-distant targets. The best-seen configuration is tracked across *all* attempts, so
-re-seeding can never return a worse answer than a single descent would have.
+at most 250. When an attempt stalls — the resolved rate falls below
+`linfNorm(dtau_dt) ≤ 1e-6` — it is abandoned and the joint vector is re-seeded
+uniformly from the feasible set, up to 11 times. The split is set from measured
+data, not taste: attempts that succeed do so in well under 250 steps, while
+attempts that will stall burn their whole allowance and contribute nothing, so
+the same budget buys far more as many short tries than as a few long ones.
+Re-seeding is what actually rescues a hard target; the best-seen configuration is
+tracked across *all* attempts, so it can never return a worse answer than a
+single descent would have.
 
 Re-seeding is **deterministic**: the RNG is function-local with a fixed seed, so
 the same target from the same initial guess always yields the same joint vector.
 Do not make that seed time- or state-dependent — two identical plan requests
-would then deploy the robot differently.
+would then deploy the robot differently. Keep every restart independent, too: a
+deterministic mid-range seed for the first retry was tried and measured *worse*
+(misses 3.2% → 7.0%), because basin diversity buys more than avoiding the
+boundary corner the robot homes to.
 
 The integral term is anti-windup limited: integration freezes while a prismatic
 joint is saturated against its limit, and the accumulator is capped so `ki·∫e`
-cannot outgrow `kp·e`. Without this the descent limit-cycles rather than
-converging, and a larger iteration budget just buys more oscillation.
+cannot outgrow `kp·e`.
 
 Cost per step is one `jacobian` (a TorchScript forward plus three autograd
 backward passes) and one `getPosDistal`, so worst-case latency scales linearly in
 the total budget. `planner_node` prints `IK time:` for every solve; keep it well
 under the manager's `planner_timeout_s` (15 s), which also has to cover the OMPL
 solve.
+
+### Measured behaviour — and what is NOT wrong with it
+
+`benchmark/ik_bench.cpp` (opt-in, `-DCTR_PINN_BUILD_BENCH=ON`) measures all of
+this. It forward-samples targets — draw a feasible joint vector, take its FK tip —
+so a solution provably exists and every miss is a solver failure rather than an
+unreachable target. Over 500 targets solved from the `k_pos_preEngage` pose:
+
+| | before | after |
+|---|---|---|
+| goal rejected by `setGoalState` | 21.2% | **0.0%** |
+| residual < 3 mm (manager's gate) | 100%¹ | 100% in every bucket ≥ 20 mm |
+| worst-case solve time | 15.8 s² | 4.5 s |
+
+¹ achieved by parking β₂ outside the legal set — a larger, easier problem than
+the planner accepts. ² which alone exceeded `planner_timeout_s`.
+
+Three things the measurement **ruled out**, so nobody re-litigates them:
+
+- *Overshoot.* Uphill steps are 0.00% of the median run. The descent does not
+  oscillate, and a line search would fix nothing.
+- *Singularity blow-up.* `‖J⁺‖_F` peaks around 1.2e3 with λ = 1e-12. Not
+  exploding; adaptive damping is not needed.
+- *The nullspace term causing the joint clamping.* Cutting its gain tenfold left
+  the clamp rate at 83% unchanged. The clamp is driven by the **task** step
+  wanting β outside its coupled window, which is intrinsic to the mechanism.
+
+What the nullspace gradient *was* missing is dimensional scaling: the bracketed
+factor is dimensionless in [0, 1] and was used directly as a velocity in metres,
+against windows only ~40–54 mm wide. It is now scaled by the window half-width.
+
+Note that the pose the robot homes to is a **corner** of the feasible set: at
+β₁ = −0.064 the coupling pins β₂ to exactly −0.034, a zero-width window. Targets
+*near* the retracted pose are therefore the hard ones, not the distant ones — the
+opposite of the intuition.
+
+### The feasible joint set lives in one place
+
+`dataset_bounds.hpp` owns the answer to "is this configuration legal": `JointLimits4`,
+`isFeasible4()`, `beta1Window()`, `beta2Window()`. Both `posCTRL` and the planner's
+`CTR_StateValidityChecker` go through it, and they must keep doing so.
+
+They did not always. Each carried its own copy and each dropped a *different*
+constraint, in opposite directions:
+
+| | dropped | consequence |
+|---|---|---|
+| `posCTRL` | β₂'s own ceiling `beta2_range[1]` (−0.034); it capped at −stage-thickness (−0.030) | returned converged goals 4 mm inside a band the planner rejects → `setGoalState` throws → **no plan at all**, measured at 21% of solves |
+| `CTR_StateValidityChecker` | β₁ ≥ β₂ + `beta1_range[0]` | accepted states where the inner tube retracts inside the middle one — physically meaningless and outside the PINN's training box |
+
+For the 4-DoF layout the whole set is four constraints, exactly as the dataset
+states them:
+
+```
+β₂      ∈ beta2_range     [-0.072, -0.034]
+β₁ − β₂ ∈ beta1_range     [-0.084, -0.030]
+α₁      ∈ alpha1_range    [-π, π]
+α₂ − α₁ ∈ [-π, π]
+```
+
+The β₁ relative window is doing double duty, which is exactly why half of it is easy
+to lose: its **upper** edge −0.030 *is* the stage clearance (β₁ ≤ β₂ − clr) and its
+**lower** edge −0.084 *is* the tube-protrusion constraint β₁ + L₁ ≥ β₂ + L₂
+(L₂ − L₁ = 0.132 − 0.216). Enforce the window and both come for free; enforce one
+bound alone and you silently drop the other. The other geometry terms are not extra
+constraints — L₃ − L₁ = −0.156 and L₃ − L₂ = −0.072 are precisely the absolute floors.
+
+`isFeasible4` takes a tolerance because **both poses the hardware homes to sit exactly
+on the boundary, at opposite corners**: `k_home_pos` (β₁ −0.156, β₂ −0.072) on the
+lower one, `k_pos_preEngage` (−0.0640, −0.0340) on the upper. Measured encoder values
+straddle those by floating-point noise. Pass a small tolerance for a measured pose,
+zero for a computed one. `planner/test/test_dataset_bounds.cpp` pins all of this, and
+is Torch-free so it runs anywhere.
 
 ### β₁ is stored relative to β₂ — pick the right accessor
 

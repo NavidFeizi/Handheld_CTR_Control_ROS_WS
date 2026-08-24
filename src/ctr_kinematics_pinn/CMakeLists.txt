@@ -28,6 +28,16 @@ separate_arguments(_torch_cxx_flags UNIX_COMMAND "${TORCH_CXX_FLAGS}")
 target_compile_options(ctr_kinematics_pinn INTERFACE ${_torch_cxx_flags} -O3)
 unset(_torch_cxx_flags)
 
+# Opt-in convergence benchmark for posCTRL. OFF by default: it is a diagnostic
+# tool, not part of the runtime, and it links LibTorch like any other consumer.
+#   colcon build --packages-select ctr_kinematics_pinn --cmake-args -DCTR_PINN_BUILD_BENCH=ON
+option(CTR_PINN_BUILD_BENCH "Build the posCTRL IK convergence benchmark" OFF)
+if(CTR_PINN_BUILD_BENCH)
+  add_executable(ik_bench benchmark/ik_bench.cpp)
+  target_link_libraries(ik_bench PRIVATE ctr_kinematics_pinn)
+  set_target_properties(ik_bench PROPERTIES BUILD_WITH_INSTALL_RPATH FALSE)
+endif()
+
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY models/ DESTINATION share/${PROJECT_NAME}/models)
 install(TARGETS ctr_kinematics_pinn

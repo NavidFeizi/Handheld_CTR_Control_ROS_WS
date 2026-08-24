@@ -38,6 +38,9 @@ private:
     double m_beta1_min, m_beta1_max; // joint limits for Tube 1 prismatic
     double m_beta2_min, m_beta2_max; // joint limits for Tube 2 prismatic
     double m_beta1_goal, m_beta2_goal;
+    // The shared feasible set, so this checker and PINNs::posCTRL cannot disagree
+    // about which configurations are legal (4-DoF layout).
+    ctr_kinematics_pinn::JointLimits4 m_limits4{};
 };
 
 // ============================= Implementation =============================
@@ -54,6 +57,7 @@ CTR_StateValidityChecker<controlInputs>::CTR_StateValidityChecker(const ompl::ba
     m_beta2_min = lb[1UL];
     m_beta2_max = ub[1UL];
     m_Clr = _ctr.getStageThickness();
+    m_limits4 = _ctr.getJointLimits4();
 
     // Initialise goal betas to the global joint maxima so that samplers
     // produce valid states even if setGoalBetas() has not been called yet.
@@ -74,17 +78,31 @@ bool CTR_StateValidityChecker<controlInputs>::isValid(const ompl::base::State *s
     const double alpha1 = candidate_State->values[2UL];
     const double alpha2 = candidate_State->values[3UL];
 
-    // β₁ ordering: β₁_min ≤ β₁ ≤ min(β₁_max, β₂ − clr)
-    const bool conditionTb1 = (beta_1 >= m_beta1_min) &&
-                               (beta_1 <= std::min(m_beta1_max, beta_2 - m_Clr));
+    if constexpr (controlInputs == 4)
+    {
+        // Delegated to the shared predicate. The hand-rolled version this replaces
+        // enforced only the β₁ ≤ β₂ − clearance half of β₁'s window and dropped the
+        // β₁ ≥ β₂ + beta1_range[0] half -- which is the tube-protrusion constraint
+        // (L₂ − L₁ = −0.084 for the shipped tubes, exactly the dataset's relative
+        // lower bound). It therefore accepted states where the inner tube retracts
+        // inside the middle one: physically meaningless, and outside the box the
+        // PINN was ever trained on. See ctr_kinematics_pinn/dataset_bounds.hpp.
+        return ctr_kinematics_pinn::isFeasible4({beta_1, beta_2, alpha1, alpha2}, m_limits4);
+    }
+    else
+    {
+        // β₁ ordering: β₁_min ≤ β₁ ≤ min(β₁_max, β₂ − clr)
+        const bool conditionTb1 = (beta_1 >= m_beta1_min) &&
+                                   (beta_1 <= std::min(m_beta1_max, beta_2 - m_Clr));
 
-    // β₂ ordering: max(β₁ + clr, β₂_min) ≤ β₂ ≤ β₂_max
-    const bool conditionTb2 = (beta_2 >= std::max(beta_1 + m_Clr, m_beta2_min)) &&
-                               (beta_2 <= m_beta2_max);
+        // β₂ ordering: max(β₁ + clr, β₂_min) ≤ β₂ ≤ β₂_max
+        const bool conditionTb2 = (beta_2 >= std::max(beta_1 + m_Clr, m_beta2_min)) &&
+                                   (beta_2 <= m_beta2_max);
 
-    const bool conditionAngle = std::fabs(alpha2 - alpha1) <= M_PI;
+        const bool conditionAngle = std::fabs(alpha2 - alpha1) <= M_PI;
 
-    return conditionTb1 && conditionTb2 && conditionAngle;
+        return conditionTb1 && conditionTb2 && conditionAngle;
+    }
 }
 
 template<size_t controlInputs>

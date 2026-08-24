@@ -53,6 +53,22 @@ struct DatasetParameters
     std::array<double, 2UL> alpha3_range;
 };
 
+/// Optional, purely observational report from one posCTRL solve. posCTRL is
+/// otherwise a black box -- it returns void and its iteration count, restart
+/// count and conditioning are invisible to callers, which makes convergence
+/// impossible to measure. Pass one of these to get the numbers out.
+struct IkDiagnostics
+{
+    size_t iterations = 0UL;         ///< descent steps consumed across all attempts
+    size_t restarts = 0UL;           ///< re-seeds used (0 = solved from the caller's guess)
+    size_t clampedSteps = 0UL;       ///< steps where a prismatic joint hit its window edge
+    size_t nonMonotonicSteps = 0UL;  ///< steps where the tip error GREW
+    double maxJinvNorm = 0.00;       ///< largest ||J^+||_F seen; a singularity proxy
+    double initialError = 0.00;      ///< ||target - tip|| at the caller's initial guess
+    double finalError = 0.00;        ///< ||target - tip|| of the returned configuration
+    bool converged = false;          ///< finalError <= posTol
+};
+
 namespace detail
 {
     inline std::vector<int> vec_int_or_throw(const nlohmann::json &obj, const char *key)
@@ -269,6 +285,11 @@ public:
     /// window by the live β₂ (ctr_common::clampJointPositions).
     [[nodiscard]] std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<double, controlInputs>> getDatasetInputRanges() const;
 
+    /// The feasible joint set in the shared form (see dataset_bounds.hpp). Use this
+    /// anywhere a configuration must be validated, so every component agrees on
+    /// what "legal" means. 4-DoF layout only.
+    [[nodiscard]] const ctr_kinematics_pinn::JointLimits4 &getJointLimits4() const { return m_jointLimits4; }
+
     // function that returns the number of nodes (discrete points) along the CTR backbone
     [[nodiscard]] size_t getNumNodes() const { return m_num_nodes; }
 
@@ -293,7 +314,7 @@ public:
     // resolved-rate inverse kinematics for the CTR under an external tip force
     // wf (the Jacobian and forward model are both evaluated on the loaded robot)
     void posCTRL(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target, const double posTol,
-                 const blaze::StaticVector<double, kForceDim> &wf);
+                 const blaze::StaticVector<double, kForceDim> &wf, IkDiagnostics *diag = nullptr);
 
     // zero-force overload kept for callers that do not model tip loads
     void posCTRL(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target, const double posTol);
@@ -307,6 +328,9 @@ private:
     PhysicsParameters m_physics_params{};
     ModelParameters m_model_params{};
     DatasetParameters m_dataset_params{};
+    // The feasible joint set, cached in the shared form so posCTRL and the
+    // planner's validity checker cannot disagree about it. 4-DoF layout only.
+    ctr_kinematics_pinn::JointLimits4 m_jointLimits4{};
 
     // inference buffers (mutable so const methods can reuse them)
     mutable torch::Tensor s_buffer_;              // [1, 1]
@@ -363,6 +387,14 @@ PINNs<controlInputs>::PINNs(std::string models_dir, std::string model_name, size
     // Load the parameters
     const std::string params_path = model_dir + '/' + model_name + "/parameters.json";
     loadParameters(params_path);
+
+    if constexpr (controlInputs == 4)
+    {
+        m_jointLimits4.beta2_absolute  = m_dataset_params.beta2_range;
+        m_jointLimits4.beta1_relative  = m_dataset_params.beta1_range; // RELATIVE to β₂
+        m_jointLimits4.alpha1_absolute = m_dataset_params.alpha1_range;
+        m_jointLimits4.alpha2_window   = M_PI;
+    }
 
     m_batch_size = batch_size;
     m_num_nodes = num_nodes;
@@ -1260,8 +1292,52 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
 
 template <size_t controlInputs>
 void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target, const double posTol,
-                                   const blaze::StaticVector<double, kForceDim> &wf)
+                                   const blaze::StaticVector<double, kForceDim> &wf, IkDiagnostics *diag)
 {
+    // Local diagnostics, always maintained; copied out only if the caller asked.
+    IkDiagnostics diag_local;
+    // Writes the report and returns, so every exit path reports consistently.
+    //
+    // The projection is the load-bearing part: the caller feeds this straight to
+    // Planner::setGoalState, which THROWS on an infeasible configuration, so a
+    // solution that is 4 mm out is not a slightly-worse answer -- it is no plan at
+    // all. Projecting here makes "posCTRL never returns a configuration the planner
+    // rejects" true by construction rather than true on average. Order matters:
+    // beta2 into its own absolute range first, then beta1 into the window that
+    // beta2 implies (which carries both the clearance and protrusion constraints),
+    // then the angle wrap. Each step only tightens what the next one reads.
+    const auto finish = [&](blaze::StaticVector<double, controlInputs> &out,
+                            const blaze::StaticVector<double, controlInputs> &best,
+                            const double bestErr)
+    {
+        out = best;
+
+        if constexpr (controlInputs == 4)
+        {
+            const auto &lim = m_jointLimits4;
+            out[1UL] = std::clamp(out[1UL], lim.beta2_absolute[0UL], lim.beta2_absolute[1UL]);
+            const auto w1 = ctr_kinematics_pinn::beta1Window(out[1UL], lim);
+            out[0UL] = std::clamp(out[0UL], w1[0UL], w1[1UL]);
+            out[2UL] = std::clamp(out[2UL], lim.alpha1_absolute[0UL], lim.alpha1_absolute[1UL]);
+            out[3UL] = std::clamp(out[3UL], out[2UL] - lim.alpha2_window, out[2UL] + lim.alpha2_window);
+        }
+
+        // Report the error of what is actually returned. The projection can move the
+        // configuration, so the pre-projection best would be an optimistic figure.
+        double reportedErr = bestErr;
+        if constexpr (controlInputs == 4)
+        {
+            blaze::StaticVector<double, 3UL> projTip;
+            this->getPosDistal(out, wf, projTip);
+            reportedErr = blaze::norm(target - projTip);
+        }
+
+        diag_local.finalError = reportedErr;
+        diag_local.converged  = (reportedErr <= posTol);
+        if (diag)
+            *diag = diag_local;
+    };
+
     blaze::StaticMatrix<double, 3UL, controlInputs, blaze::columnMajor> J;                       // Jacobian matrix (3 × controlInputs)
     blaze::StaticMatrix<double, controlInputs, 3UL, blaze::columnMajor> J_inv;                   // Jacobian pseudoinverse (controlInputs × 3)
     const blaze::IdentityMatrix<double, blaze::columnMajor> I(controlInputs);                    // Identity matrix
@@ -1290,18 +1366,27 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     // each step costs one Jacobian (a TorchScript forward plus three autograd
     // backward passes) and one forward pass.
     static constexpr size_t maxIter = 3000UL;
-    // Per-attempt cap, deliberately the historical value. A single descent
-    // therefore gets exactly the budget it always had; the rest of maxIter funds
-    // re-seeds instead of letting one stuck attempt burn everything.
-    static constexpr size_t maxIterPerTry = 750UL;
-    // Extra seeds tried after the caller's initial guess.
-    static constexpr size_t maxRestarts = 3UL;
+    // Per-attempt cap. Set from the measured distribution rather than by tradition:
+    // attempts that succeed do so in well under 250 steps, while attempts that are
+    // going to stall burn their whole allowance and contribute nothing. Restart
+    // diversity is what actually rescues a hard target, so the same total budget
+    // buys far more by funding many short tries instead of a few long ones.
+    static constexpr size_t maxIterPerTry = 250UL;
+    // Extra seeds tried after the caller's initial guess. 250 * (1 + 11) = maxIter.
+    static constexpr size_t maxRestarts = 11UL;
     // Fixed RNG seed. Re-seeding has to be reproducible: the same target from the
     // same initial guess must always return the same joint vector, or two
     // identical plan requests would deploy the robot differently.
     static constexpr std::uint32_t restartSeed = 0x5EEDU;
     // parameters for local optimization (joint limits avoidance)
     static constexpr double ke = 4.00;
+    // Fraction of a joint's half-window the limit-avoidance term may command in one
+    // step. 1.0 deliberately: measurement showed the clamp rate is set by the TASK
+    // step, not by this term (cutting the gain 10x left clamping at 83% unchanged),
+    // while a weaker push made starts from a narrow window corner crawl -- near-target
+    // convergence fell from 100% to 67%. What was actually wrong here was the
+    // missing dimensional scaling below, not the strength.
+    static constexpr double kNullspaceGain = 1.00;
     // Anti-windup ceiling on the integral term's contribution to the commanded
     // tip rate [m]. The accumulator is otherwise unbounded, and once ki * ∫e
     // outgrows kp * e the descent limit-cycles instead of converging -- so extra
@@ -1328,6 +1413,7 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
 
     // Euclidean distance to target
     double dist2Tgt = blaze::norm(tipError);
+    diag_local.initialError = dist2Tgt;
 
     if (dist2Tgt < minError)
     {
@@ -1335,24 +1421,29 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         tau_min = tau;
 
         if (dist2Tgt <= posTol)
+        {
+            finish(tau, tau_min, minError);
             return;
+        }
     }
 
     // Nullspace vector (joint-limit avoidance gradient), zero-initialised;
     // only the prismatic-joint entries are filled each iteration.
     blaze::StaticVector<double, controlInputs> f{0.0};
 
-    const blaze::StaticVector<double, 3UL> L  = this->getOverallLen();
-    const blaze::StaticVector<double, 3UL> Ls = this->getStraightLen();
-    const double stageThickness               = this->getStageThickness();
+    // Only the 6-DoF branch of computeBetaBounds reads these now; the 4-DoF branch
+    // gets its windows from the shared predicate.
+    [[maybe_unused]] const blaze::StaticVector<double, 3UL> L  = this->getOverallLen();
+    [[maybe_unused]] const blaze::StaticVector<double, 3UL> Ls = this->getStraightLen();
+    [[maybe_unused]] const double stageThickness               = this->getStageThickness();
 
     // Absolute prismatic-joint bounds (beta1 already converted out of the
     // dataset's beta2-relative frame -- see dataset_bounds.hpp). Bound to plain
     // references rather than a structured binding: capturing a structured binding
     // in a lambda is only well-formed from C++20, and this is a C++17 workspace.
     const auto inputPosBounds = this->getInputPosBounds();
-    const blaze::StaticVector<double, controlInputs> &lb = std::get<0UL>(inputPosBounds);
-    const blaze::StaticVector<double, controlInputs> &ub = std::get<1UL>(inputPosBounds);
+    [[maybe_unused]] const blaze::StaticVector<double, controlInputs> &lb = std::get<0UL>(inputPosBounds);
+    [[maybe_unused]] const blaze::StaticVector<double, controlInputs> &ub = std::get<1UL>(inputPosBounds);
 
     // Prismatic joint limit vectors, recomputed every iteration because the
     // tube-ordering constraints couple each joint's window to its neighbours'.
@@ -1366,15 +1457,20 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     {
         if constexpr (controlInputs == 4)
         {
-            // 2 prismatic joints: tauCur[0] = β₁ (inner), tauCur[1] = β₂ (middle)
-            // Outermost tube is static at β₃ = 0.
-            const double b1 = tauCur[0UL], b2 = tauCur[1UL];
+            // 2 prismatic joints: tauCur[0] = β₁ (inner), tauCur[1] = β₂ (middle).
+            // Delegated to the shared predicate so this solver cannot drift out of
+            // the set the planner accepts. The hand-rolled version this replaces
+            // capped β₂ at -stageThickness (-0.030) and omitted β₂'s own dataset
+            // ceiling (-0.034), so 21% of converged solves came back 4 mm inside a
+            // band CTR_StateValidityChecker rejects -- setGoalState() then threw and
+            // no plan was produced at all. Measured with benchmark/ik_bench.cpp.
+            const auto w1 = ctr_kinematics_pinn::beta1Window(tauCur[1UL], m_jointLimits4);
+            const auto w2 = ctr_kinematics_pinn::beta2Window(tauCur[0UL], m_jointLimits4);
 
-            bMin[0UL] = std::max({lb[0UL], L[1UL] + b2 - L[0UL], L[2UL] - L[0UL]});
-            bMin[1UL] = std::max({lb[1UL], b1 + stageThickness, L[2UL] - L[1UL]});
-
-            bMax[0UL] = std::min(ub[0UL], b2 - stageThickness);
-            bMax[1UL] = std::min(-stageThickness, L[0UL] + b1 - L[1UL]); // β₃ = 0 ⟹ upper = 0 - stageThickness
+            bMin[0UL] = w1[0UL];
+            bMax[0UL] = w1[1UL];
+            bMin[1UL] = w2[0UL];
+            bMax[1UL] = w2[1UL];
         }
         else // controlInputs == 6
         {
@@ -1431,6 +1527,11 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     std::mt19937 rng(restartSeed);
     std::uniform_real_distribution<double> unit(0.00, 1.00);
 
+    // Every restart draws uniformly. A deterministic mid-range seed for the first
+    // retry was tried and measured WORSE (misses 3.2% -> 7.0%): spending one of the
+    // attempts on a fixed point costs more in basin diversity than it gains in
+    // avoiding the boundary corner the robot homes to. Restart diversity is what
+    // does the work here, so keep all of them independent.
     auto reseed = [&](blaze::StaticVector<double, controlInputs> &tauCur)
     {
         if constexpr (controlInputs == 6)
@@ -1451,7 +1552,7 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             computeBetaBounds(tauCur, bMin, bMax);
 
             tauCur[i] = (bMax[i] > bMin[i]) ? bMin[i] + unit(rng) * (bMax[i] - bMin[i])
-                                            : 0.50 * (bMin[i] + bMax[i]); // degenerate window: take its midpoint
+                                            : 0.50 * (bMin[i] + bMax[i]); // degenerate window: midpoint is all there is
         }
 
         // Revolute joints: α₁ uniform, then α₂ anchored to it.
@@ -1476,6 +1577,7 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     {
         if (attempt > 0UL)
         {
+            diag_local.restarts++;
             reseed(tau);
             this->getPosDistal(tau, wf, x_CTR);
 
@@ -1503,6 +1605,7 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             // incrementing the number of iterations
             N_itr++;
             N_itr_total++;
+            diag_local.iterations++;
 
             // Compute the Jacobian in the present configuration. x_CTR and tipError
             // are already current for this tau -- set before the loop, or at the
@@ -1512,18 +1615,38 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             // Pseudo-inverse of Jacobian for resolving CTR joint motion rates
             J_inv = PINNs<controlInputs>::pInvN(J);
 
+            // Conditioning proxy: with lambda = 1e-12 the damped pseudoinverse is
+            // effectively undamped, so ||J^+|| blowing up is the signature of a
+            // near-singular configuration producing a wild joint step.
+            {
+                const double jinvNorm = blaze::norm(J_inv);
+                if (jinvNorm > diag_local.maxJinvNorm)
+                    diag_local.maxJinvNorm = jinvNorm;
+            }
+
             // Joint-limit windows and the nullspace gradient that pushes each
             // prismatic joint toward the middle of its own window.
             computeBetaBounds(tau, betaMin, betaMax);
             {
                 const blaze::StaticVector<double, nPrismatic> beta = blaze::subvector<0UL, nPrismatic>(tau);
                 auto f1 = blaze::subvector<0UL, nPrismatic>(f);
-                f1 = blaze::pow(blaze::abs((betaMax + betaMin - 2.00 * beta) / (betaMax - betaMin + 1.00E-10)), ke)
+                // The bracketed factor is dimensionless in [0, 1]; multiplying by the
+                // window half-width turns it into an actual displacement. Without that
+                // scaling it was used directly as a velocity in METRES against windows
+                // only ~40-54 mm wide, i.e. ~20 window-widths of commanded motion per
+                // step. The prismatic clamp then fired on 83% of all iterations
+                // (measured) and pinned β to its window edge, which is what pushed
+                // solutions onto -- and past -- the bounds.
+                f1 = kNullspaceGain * (betaMax - betaMin) * 0.50
+                   * blaze::pow(blaze::abs((betaMax + betaMin - 2.00 * beta) / (betaMax - betaMin + 1.00E-10)), ke)
                    * blaze::sign(beta - (betaMax + betaMin) * 0.50);
             }
 
             // Resolved rates with null-space local optimization (joint-limit avoidance).
             dtau_dt = J_inv * (Kp * tipError + Kd * d_tipError + Ki * int_tipError) + (I - blaze::trans(J_inv * J)) * (-f);
+
+            // Error before the step, so the step can be classified as up- or downhill.
+            const double distBeforeStep = dist2Tgt;
 
             // rescaling linear joint variables for limit avoidance
             bool stepClamped = false;
@@ -1541,6 +1664,8 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
                     stepClamped = true;
                 }
             }
+            if (stepClamped)
+                diag_local.clampedSteps++;
 
             // updating the CTR joints: q = [beta, theta]
             tau += dtau_dt;
@@ -1571,6 +1696,11 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
 
             dist2Tgt = blaze::norm(tipError);
 
+            // The step is applied unconditionally, so nothing stops it going
+            // uphill; counting those is how we tell overshoot from slow progress.
+            if (dist2Tgt > distBeforeStep)
+                diag_local.nonMonotonicSteps++;
+
             if (dist2Tgt < minError)
             {
                 minError = dist2Tgt;
@@ -1588,7 +1718,7 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             break;
     }
 
-    tau = tau_min;
+    finish(tau, tau_min, minError);
 
     return;
 }
