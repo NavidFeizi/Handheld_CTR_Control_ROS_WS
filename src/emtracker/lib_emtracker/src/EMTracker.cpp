@@ -171,6 +171,13 @@ void EMTracker::matchSensors()
   std::cout << "------# Matching sensors with config.yaml #-------" << std::endl;
   m_num_active_sensors = 0;
 
+  // One secondary transform per PORT (identity by default). probe_handle_num is a
+  // port index, so the container must cover every port — matched or not — or the
+  // m_sec_transforms[probe_handle_num] lookups in Read_Loop() and
+  // LoadToolDefinitions2Ports() index out of bounds whenever an unknown sensor
+  // occupies a lower port than a matched one.
+  m_sec_transforms.assign(portHandles.size(), quatTransformation());
+
   // Iterate through the port handles and match serial numbers with config.yaml
   for (int i = 0; i < static_cast<int>(portHandles.size()); ++i)
   {
@@ -193,7 +200,6 @@ void EMTracker::matchSensors()
         entry.second.probe_handle_num = i; // Set probeHandle_num to i
         entry.second.probe_handle = portHandleInfo.getPortHandle();
         entry.second.active = true;
-        m_sec_transforms.push_back(QuatTransformationStruct()); // initialize with identity transformation
         detected = true;
         break;
       }
@@ -208,6 +214,23 @@ void EMTracker::matchSensors()
                 << std::endl;
       port_handle_unknown_sensors.push_back(portHandleInfo.getPortHandle());
     }
+  }
+
+  std::cout << "-----# Sensor match table (port -> sensor) #------" << std::endl;
+  for (const auto &entry : m_sensorConfigMap)
+  {
+    if (entry.second.active)
+    {
+      std::cout << "  port #" << entry.second.probe_handle_num
+                << " (handle " << entry.second.probe_handle << ")"
+                << " -> \"" << entry.first << "\""
+                << " -> transform slot [" << entry.second.probe_handle_num << "]"
+                << std::endl;
+    }
+  }
+  for (const auto &handle : port_handle_unknown_sensors)
+  {
+    std::cout << "  handle " << handle << " -> unknown sensor (identity transform)" << std::endl;
   }
 
   std::cout << "Sensors serial number matching process finished." << std::endl;
@@ -254,8 +277,21 @@ void EMTracker::LoadToolDefinitions2Ports(bool load_all)
         if (entry.second.load_tran && !entry.second.tran_filename.empty())
         {
           std::string trans_csv_path = m_config_Dir + entry.second.tran_filename;
-          EMTracker::load_transformation_from_csv(trans_csv_path, m_sec_transforms[entry.second.probe_handle_num]);
-          std::cout << "Secondary tranformation CSV file name: " << entry.second.tran_filename << std::endl;
+          quatTransformation &sec_tran = m_sec_transforms[entry.second.probe_handle_num];
+          if (EMTracker::load_transformation_from_csv(trans_csv_path, sec_tran))
+          {
+            std::cout << "Secondary tranformation loaded: " << trans_csv_path << "\n"
+                      << "  translation [mm]: [" << sec_tran.translation[0UL] << ", "
+                      << sec_tran.translation[1UL] << ", " << sec_tran.translation[2UL] << "]\n"
+                      << "  rotation (w,x,y,z): [" << sec_tran.rotation[0UL] << ", " << sec_tran.rotation[1UL]
+                      << ", " << sec_tran.rotation[2UL] << ", " << sec_tran.rotation[3UL] << "]"
+                      << std::endl;
+          }
+          else
+          {
+            std::cerr << "FAILED to load secondary transformation: " << trans_csv_path
+                      << " - identity stays in effect for \"" << entry.first << "\"" << std::endl;
+          }
         }
         if (!(entry.second.load_tran && !entry.second.tran_filename.empty()) && !(entry.second.load_srom && !entry.second.srom_filename.empty()))
         {

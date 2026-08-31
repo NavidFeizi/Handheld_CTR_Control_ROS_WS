@@ -256,6 +256,20 @@ private:
     msg_base.p[0] = tool_pos_flt[0]; // to align with cathter robot system
     msg_base.p[1] = tool_pos_flt[1];
     msg_base.p[2] = tool_pos_flt[2];
+    // scalar-first (w,x,y,z), matching Taskspace.msg h[4]. The EKF consumes h as
+    // its orientation measurement, so it must not stay at the zero default.
+    msg_base.h[0] = tool_in_robot.rotation[0];
+    msg_base.h[1] = tool_in_robot.rotation[1];
+    msg_base.h[2] = tool_in_robot.rotation[2];
+    msg_base.h[3] = tool_in_robot.rotation[3];
+
+    const double h_norm2 = msg_base.h[0] * msg_base.h[0] + msg_base.h[1] * msg_base.h[1] +
+                           msg_base.h[2] * msg_base.h[2] + msg_base.h[3] * msg_base.h[3];
+    if (h_norm2 < 1e-12)
+    {
+      RCLCPP_WARN_ONCE(this->get_logger(),
+                       "base_tool orientation quaternion is zero-norm - downstream EKF orientation measurements are invalid");
+    }
 
     msg_phantom_base.p[0] = m_robot_in_phantom.translation[0];
     msg_phantom_base.p[1] = m_robot_in_phantom.translation[1];
@@ -272,6 +286,11 @@ private:
     m_publisher_phantom->publish(msg_phantom);
     m_publisher_base->publish(msg_base);
     // m_publisher_phantom_base->publish(msg_phantom_base);
+
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                          "tip in robot_base: [%.4f, %.4f, %.4f] m | probe in robot_base: [%.4f, %.4f, %.4f] m",
+                          tool_pos_flt[0], tool_pos_flt[1], tool_pos_flt[2],
+                          probe_in_robot.translation[0], probe_in_robot.translation[1], probe_in_robot.translation[2]);
 
     /// using tf2
     std::vector<geometry_msgs::msg::TransformStamped> tf2_transforms;
