@@ -6,10 +6,13 @@
 // Deliberately free of LibTorch, blaze and ROS so the algebra below can be unit
 // tested without pulling the inference stack in (see planner/test).
 //
-// The 4-DoF datasets ([β₁, β₂, α₁, α₂]) do NOT store β₁ in the same frame as β₂:
+// The 4-DoF datasets ([β₁, β₂, α₁, α₂]) do NOT store β₁ in the same frame as β₂,
+// and the SAME convention applies to the α pair (α₁ relative to α₂):
 //
-//   parameters.json  beta2_range = [-0.072, -0.034]   absolute stage travel [m]
-//                    beta1_range = [-0.084, -0.030]   offset RELATIVE to β₂ [m]
+//   parameters.json  beta2_range  = [-0.072, -0.034]   absolute stage travel [m]
+//                    beta1_range  = [-0.084, -0.030]   offset RELATIVE to β₂ [m]
+//                    alpha2_range = [-1.5π, 1.5π]      absolute rotary travel [rad]
+//                    alpha1_range = [-π, π]            offset RELATIVE to α₂ [rad]
 //
 // The relative window is the tube-coupling window: its upper end is the stage
 // thickness (30 mm) and its lower end is the inner/middle active-length
@@ -48,6 +51,24 @@ inline std::array<double, 2UL> absoluteBeta1Range(const std::array<double, 2UL> 
           beta2_absolute[1UL] + beta1_relative[1UL]};
 }
 
+/// α₁'s absolute [min, max] travel, from its relative window and α₂'s absolute
+/// range -- the exact analogue of absoluteBeta1Range. For the shipped datasets
+/// this is [-2.5π, 2.5π], which the hardware's ±3π static limit contains.
+inline std::array<double, 2UL> absoluteAlpha1Range(const std::array<double, 2UL> &alpha1_relative,
+                                                   const std::array<double, 2UL> &alpha2_absolute)
+{
+  return {alpha2_absolute[0UL] + alpha1_relative[0UL],
+          alpha2_absolute[1UL] + alpha1_relative[1UL]};
+}
+
+/// Wrap an angle onto the principal branch [-π, π).
+inline double wrapToPi(const double theta)
+{
+  const double two_pi = 2.0 * M_PI;
+  return theta - two_pi * std::floor((theta + M_PI) / two_pi);
+}
+
+
 // ---------------------------------------------------------------------------
 // The feasible joint set, in ONE place.
 //
@@ -67,8 +88,18 @@ inline std::array<double, 2UL> absoluteBeta1Range(const std::array<double, 2UL> 
 //
 //   β₂        ∈ beta2_range                    [−0.072, −0.034]
 //   β₁ − β₂   ∈ beta1_range                    [−0.084, −0.030]
-//   α₁        ∈ alpha1_range                   [−π, π]
-//   α₂ − α₁   ∈ [−π, π]
+//   α₂        ∈ alpha2_range                   [−1.5π, 1.5π]
+//   α₁ − α₂   ∈ alpha1_range                   [−π, π]
+//
+// The α pair used to be consumed the other way round (alpha1_range applied as an
+// ABSOLUTE α₁ box, α₂ anchored to α₁) -- the same relative-vs-absolute mixup this
+// header was created to kill for β₁. That inverted domain spills α₂ out to ±2π:
+// outside the network's trained range (the normaliser baked into the TorchScript
+// archive has x_half_range[α₂] = 5.1827 = 1.1 × 1.5π) AND outside the drives'
+// ±1.5π travel, so the IK "converged" on extrapolated garbage the robot cannot
+// even reach. The spill occupies the azimuthal wedge around α₁ ≈ ±π, which is
+// what made targets on one side of the workspace plan fine while diametrically
+// opposed ones landed wrong.
 //
 // The β₁ relative window is doing double duty, which is why it is easy to lose
 // half of it: its upper edge −0.030 IS the stage thickness (β₁ ≤ β₂ − clr), and
@@ -82,10 +113,10 @@ inline std::array<double, 2UL> absoluteBeta1Range(const std::array<double, 2UL> 
 /// The 4-DoF feasible set, verbatim from a model's dataset_params.
 struct JointLimits4
 {
-  std::array<double, 2UL> beta2_absolute{};  ///< dataset beta2_range
-  std::array<double, 2UL> beta1_relative{};  ///< dataset beta1_range, RELATIVE to β₂
-  std::array<double, 2UL> alpha1_absolute{}; ///< dataset alpha1_range
-  double alpha2_window = M_PI;               ///< |α₂ − α₁| ≤ this (PINN training constraint)
+  std::array<double, 2UL> beta2_absolute{};                ///< dataset beta2_range
+  std::array<double, 2UL> beta1_relative{};                ///< dataset beta1_range, RELATIVE to β₂
+  std::array<double, 2UL> alpha2_absolute{-1.5 * M_PI, 1.5 * M_PI}; ///< dataset alpha2_range (α₃ ≡ 0, so absolute)
+  std::array<double, 2UL> alpha1_relative{-M_PI, M_PI};    ///< dataset alpha1_range, RELATIVE to α₂
 };
 
 /// β₁'s live window given β₂: the relative window, intersected with β₁'s own
@@ -128,10 +159,61 @@ inline bool isFeasible4(const std::array<double, 4UL> &q, const JointLimits4 &li
   if (beta1 < abs1[0UL] - tol || beta1 > abs1[1UL] + tol)
     return false;
 
-  if (alpha1 < lim.alpha1_absolute[0UL] - tol || alpha1 > lim.alpha1_absolute[1UL] + tol)
+  if (alpha2 < lim.alpha2_absolute[0UL] - tol || alpha2 > lim.alpha2_absolute[1UL] + tol)
     return false;
 
-  return std::fabs(alpha2 - alpha1) <= lim.alpha2_window + tol;
+  const double alpha_rel = alpha1 - alpha2;
+  return alpha_rel >= lim.alpha1_relative[0UL] - tol && alpha_rel <= lim.alpha1_relative[1UL] + tol;
+}
+
+/// The α part of isFeasible4 alone, for callers that need to distinguish "the
+/// robot is wound up beyond the trained rotary box" from a genuine β violation.
+inline bool alphaFeasible(const double alpha1, const double alpha2, const JointLimits4 &lim,
+                          const double tol = 0.00)
+{
+  if (alpha2 < lim.alpha2_absolute[0UL] - tol || alpha2 > lim.alpha2_absolute[1UL] + tol)
+    return false;
+  const double rel = alpha1 - alpha2;
+  return rel >= lim.alpha1_relative[0UL] - tol && rel <= lim.alpha1_relative[1UL] + tol;
+}
+
+/// Shift a feasible IK goal by a JOINT multiple of 2π (both α together, so the
+/// relative angle -- and therefore the tube shape -- is untouched) onto the
+/// representative closest to the measured start configuration.
+///
+/// Rationale: joint angles on the wire are absolute motor angles, so planning
+/// toward α + 2πk is a real, physical full turn away from planning toward α.
+/// posCTRL returns its solution on the principal branch (α₂ ∈ [-π, π)); when the
+/// robot currently sits near the far end of its ±1.5π travel, the equivalent
+/// representative one turn over can be much closer, and it is still inside both
+/// the trained box and the drives' travel. Candidates that leave the trained α
+/// box are discarded; k = 0 always survives, so this never returns an infeasible
+/// goal from a feasible input.
+inline std::array<double, 4UL> nearestGoalRepresentative(const std::array<double, 4UL> &q_goal,
+                                                         const std::array<double, 4UL> &q_start,
+                                                         const JointLimits4 &lim)
+{
+  std::array<double, 4UL> best = q_goal;
+  double bestCost = std::max(std::fabs(q_goal[2UL] - q_start[2UL]),
+                             std::fabs(q_goal[3UL] - q_start[3UL]));
+
+  for (const double k : {-1.0, 1.0})
+  {
+    const double a1 = q_goal[2UL] + k * 2.0 * M_PI;
+    const double a2 = q_goal[3UL] + k * 2.0 * M_PI;
+    if (!alphaFeasible(a1, a2, lim))
+      continue;
+
+    const double cost = std::max(std::fabs(a1 - q_start[2UL]), std::fabs(a2 - q_start[3UL]));
+    if (cost < bestCost)
+    {
+      bestCost = cost;
+      best[2UL] = a1;
+      best[3UL] = a2;
+    }
+  }
+
+  return best;
 }
 
 }  // namespace ctr_kinematics_pinn

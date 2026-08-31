@@ -15,6 +15,9 @@
 #include "interfaces/srv/recording.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 
+#include "ctr_common/diag_csv.hpp"
+#include "manager/bearing_gate.hpp"
+
 #include <blaze/Blaze.h>
 #include <Eigen/Dense>
 #include <tf2_ros/transform_listener.h>
@@ -27,6 +30,7 @@
 #include <algorithm>
 #include <vector>
 #include <array>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <atomic>
@@ -166,6 +170,15 @@ private:
     std::vector<blaze::StaticVector<double, 6>> adjustConfigurationListStepSize(
         const std::vector<blaze::StaticVector<double, 6>>& q_list_in, double step_size);
     void log_position(Eigen::Vector3d position, std::string prefix = "");
+
+    // Structured diagnostic records (manager_diag.csv); one wide header, one
+    // event type per row -- see initDiagCsv() for the column contract.
+    void initDiagCsv();
+    void diagPreRotate(const Eigen::Vector3d &Xd, const manager_gate::PreRotation &pr);
+    void diagPlanRequest(const Eigen::Vector3d &Xd, const char *mode);
+    void diagPlanResponse(bool success, double ik_error, const std::string &message);
+    void diagPathLoaded(size_t waypoints_in, size_t waypoints_out, double max_step_alpha);
+    void diagDeployComplete(const Eigen::Vector3d &Xd, const Eigen::Vector3d &tip, const Eigen::Vector3d &sim);
     
     // Member constants
     static constexpr size_t k_forward_button_idx = 1;
@@ -237,7 +250,16 @@ private:
     bool m_retracting = false;
 
     double k_ik_error_threshold = 0.003;
-    
+
+    // Structured diagnostics (thread-safe writer; records from the control loop
+    // and the planner-response callbacks interleave by wall time).
+    ctr_common::DiagCsv m_diag;
+    double m_last_prerotate_cmd = std::numeric_limits<double>::quiet_NaN(); // edge-trigger for pre_rotate records
+    bool m_deploy_complete_logged = false; // edge-trigger for deploy_complete records
+    // Trained α boxes for the pre-rotation gate; the defaults ARE the shipped
+    // dataset values (α₂ ± 1.5π absolute, α₁ − α₂ ± π), β fields unused here.
+    const ctr_kinematics_pinn::JointLimits4 k_alpha_limits{};
+
     // Automated test variables
     std::atomic<bool> m_test_running{false};
     TestState m_test_state = TestState::Idle;

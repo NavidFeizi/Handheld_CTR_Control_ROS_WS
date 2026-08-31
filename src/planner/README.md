@@ -1,8 +1,11 @@
 # planner
 
 Sampling-based motion planning for CTR deployment. Builds a collision-free,
-follow-the-leader path from the current configuration to a target using OMPL's AORRTC,
-with the PINN supplying kinematics and the EKF force estimate shaping the plan.
+follow-the-leader path from the current configuration to a target using OMPL's
+RRT-Connect in a two-phase scheme (rotate, then deploy analytically), with the PINN
+supplying kinematics and the EKF force estimate shaping the plan. (An AORRTC
+configuration exists in `Planner.hpp` but the production path selects
+`PLANNER_RRT_CONNECT` — see `planner_node.cpp`.)
 
 Pure computation — no hardware. It hands finished paths to `manager` through a CSV in
 `Shared_Files/`.
@@ -33,8 +36,9 @@ In normal operation `manager`'s GUI issues these requests, not you.
 
 `launch/launch.py` starts `planner_node` on CPU core 9. It declares **no** launch
 arguments at all — the simplest case of the workspace-wide rule that
-`config/*_params.yaml` is authoritative. Everything is configured through the YAML, or
-at runtime with `ros2 param set planner_node <param> <value>`.
+`config/*_params.yaml` is authoritative. Everything is configured through the YAML.
+(Not at runtime: `solve_time` and `verbose_planner_log` are read once at startup, and
+the node registers no parameter callback.)
 
 ## Parameters
 
@@ -49,6 +53,12 @@ parameters](../../README.md#configuration-and-parameters).
 | `models_dir` | `""` | Empty → installed `share/ctr_kinematics_pinn/models` |
 | `solve_time` | 3.0 | OMPL solve budget per request, seconds |
 | `data_root` | `""` | Empty → env `CTR_DATA_ROOT` → legacy workspace climb |
+| `verbose_planner_log` | `false` | Print the planning library's debug diagnostics (state-space bounds, planner range) |
+
+Every `generateTrajectory` request also appends a structured record (target, azimuth,
+start/goal configurations, IK diagnostics, projection deltas, timings, outcome) to
+`<data_root>/Output_Files/diagnostics/planner/<timestamp>/planner_diag.csv`; correlate
+with the manager's `manager_diag.csv` by wall time.
 
 `temp_dir` is deliberately **not** set in the YAML. The node defaults it to
 `<data_root>/Shared_Files`, which is the live path channel to `manager` — overriding

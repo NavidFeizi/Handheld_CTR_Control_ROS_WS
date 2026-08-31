@@ -85,12 +85,13 @@ static ompl::base::Cost revoluteCostToGoalHelper(const ompl::base::State *state,
     if (!state || !goal)
         return Cost(0.00);
 
+    // Raw |a - b|: joint values are absolute motor angles, so the plain
+    // difference is the true remaining rotation. A wrapped diff reported a
+    // state a full physical turn from the goal as "aligned", flattening the
+    // cost-to-go exactly for goals across the state-space seam.
     auto angleDiff = [](double a, double b)
     {
-        double d = a - b;
-        while (d > M_PI)  d -= 2.00 * M_PI;
-        while (d < -M_PI) d += 2.00 * M_PI;
-        return std::fabs(d);
+        return std::fabs(a - b);
     };
 
     // Read revolute joints at indices 2 and 3 (4-DoF: [β₁, β₂, α₁, α₂])
@@ -138,10 +139,14 @@ static ompl::base::Cost revoluteCostToGoalHelper(const ompl::base::State *state,
 }
 
 // Set a cost-to-go heuristic using the same per-joint weights as stateCost.
+// (These used to be {1000, 500} -- half of stateCost's {c1, c2} -- so the
+// heuristic and the integral cost disagreed by a factor of 2 in the same units.)
 template <size_t controlInputs>
 struct _RevoluteWeightsHolder
 {
-    static constexpr std::array<double, 2UL> weights = {1000.0, 500.0};
+    static constexpr std::array<double, 2UL> weights = {
+        CTR_RevoluteJointObjective<controlInputs>::c1,
+        CTR_RevoluteJointObjective<controlInputs>::c2};
 };
 
 template <size_t controlInputs>
@@ -161,12 +166,10 @@ ompl::base::Cost CTR_RevoluteJointObjective<controlInputs>::stateCost(const ompl
 {
     const auto *pos = state->as<ompl::base::RealVectorStateSpace::StateType>();
 
+    // Raw |a - b| -- absolute motor angles; see revoluteCostToGoalHelper.
     auto angleDiff = [](double a, double b)
     {
-        double d = a - b;
-        while (d > M_PI)  d -= 2.0 * M_PI;
-        while (d < -M_PI) d += 2.0 * M_PI;
-        return std::fabs(d);
+        return std::fabs(a - b);
     };
 
     // Revolute joints are at indices 2 (α₁) and 3 (α₂) in the 4-DoF state.

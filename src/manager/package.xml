@@ -15,6 +15,8 @@
   <depend>std_msgs</depend>
   <depend>interfaces</depend>
   <depend>ctr_common</depend>
+  <!-- Headers only (dataset_bounds.hpp); the target is never linked, so LibTorch stays out. -->
+  <build_depend>ctr_kinematics_pinn</build_depend>
 
   <exec_depend>ros2launch</exec_depend>
 

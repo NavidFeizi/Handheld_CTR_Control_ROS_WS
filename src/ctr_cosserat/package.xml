@@ -13,6 +13,11 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <!-- Only for the opt-in fk_xcheck tool (-DCTR_COSSERAT_BUILD_XCHECK=ON);
+       the exported library itself is dependency-free. Declared unconditionally
+       so colcon orders the build correctly when the flag is on. -->
+  <build_depend>ctr_kinematics_pinn</build_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>

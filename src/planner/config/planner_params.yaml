@@ -5,5 +5,6 @@ planner_node:
     models_dir: ""    # empty -> installed share/ctr_kinematics_pinn/models
     solve_time: 3.0   # OMPL solve budget per request [s]
     data_root: ""     # empty -> env CTR_DATA_ROOT -> legacy workspace climb
+    verbose_planner_log: false  # true -> print state-space bounds / range diagnostics per solve
     # temp_dir intentionally not set here: the node defaults it to
     # <data_root>/Shared_Files, which is the live path channel to the manager.

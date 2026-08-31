@@ -259,6 +259,13 @@ private:
     {
       m_x[3UL + i] = msg->h[i]; // quaternion
     }
+    const double h_norm2 = msg->h[0] * msg->h[0] + msg->h[1] * msg->h[1] +
+                           msg->h[2] * msg->h[2] + msg->h[3] * msg->h[3];
+    if (h_norm2 < 1e-12)
+    {
+      RCLCPP_WARN_ONCE(this->get_logger(),
+                       "Tip orientation measurement is a zero-norm quaternion - the EKF orientation update is running on invalid data");
+    }
     m_first_measurement_received = true;
     RCLCPP_DEBUG(this->get_logger(), "x: %0.4f, %0.4f, %0.4f, q: %0.4f, %0.4f, %0.4f, %0.4f", m_x[0], m_x[1], m_x[2], m_x[3], m_x[4], m_x[5], m_x[6]);
   }

@@ -220,6 +220,36 @@ One-time verification on the real robot, in order:
 5. Shared_Files round-trip: plan → `plannedPath.csv` (written atomically) →
    deployment; Slicer's RobotTrajectory command path is functional for the
    first time (service type fixed).
+
+### Lab-machine azimuth sweep (after the 2026-08-31 α-domain fix)
+
+The α-domain unification (α₂ absolute ±1.5π, α₁ relative α₂ ± π — see CLAUDE.md
+"One definition of a legal joint configuration") specifically targets the failures
+where probe targets near the robot_base **+y** axis either never produced a plan or
+produced plans that executed and landed away from the probe. Acceptance test:
+
+1. Bring up the full system (`system_bringup`, `planner`, `manager`), enable, home,
+   start the procedure as usual.
+2. Place the EM probe at a fixed radius at ~8 bearings around the tool axis in 45°
+   steps, **including the +y sector that used to fail**. For each bearing:
+   - The pre-rotation must settle (watch the new
+     `Pre-rotating tubes: bearing ... -> command alpha ...` line — the commanded α is
+     now the nearest representative, so it must never swing ~350° for a small bearing
+     change).
+   - A plan must be produced without the 5 s reject-retry loop
+     (`Plan rejected: ...` repeating means a gate is still closed — the message now
+     names it, including the "rotary axes are wound up" diagnosis).
+   - Watch for the new WARNs; each one is a specific defect signature:
+     `IK queried the network OUTSIDE its trained alpha domain` (extrapolation
+     tripwire — should never fire now), `clampJointPositions` clamps in `pinn_fk`,
+     zero-norm quaternion in `ekf_node`, joint-target limit warnings in `robot_node`.
+   - Deploy, then read the `Deployment complete:` line — it prints target vs EM tip
+     vs PINN tip. |EM tip − target| < 3 mm is the pass criterion; if the EM and PINN
+     tips agree but both miss the target, suspect registration, not the model.
+3. Collect `Output_Files/diagnostics/planner/<ts>/planner_diag.csv` and
+   `Output_Files/diagnostics/manager/<ts>/manager_diag.csv` (one row per request /
+   gate event / deployment; correlate by wall time) together with the usual
+   `log/Robot/*.txt`.
 ---
 
 

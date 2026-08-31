@@ -29,7 +29,14 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(interfaces REQUIRED)
 find_package(ctr_common REQUIRED)
+find_package(ctr_kinematics_pinn REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+
+# dataset_bounds.hpp only: include path, NEVER the link interface -- linking the
+# PINN target drags LibTorch into the manager (see CLAUDE.md; planner is the
+# worked example of the same pattern).
+get_target_property(_pinn_include_dirs ctr_kinematics_pinn::ctr_kinematics_pinn
+                    INTERFACE_INCLUDE_DIRECTORIES)
 
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -52,7 +59,7 @@ add_executable(master
     src/master_qt_gui.cpp
     include/manager/master_node.hpp
     include/manager/master_qt_gui.hpp)
-target_include_directories(master PRIVATE include)
+target_include_directories(master PRIVATE include ${_pinn_include_dirs})
 target_link_libraries(master Qt5::Widgets Qt5::Core Qt5::Concurrent ctr_common::ctr_common)
 ament_target_dependencies(master rclcpp std_msgs std_srvs interfaces ament_index_cpp 
                             tf2 tf2_ros geometry_msgs tf2_eigen Eigen3)
@@ -73,6 +80,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_csv_path_io test/test_csv_path_io.cpp)
   target_include_directories(test_csv_path_io PRIVATE include)
   target_link_libraries(test_csv_path_io ctr_common::ctr_common)
+
+  # Pure pre-rotation gate maths (bearing_gate.hpp); Torch-free by the same
+  # include-path-only rule as the master target.
+  ament_add_gtest(test_bearing_gate test/test_bearing_gate.cpp)
+  target_include_directories(test_bearing_gate PRIVATE include ${_pinn_include_dirs})
 endif()
 
 ament_package()

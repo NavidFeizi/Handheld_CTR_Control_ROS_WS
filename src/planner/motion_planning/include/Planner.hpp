@@ -69,16 +69,15 @@
 #include "InformedSamplerGuard.hpp"
 #include "Logging.hpp"
 
-// Helper: wrap angular difference to [-pi, pi]
-static inline double shortestAngleDiff(double a, double b)
-{
-	double d = a - b;
-	while (d > M_PI)
-		d -= 2.00 * M_PI;
-	while (d < -M_PI)
-		d += 2.00 * M_PI;
-	return d;
-}
+// NOTE: there is deliberately NO shortestAngleDiff helper here any more.
+// Joint values in this state space are absolute motor angles: the drives travel
+// ±2.5π on α₁ and ±1.5π on α₂, and reaching a 2π-shifted representation is a
+// real physical turn. Every wrapped difference in the planner therefore
+// understated true travel cost by up to 2π and made states across the box
+// seam look adjacent when no valid edge could connect them. 2π-equivalence is
+// resolved once, when the goal representative is chosen (see
+// ctr_kinematics_pinn::nearestGoalRepresentative) -- everywhere else a plain
+// difference is the truth.
 
 // Centralized composite parameters shared between objective and diagnostics
 struct CompositeParams
@@ -150,16 +149,13 @@ static inline ompl::base::Cost ctrStateSpaceCostToGo(const ompl::base::State *s1
 		return ompl::base::Cost(0.00);
 
 	double sum = 0.00;
-	// prismatic indices (0,1)
-	for (std::size_t i = 0; i < 2; ++i)
+	// All four joints: plain Euclidean. Angles are absolute motor values, so a
+	// raw difference IS the travel; wrapping it would understate the cost-to-go
+	// for goals across the box seam and break the heuristic's admissible-but-
+	// informative balance in exactly the hard cases.
+	for (std::size_t i = 0; i < 4; ++i)
 	{
 		const double d = x->values[i] - y->values[i];
-		sum += d * d;
-	}
-	// revolute indices (2,3)
-	for (std::size_t i = 2; i < 4; ++i)
-	{
-		const double d = shortestAngleDiff(x->values[i], y->values[i]);
 		sum += d * d;
 	}
 	return ompl::base::Cost(std::sqrt(sum));
@@ -261,6 +257,9 @@ public:
 	// resulting goal configuration is consistent with the loaded (deflected)
 	// robot. Returns true if the tip error is within posTol.
 	bool solveInverseKinematics(JointVector &q, const blaze::StaticVector<double, 3UL> &targetTip, double posTol);
+	// Overload exposing posCTRL's per-solve diagnostics (iterations, restarts,
+	// projection deltas, domain tripwires) for the caller to log.
+	bool solveInverseKinematics(JointVector &q, const blaze::StaticVector<double, 3UL> &targetTip, double posTol, IkDiagnostics &diag);
 	bool resetStartState(const JointVector &q0);
 	bool resetGoalState(const JointVector &qf);
 	bool resetStartAndGoalStates(const JointVector &q0, const JointVector &qf);
@@ -349,14 +348,25 @@ private:
 	// silently regressed once already (see ctr_kinematics_pinn/dataset_bounds.hpp).
 	std::string describeRejectedState(const char *label, const JointVector &q) const;
 
+	// Shift a goal's α pair by a joint 2πk onto the representative nearest the
+	// CURRENT start state (4-DoF only; other layouts pass through unchanged).
+	// posCTRL returns its solution on the principal branch (α₂ ∈ [-π, π)); when
+	// the robot sits near the far end of its rotary travel the equivalent
+	// representative one turn over -- the same tube shape -- can be up to 2π
+	// closer in real motor travel. Requires a start state to already be set;
+	// with none, the goal passes through unchanged.
+	JointVector selectGoalRepresentative(const JointVector &q_f) const;
+
 	// The START state is MEASURED, not sampled: it comes from live encoder feedback. The
 	// dataset's prismatic range and the stage's mechanical travel are the same interval
 	// (β₁ ∈ [-0.156, -0.064] on the handheld set), so a homed carriage sits ON the bound
 	// with sub-millimetre margin and noise can put it a hair outside. Both rejections that
 	// follow are silent: isValid() fails here, and OMPL's own start-state check ("Discarded
-	// start state") is suppressed by setLogLevel(LOG_NONE) in planner_node. Nudge the
-	// prismatic entries back inside the box and report how far; α is NEVER touched, since
-	// α₁ ∈ [α₂ - π, α₂ + π] is a hard PINN training constraint, not a box bound.
+	// start state") used to be suppressed by setLogLevel(LOG_NONE) in planner_node. Nudge
+	// the prismatic entries back inside the box and report how far; α is NEVER touched:
+	// clamping or wrapping a measured motor angle would fabricate a start the robot is
+	// not actually at (a 2π-shifted representation is a real turn away). A wound-up α
+	// is rejected with a diagnosis instead -- see describeRejectedState().
 	// Returns the largest correction applied, in metres.
 	double clampMeasuredPrismatics(JointVector &q) const;
 
@@ -388,9 +398,10 @@ template <size_t controlInputs>
 Planner<controlInputs>::Planner(PINNs<controlInputs> &CTR_model)
 	: m_externalForce(0.0), m_CTR_model(CTR_model)
 {
-	// CTRStateSpace uses Euclidean distance for prismatic dims and
-	// shortest-path angular distance/interpolation for revolute dims,
-	// so the planner correctly handles angle wrap-around.
+	// CTRStateSpace is a plain box with Euclidean distance on ALL dims -- see
+	// CTR_StateSpace.hpp for why the former wrapped angular metric was removed
+	// (it reported goals across the ±π seam as adjacent while the box bounds
+	// made them unreachable).
 	m_space = std::make_shared<CTRStateSpace>();
 
 	m_coordBound = std::make_shared<ompl::base::RealVectorBounds>(controlInputs);
@@ -429,13 +440,14 @@ Planner<controlInputs>::Planner(PINNs<controlInputs> &CTR_model)
 	// Enable discrete motion validator for edge checking (deployment monotonicity & ordering)
 	m_si->setMotionValidator(std::make_shared<CTR_DiscreteMotionValidator<controlInputs>>(m_si, m_CTR_model));
 	// Defines the segment granularity for the discrete motion validator.
-	// getMaximumExtent() is dominated by the revolute joints (≈ sqrt(3*(2π)²) ≈ 10.88)
-	// so the segment length = fraction × extent. Using 3e-4 keeps the segment length
-	// at the same scale as defaultRange (also 3e-4 × extent), ensuring each planned
-	// motion receives at least one intermediate validity check from
-	// CTR_DiscreteMotionValidator (monotonicity, β ordering, etc.).
-	// A value of 3e-3 would make segments 10× longer than the range,
-	// meaning validSegmentCount = 1 always and intermediate checks never fire.
+	// getMaximumExtent() is dominated by the revolute joints: with the dataset
+	// boxes α₁ ∈ ±2.5π and α₂ ∈ ±1.5π it is ≈ sqrt((5π)² + (3π)² + β terms) ≈ 18.3.
+	// The segment length = fraction × extent. Note that at 3e-4 the segment
+	// length EQUALS defaultRange (same factor), so a maximum-length edge gets
+	// validSegmentCount = 1 and the motion validator's intermediate loop does
+	// NOT fire for it -- only endpoints are checked; shorter edges get no
+	// intermediate checks either. Halve this fraction if mid-edge monotonicity
+	// checks are ever needed on maximum-length extensions.
 	m_si->getStateSpace()->setLongestValidSegmentFraction(3.00e-4); //(3e-4);
 
 	// setup the space information from the Real state space
@@ -508,15 +520,17 @@ bool Planner<controlInputs>::resetGoalState(const blaze::StaticVector<double, co
 	if (!m_stateValidityChecker)
 		throw std::runtime_error("resetGoalState() requires an active state validity checker. Did you call cleanup()?");
 
+	const JointVector qf_adj = this->selectGoalRepresentative(qf);
+
 	auto *stored = m_goalState->get()->as<ompl::base::RealVectorStateSpace::StateType>();
 	for (size_t i = 0; i < controlInputs; ++i)
-		stored->values[i] = qf[i];
+		stored->values[i] = qf_adj[i];
 
 	if (!m_si->satisfiesBounds(stored))
 		throw std::runtime_error("New goal state violates state space bounds (check alpha values)!");
 
 	if (!m_stateValidityChecker->isValid(stored))
-		throw std::runtime_error(this->describeRejectedState("New goal", qf));
+		throw std::runtime_error(this->describeRejectedState("New goal", qf_adj));
 
 	// Replace existing goal with the updated state
 	m_pdef->clearGoal();
@@ -529,16 +543,16 @@ bool Planner<controlInputs>::resetGoalState(const blaze::StaticVector<double, co
 	if (m_si)
 	{
 		if (auto motionValidator = std::dynamic_pointer_cast<CTR_DiscreteMotionValidator<controlInputs>>(m_si->getMotionValidator()))
-			motionValidator->setGoalBetas(qf[0UL], qf[1UL]);
+			motionValidator->setGoalBetas(qf_adj[0UL], qf_adj[1UL]);
 	}
 
 	if (auto validityChecker = std::dynamic_pointer_cast<CTR_StateValidityChecker<controlInputs>>(m_si ? m_si->getStateValidityChecker() : ompl::base::StateValidityCheckerPtr()))
-		validityChecker->setGoalBetas(qf[0UL], qf[1UL]);
+		validityChecker->setGoalBetas(qf_adj[0UL], qf_adj[1UL]);
 
 	if (this->m_informedSampler)
 	{
 		if (m_fallbackSampler)
-			m_fallbackSampler->setGoalAngles(qf[2UL], qf[3UL]);
+			m_fallbackSampler->setGoalAngles(qf_adj[2UL], qf_adj[3UL]);
 
 		if (auto inf = std::dynamic_pointer_cast<CTR_PINNsInformedSampler<controlInputs>>(this->m_informedSampler))
 			inf->setGoalState(m_goalState->get());
@@ -608,9 +622,59 @@ std::string Planner<controlInputs>::describeRejectedState(const char *label, con
 	   << "], b2 = [" << lb[1UL] << ", " << ub[1UL] << "], stage clearance = " << clr
 	   << " -> b1 must also be <= b2 - clr = " << (q[1UL] - clr);
 	if constexpr (controlInputs == 4)
-		os << ", and |a2 - a1| = " << std::fabs(q[3UL] - q[2UL]) << " must be <= pi"
-		   << " (order [b1, b2, a1, a2])";
+	{
+		const auto &lim = m_CTR_model.getJointLimits4();
+		os << ", a2 = " << q[3UL] << " must be in [" << lim.alpha2_absolute[0UL] << ", "
+		   << lim.alpha2_absolute[1UL] << "], and a1 - a2 = " << (q[2UL] - q[3UL])
+		   << " must be in [-pi, pi] (order [b1, b2, a1, a2])";
+
+		if (!ctr_kinematics_pinn::alphaFeasible(q[2UL], q[3UL], lim))
+		{
+			// Every α pair has a per-tube 2πk equivalent inside the trained box
+			// (the same physical shape), so an α rejection always means the rotary
+			// axes are wound up beyond the box, not that the shape is infeasible.
+			const double a2_eq = ctr_kinematics_pinn::wrapToPi(q[3UL]);
+			const double a1_eq = a2_eq + ctr_kinematics_pinn::wrapToPi(q[2UL] - q[3UL]);
+			os << ". The equivalent in-box configuration is a1 = " << a1_eq << ", a2 = " << a2_eq
+			   << ": the rotary axes are wound up by whole turns -- unwind them (manager"
+			   << " pre-rotation) or re-home before planning";
+		}
+	}
 	return os.str();
+}
+
+template <size_t controlInputs>
+typename Planner<controlInputs>::JointVector Planner<controlInputs>::selectGoalRepresentative(const JointVector &q_f) const
+{
+	if constexpr (controlInputs == 4)
+	{
+		if (!m_pdef || m_pdef->getStartStateCount() == 0UL)
+			return q_f;
+
+		const auto *st = m_pdef->getStartState(0UL)->as<ompl::base::RealVectorStateSpace::StateType>();
+		const auto rep = ctr_kinematics_pinn::nearestGoalRepresentative(
+			{q_f[0UL], q_f[1UL], q_f[2UL], q_f[3UL]},
+			{st->values[0UL], st->values[1UL], st->values[2UL], st->values[3UL]},
+			m_CTR_model.getJointLimits4());
+
+		if (rep[2UL] != q_f[2UL])
+		{
+			std::cout << std::fixed << std::setprecision(4)
+			          << "[Planner] goal alpha shifted to the representative nearest the start: ["
+			          << q_f[2UL] << ", " << q_f[3UL] << "] -> [" << rep[2UL] << ", " << rep[3UL]
+			          << "] (start alpha [" << st->values[2UL] << ", " << st->values[3UL] << "])"
+			          << std::endl;
+		}
+
+		JointVector out = q_f;
+		out[2UL] = rep[2UL];
+		out[3UL] = rep[3UL];
+		return out;
+	}
+	else
+	{
+		return q_f;
+	}
 }
 
 template <size_t controlInputs>
@@ -643,10 +707,13 @@ bool Planner<controlInputs>::setStartState(const blaze::StaticVector<double, con
 template <size_t controlInputs>
 bool Planner<controlInputs>::setGoalState(const blaze::StaticVector<double, controlInputs> &q_f)
 {
-	// setting the start state for the CTR robot
+	// Choose the 2πk goal representative nearest the start before validation, so
+	// the planner is never asked to rotate a whole extra turn.
+	const JointVector q_adj = this->selectGoalRepresentative(q_f);
+
 	auto *state = m_goalState->get()->as<ompl::base::RealVectorStateSpace::StateType>();
 	for (size_t i = 0; i < controlInputs; ++i)
-		state->values[i] = q_f[i]; // Simplified assignment
+		state->values[i] = q_adj[i]; // Simplified assignment
 
 	if (!m_si->satisfiesBounds(state))
 		throw std::runtime_error("Goal state violates state space bounds (check alpha values)!");
@@ -667,13 +734,13 @@ bool Planner<controlInputs>::setGoalState(const blaze::StaticVector<double, cont
 
 		if (motion_validator && validity_checker)
 		{
-			motion_validator->setGoalBetas(q_f[0UL], q_f[1UL]);
-			validity_checker->setGoalBetas(q_f[0UL], q_f[1UL]);
+			motion_validator->setGoalBetas(q_adj[0UL], q_adj[1UL]);
+			validity_checker->setGoalBetas(q_adj[0UL], q_adj[1UL]);
 		}
 
 		// Also propagate goal revolute angles to CTR_StateSampler for rotation-focused sampling bias
 		if (m_fallbackSampler)
-			m_fallbackSampler->setGoalAngles(q_f[2UL], q_f[3UL]);
+			m_fallbackSampler->setGoalAngles(q_adj[2UL], q_adj[3UL]);
 
 		// If we have created an informed sampler earlier, update its goal so it
 		// can compute the goal tip position for informed sampling.
@@ -709,7 +776,7 @@ bool Planner<controlInputs>::setGoalState(const blaze::StaticVector<double, cont
 	}
 	else
 	{
-		throw std::runtime_error(this->describeRejectedState("Goal", q_f));
+		throw std::runtime_error(this->describeRejectedState("Goal", q_adj));
 	}
 }
 
@@ -1315,7 +1382,7 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 	else
 	{
 		std::cerr << "[planTwoPhase] Phase 1 failed to find a solution. "
-		          << "Falling back to single-phase planning (warm-starting from Phase 1 tree).\n";
+		          << "Falling back to single-phase planning (cold restart; the Phase 1 tree is discarded by clearQuery()).\n";
 		// Restore full prismatic bounds so the combined objective can explore the whole space.
 		const auto [lb_pr, ub_pr] = m_CTR_model.getInputPosBounds();
 		for (size_t i = 0; i < 2; ++i)
@@ -1329,7 +1396,10 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 		this->resetGoalState(q_goal_orig);
 		// Swap to the combined objective; replan() will inherit it via m_pdef.
 		this->m_pdef->setOptimizationObjective(this->allocateObjective(planningObjective::OBJECTIVE_REVJOINTS_AND_BACKBONE));
-		// Warm-start: reuse the Phase 1 tree instead of discarding it.
+		// NOTE: this is a COLD restart, not a warm start -- resetGoalState() above
+		// called clearQuery(), which RRT-Connect does not override, so it falls
+		// through to clear() and both trees are destroyed. The fallback therefore
+		// costs the full runTime again (worst case 1.5 x solve_time in total).
 		return this->replan(runTime);
 	}
 
@@ -1538,10 +1608,12 @@ bool Planner<controlInputs>::planDeployment(const JointVector &q_start, const Jo
 	// The deployment schedules hold alpha constant at the goal values, so the
 	// current revolute angles must already agree with the goal within alphaTol;
 	// correcting a larger mismatch would rotate deployed tubes and requires a
-	// full planTwoPhase().
+	// full planTwoPhase(). RAW difference on purpose: these are absolute motor
+	// angles, and a wrapped check would wave through a pose 2π − ε away -- the
+	// schedule would then command a full unmanaged turn on its first waypoint.
 	for (size_t i = 2; i < controlInputs; ++i)
 	{
-		const double alphaErr = std::abs(shortestAngleDiff(q_start[i], q_goal[i]));
+		const double alphaErr = std::abs(q_start[i] - q_goal[i]);
 		if (alphaErr > alphaTol)
 		{
 			std::cerr << "[planDeployment] Revolute joint " << i - 1 << " is " << alphaErr
@@ -1785,13 +1857,11 @@ void Planner<controlInputs>::analyzeSolution(bool dumpCSV, const std::string &cs
 	constexpr double c1    = CTR_RevoluteJointObjective<controlInputs>::c1;
 	constexpr double c2    = CTR_RevoluteJointObjective<controlInputs>::c2;
 
+	// Raw difference: joint values are absolute motor angles, so this is the
+	// true remaining travel (a wrapped diff would report a path ending a full
+	// turn from the goal as "aligned").
 	auto shortest = [](double a, double b) {
-		double d = a - b;
-		while (d > M_PI)
-			d -= 2.0 * M_PI;
-		while (d < -M_PI)
-			d += 2.0 * M_PI;
-		return std::fabs(d);
+		return std::fabs(a - b);
 	};
 
 	// Backbone weights from CTR_BackboneLengthObjective — use static constexpr class members.
@@ -2247,12 +2317,11 @@ ompl::base::OptimizationObjectivePtr Planner<controlInputs>::RevoluteJointsAndBa
 
 	private:
 		// Helpers
+		// Raw |a - b|: absolute motor angles, so the plain difference is the true
+		// angular travel (see the note where shortestAngleDiff used to live).
 		static double shortestDiff(double a, double b)
 		{
-			double d = a - b;
-			while (d > M_PI) d -= 2.0 * M_PI;
-			while (d < -M_PI) d += 2.0 * M_PI;
-			return std::fabs(d);
+			return std::fabs(a - b);
 		}
 		static double computeMaxAngleErrDeg(double a1, double a2, const std::array<double,2UL> &goalAng)
 		{
@@ -2816,8 +2885,15 @@ void Planner<controlInputs>::setCTR_externalForce(const blaze::StaticVector<doub
 template <size_t controlInputs>
 bool Planner<controlInputs>::solveInverseKinematics(JointVector &q, const blaze::StaticVector<double, 3UL> &targetTip, const double posTol)
 {
+	IkDiagnostics diag;
+	return this->solveInverseKinematics(q, targetTip, posTol, diag);
+}
+
+template <size_t controlInputs>
+bool Planner<controlInputs>::solveInverseKinematics(JointVector &q, const blaze::StaticVector<double, 3UL> &targetTip, const double posTol, IkDiagnostics &diag)
+{
 	// IK on the loaded robot: Jacobian and forward model both see f_ext.
-	this->m_CTR_model.posCTRL(q, targetTip, posTol, this->m_externalForce);
+	this->m_CTR_model.posCTRL(q, targetTip, posTol, this->m_externalForce, &diag);
 
 	blaze::StaticVector<double, 3UL> tip;
 	this->m_CTR_model.getPosDistal(q, this->m_externalForce, tip);

@@ -62,11 +62,19 @@ struct IkDiagnostics
     size_t iterations = 0UL;         ///< descent steps consumed across all attempts
     size_t restarts = 0UL;           ///< re-seeds used (0 = solved from the caller's guess)
     size_t clampedSteps = 0UL;       ///< steps where a prismatic joint hit its window edge
+    size_t alphaCappedSteps = 0UL;   ///< steps where a revolute rate hit the trust-region cap
     size_t nonMonotonicSteps = 0UL;  ///< steps where the tip error GREW
     double maxJinvNorm = 0.00;       ///< largest ||J^+||_F seen; a singularity proxy
     double initialError = 0.00;      ///< ||target - tip|| at the caller's initial guess
     double finalError = 0.00;        ///< ||target - tip|| of the returned configuration
     bool converged = false;          ///< finalError <= posTol
+
+    // --- domain telemetry (4-DoF only; zeros otherwise) ---
+    double maxAbsAlpha2Queried = 0.00;   ///< largest |α₂| the network was asked to evaluate.
+                                         ///< Tripwire: > alpha2_range means extrapolation.
+    double maxAbsAlphaRelQueried = 0.00; ///< largest |α₁ − α₂| queried; > π means extrapolation.
+    std::array<double, 4UL> preProjection{};      ///< best configuration BEFORE the final projection
+    std::array<double, 4UL> projectionDelta{};    ///< finish() adjustment per joint (0 = untouched)
 };
 
 namespace detail
@@ -391,9 +399,9 @@ PINNs<controlInputs>::PINNs(std::string models_dir, std::string model_name, size
     if constexpr (controlInputs == 4)
     {
         m_jointLimits4.beta2_absolute  = m_dataset_params.beta2_range;
-        m_jointLimits4.beta1_relative  = m_dataset_params.beta1_range; // RELATIVE to β₂
-        m_jointLimits4.alpha1_absolute = m_dataset_params.alpha1_range;
-        m_jointLimits4.alpha2_window   = M_PI;
+        m_jointLimits4.beta1_relative  = m_dataset_params.beta1_range;  // RELATIVE to β₂
+        m_jointLimits4.alpha2_absolute = m_dataset_params.alpha2_range; // α₃ ≡ 0, so absolute
+        m_jointLimits4.alpha1_relative = m_dataset_params.alpha1_range; // RELATIVE to α₂
     }
 
     m_batch_size = batch_size;
@@ -1175,6 +1183,14 @@ std::tuple<blaze::StaticVector<double, controlInputs>, blaze::StaticVector<doubl
                                                                    m_dataset_params.beta2_range);
         lb[0UL] = beta1[0UL];
         ub[0UL] = beta1[1UL];
+
+        // alpha1_range is RELATIVE to α₂ in exactly the same way (the dataset
+        // samples α₁ = α₂ + U[alpha1_range]); consuming it as an absolute box
+        // used to pin α₁ to [-π, π] and spill α₂ out of the trained range.
+        const auto alpha1 = ctr_kinematics_pinn::absoluteAlpha1Range(m_dataset_params.alpha1_range,
+                                                                     m_dataset_params.alpha2_range);
+        lb[2UL] = alpha1[0UL];
+        ub[2UL] = alpha1[1UL];
     }
 
     return std::make_tuple(lb, ub);
@@ -1305,7 +1321,12 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     // rejects" true by construction rather than true on average. Order matters:
     // beta2 into its own absolute range first, then beta1 into the window that
     // beta2 implies (which carries both the clearance and protrusion constraints),
-    // then the angle wrap. Each step only tightens what the next one reads.
+    // then the angles. The angles are WRAPPED, not clamped: α is periodic, so the
+    // nearest feasible representative of an out-of-branch angle is a 2πk shift
+    // away -- the same tube shape -- whereas a clamp to the branch edge is a real
+    // rotation that silently turns a converged solve into a miss. α₂ anchors the
+    // pair (it is the dataset's absolute axis); α₁ then lands in α₂ ± π, which
+    // keeps the returned pair inside the trained box by construction.
     const auto finish = [&](blaze::StaticVector<double, controlInputs> &out,
                             const blaze::StaticVector<double, controlInputs> &best,
                             const double bestErr)
@@ -1315,11 +1336,14 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         if constexpr (controlInputs == 4)
         {
             const auto &lim = m_jointLimits4;
+            diag_local.preProjection = {best[0UL], best[1UL], best[2UL], best[3UL]};
             out[1UL] = std::clamp(out[1UL], lim.beta2_absolute[0UL], lim.beta2_absolute[1UL]);
             const auto w1 = ctr_kinematics_pinn::beta1Window(out[1UL], lim);
             out[0UL] = std::clamp(out[0UL], w1[0UL], w1[1UL]);
-            out[2UL] = std::clamp(out[2UL], lim.alpha1_absolute[0UL], lim.alpha1_absolute[1UL]);
-            out[3UL] = std::clamp(out[3UL], out[2UL] - lim.alpha2_window, out[2UL] + lim.alpha2_window);
+            out[3UL] = ctr_kinematics_pinn::wrapToPi(out[3UL]);
+            out[2UL] = out[3UL] + ctr_kinematics_pinn::wrapToPi(out[2UL] - out[3UL]);
+            for (size_t j = 0UL; j < 4UL; ++j)
+                diag_local.projectionDelta[j] = out[j] - best[j];
         }
 
         // Report the error of what is actually returned. The projection can move the
@@ -1393,6 +1417,14 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     // iterations would buy oscillation rather than accuracy.
     static constexpr double integralTipCap = 2.00E-3;
     static constexpr double iLim = integralTipCap / ki;
+    // Trust region on the revolute rates [rad/step]. The prismatic step has
+    // always been limited (half the distance to the window edge); α had no cap
+    // at all, and with λ = 1e-12 a near-singular J⁺ can command tens of radians
+    // in one step, which the wrap then folds into an effectively random
+    // configuration -- a teleport, not a descent step. 0.5 rad keeps the
+    // linearisation honest while still crossing the whole branch within a
+    // fraction of one 250-step attempt.
+    static constexpr double kAlphaStepCap = 0.50;
 
     constexpr size_t nPrismatic = controlInputs / 2UL;
 
@@ -1400,6 +1432,25 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     // loop is what makes re-seeding safe: the value written back at the end can
     // never be worse than what a single descent would have produced.
     double minError = 1.00E3;
+
+    // The caller's guess arrives in absolute motor angles that may sit whole
+    // turns from the principal branch (the drives allow ±3π on α₁). Project the
+    // α pair onto the trained branch BEFORE the first network query -- the first
+    // forward/Jacobian pass used to run on the raw vector, i.e. potentially in
+    // pure extrapolation. The shift is 2πk per tube (shape-preserving), and
+    // finish() returns the principal branch regardless, so callers see no
+    // representation change.
+    if constexpr (controlInputs == 4)
+    {
+        tau[3UL] = ctr_kinematics_pinn::wrapToPi(tau[3UL]);
+        tau[2UL] = tau[3UL] + ctr_kinematics_pinn::wrapToPi(tau[2UL] - tau[3UL]);
+    }
+    else // controlInputs == 6
+    {
+        tau[4UL] = ctr_kinematics_pinn::wrapToPi(tau[4UL]);
+        tau[3UL] = tau[4UL] + ctr_kinematics_pinn::wrapToPi(tau[3UL] - tau[4UL]);
+    }
+
     blaze::StaticVector<double, controlInputs> tau_min(tau);
 
     blaze::StaticVector<double, controlInputs> dtau_dt;
@@ -1494,19 +1545,23 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         return low + (theta - low) - width * std::floor((theta - low) * inv_width);
     };
 
-    // Enforce the revolute-joint invariants the PINN was trained under. Order
-    // matters, and it is the reverse of what reads naturally: α₁ must be wrapped
-    // FIRST, because α₂'s window is anchored to it. Anchoring α₂ to the un-wrapped
-    // α₁ and then shifting α₁ by 2πk leaves |α₁ − α₂| up to 3π, which breaks the
-    // hard training constraint α₂ − π ≤ α₁ ≤ α₂ + π.
+    // Enforce the revolute-joint invariants the PINN was trained under. The
+    // dataset anchors the pair on α₂ (its range is absolute because α₃ ≡ 0) and
+    // stores α₁ RELATIVE to it, so α₂ must be wrapped FIRST and α₁'s window then
+    // anchored to the wrapped α₂. The previous ordering (α₁ absolute, α₂ anchored
+    // to it) was the relative-vs-absolute mixup: it let α₂ walk out to ±2π, past
+    // both the trained range (±1.5π) and the drives' physical travel, so the
+    // network extrapolated exactly in the azimuthal wedge around α₁ ≈ ±π.
+    // Wrapping α₂ to the principal branch [−π, π) keeps every queried pair
+    // strictly inside the trained box.
     auto wrapAngles = [&](blaze::StaticVector<double, controlInputs> &tauCur)
     {
         if constexpr (controlInputs == 4)
         {
-            // α₁ ∈ [−π, π]
-            tauCur[2UL] = wrapToRange(tauCur[2UL], -M_PI, M_PI);
-            // α₂ ∈ [α₁ − π, α₁ + π]
-            tauCur[3UL] = wrapToRange(tauCur[3UL], tauCur[2UL] - M_PI, tauCur[2UL] + M_PI);
+            // α₂ ∈ [−π, π)  (principal branch of the dataset's absolute axis)
+            tauCur[3UL] = wrapToRange(tauCur[3UL], -M_PI, M_PI);
+            // α₁ ∈ [α₂ − π, α₂ + π)  (the dataset's relative window)
+            tauCur[2UL] = wrapToRange(tauCur[2UL], tauCur[3UL] - M_PI, tauCur[3UL] + M_PI);
         }
         else // controlInputs == 6
         {
@@ -1514,10 +1569,10 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             tauCur[2UL] = 0.00;
             // α₃ (outermost tube) remains unactuated
             tauCur[5UL] = 0.00;
-            // α₁ ∈ [−π, π]
-            tauCur[3UL] = wrapToRange(tauCur[3UL], -M_PI, M_PI);
-            // α₂ ∈ [α₁ − π, α₁ + π]
-            tauCur[4UL] = wrapToRange(tauCur[4UL], tauCur[3UL] - M_PI, tauCur[3UL] + M_PI);
+            // α₂ ∈ [−π, π)
+            tauCur[4UL] = wrapToRange(tauCur[4UL], -M_PI, M_PI);
+            // α₁ ∈ [α₂ − π, α₂ + π)
+            tauCur[3UL] = wrapToRange(tauCur[3UL], tauCur[4UL] - M_PI, tauCur[4UL] + M_PI);
         }
     };
 
@@ -1555,16 +1610,17 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
                                             : 0.50 * (bMin[i] + bMax[i]); // degenerate window: midpoint is all there is
         }
 
-        // Revolute joints: α₁ uniform, then α₂ anchored to it.
+        // Revolute joints: α₂ uniform on its principal branch, then α₁ anchored
+        // to it -- the dataset's own sampling scheme, so every seed is trained-on.
         if constexpr (controlInputs == 4)
         {
-            tauCur[2UL] = -M_PI + unit(rng) * 2.00 * M_PI;
-            tauCur[3UL] = tauCur[2UL] - M_PI + unit(rng) * 2.00 * M_PI;
+            tauCur[3UL] = -M_PI + unit(rng) * 2.00 * M_PI;
+            tauCur[2UL] = tauCur[3UL] - M_PI + unit(rng) * 2.00 * M_PI;
         }
         else // controlInputs == 6
         {
-            tauCur[3UL] = -M_PI + unit(rng) * 2.00 * M_PI;
-            tauCur[4UL] = tauCur[3UL] - M_PI + unit(rng) * 2.00 * M_PI;
+            tauCur[4UL] = -M_PI + unit(rng) * 2.00 * M_PI;
+            tauCur[3UL] = tauCur[4UL] - M_PI + unit(rng) * 2.00 * M_PI;
         }
 
         wrapAngles(tauCur);
@@ -1667,10 +1723,31 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             if (stepClamped)
                 diag_local.clampedSteps++;
 
+            // trust region on the revolute rates (see kAlphaStepCap above)
+            bool alphaCapped = false;
+            for (size_t i = nPrismatic; i < controlInputs; ++i)
+            {
+                if (std::fabs(dtau_dt[i]) > kAlphaStepCap)
+                {
+                    dtau_dt[i] = std::copysign(kAlphaStepCap, dtau_dt[i]);
+                    alphaCapped = true;
+                }
+            }
+            if (alphaCapped)
+                diag_local.alphaCappedSteps++;
+
             // updating the CTR joints: q = [beta, theta]
             tau += dtau_dt;
 
             wrapAngles(tau);
+
+            // Domain tripwire: after the wrap these can never exceed the trained
+            // ranges; a non-trivial reading here means the wrap itself regressed.
+            if constexpr (controlInputs == 4)
+            {
+                diag_local.maxAbsAlpha2Queried   = std::max(diag_local.maxAbsAlpha2Queried, std::fabs(tau[3UL]));
+                diag_local.maxAbsAlphaRelQueried = std::max(diag_local.maxAbsAlphaRelQueried, std::fabs(tau[2UL] - tau[3UL]));
+            }
 
             // tip position as predicted by the model
             this->getPosDistal(tau, wf, x_CTR);
@@ -1679,10 +1756,11 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             tipError = target - x_CTR;
 
             // Integrate the position error, with anti-windup: integration freezes
-            // while a prismatic joint is saturated against its limit (the classic
-            // remedy for a saturated actuator), and the accumulator is capped
+            // while any joint rate is saturated -- a prismatic joint against its
+            // window edge or a revolute rate against the trust region (the classic
+            // remedy for a saturated actuator) -- and the accumulator is capped
             // either way so ki * ∫e can never swamp the proportional term.
-            if (!stepClamped)
+            if (!stepClamped && !alphaCapped)
             {
                 int_tipError += tipError;
                 for (size_t k = 0UL; k < 3UL; ++k)

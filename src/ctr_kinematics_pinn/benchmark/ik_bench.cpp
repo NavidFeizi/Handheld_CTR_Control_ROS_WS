@@ -10,9 +10,10 @@
 // so every miss is a solver failure rather than an unreachable target. Compare
 // with sampling targets in Cartesian space, where a miss is ambiguous.
 //
-// Every solve is seeded from the same realistic start pose the robot actually
-// homes to, so the reported distance buckets correspond to what the operator
-// experiences as "a near target" vs "a far target".
+// Every solve is seeded from a realistic start pose: the retracted betas the
+// robot homes to, with the alpha pair cycling over a bearing grid (the manager
+// pre-rotates both tubes to the target bearing before planning, so real solves
+// start from many azimuths -- a fixed alpha = 0 seed under-samples the seam).
 //
 // Build:
 //   colcon build --packages-select ctr_kinematics_pinn \
@@ -23,6 +24,7 @@
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -48,8 +50,12 @@ using PosVec = blaze::StaticVector<double, 3UL>;
 struct Trial
 {
     double seedDistance = 0.00;  // ||target - tip(seed)||, the "how far" axis
+    double seedAlpha = 0.00;     // the alpha1 = alpha2 value of the seed pose
     double residual = 0.00;
     double seconds = 0.00;
+    double targetAzimuth = 0.00;  // atan2(target_y, target_x)
+    JointVec qTrue{};      // forward-sampled ground-truth configuration
+    PosVec target{};       // its FK tip = the target
     JointVec qOut{};       // returned configuration, for the violation breakdown
     IkDiagnostics diag{};
     bool plannerWouldAccept = false;  // passes satisfiesBounds AND isValid
@@ -68,18 +74,13 @@ bool satisfiesBounds(const JointVec &q, const JointVec &lb, const JointVec &ub)
     return true;
 }
 
-/// Mirror of CTR_StateValidityChecker<4>::isValid. Kept deliberately verbatim
-/// (including what it does NOT check) so the benchmark measures the planner's
-/// real acceptance rule rather than an idealised one.
-bool plannerIsValid(const JointVec &q, const JointVec &lb, const JointVec &ub, const double clr)
+/// CTR_StateValidityChecker<4>::isValid delegates to the shared predicate, so
+/// the benchmark calls it directly rather than keeping a hand mirror (an
+/// earlier mirror silently went stale against the 2ff0642 fix and reported
+/// optimistic plan_ok numbers).
+bool plannerIsValid(const JointVec &q, const ctr_kinematics_pinn::JointLimits4 &lim)
 {
-    const double beta1 = q[0UL], beta2 = q[1UL], alpha1 = q[2UL], alpha2 = q[3UL];
-
-    const bool tb1 = (beta1 >= lb[0UL]) && (beta1 <= std::min(ub[0UL], beta2 - clr));
-    const bool tb2 = (beta2 >= std::max(beta1 + clr, lb[1UL])) && (beta2 <= ub[1UL]);
-    const bool ang = std::fabs(alpha2 - alpha1) <= M_PI;
-
-    return tb1 && tb2 && ang;
+    return ctr_kinematics_pinn::isFeasible4({q[0UL], q[1UL], q[2UL], q[3UL]}, lim);
 }
 
 /// The prismatic window posCTRL itself enforces, including the tube-protrusion
@@ -140,24 +141,30 @@ int main(int argc, char **argv)
     const auto bounds = pinn.getInputPosBounds();
     const JointVec lb = std::get<0UL>(bounds);
     const JointVec ub = std::get<1UL>(bounds);
+    const auto lim4 = pinn.getJointLimits4();
     const PosVec wf(0.00);  // benchmark the unloaded model; force is orthogonal to convergence
 
     // robot_node's k_pos_preEngage is {a1, b1, a2, b2} = {0, -0.0640, 0, -0.0340}
     // in WIRE order; posCTRL takes PHYSICS order [b1, b2, a1, a2]. This pose sits
     // exactly on ub[0] and ub[1] -- both ends of a real planning problem are on
     // the feasibility boundary.
-    const JointVec qSeed{-0.0640, -0.0340, 0.00, 0.00};
-
-    PosVec pSeed;
-    pinn.getPosDistal(qSeed, wf, pSeed);
+    //
+    // The alpha part of the seed cycles through a bearing grid: in the real
+    // pipeline the manager pre-rotates both tubes to the target bearing before
+    // planning, so seeds at alpha1 = alpha2 = s for s across the circle are what
+    // solves actually start from. A fixed alpha = 0 seed (the old behaviour)
+    // structurally under-sampled the azimuths where the domain bugs lived.
+    const std::array<double, 5UL> seedAlphas{0.00, 0.50 * M_PI, -0.50 * M_PI, M_PI, -M_PI};
+    const JointVec qSeedBeta{-0.0640, -0.0340, 0.00, 0.00};
 
     std::cout << "ik_bench\n"
               << "  model      : " << modelName << "\n"
               << "  trials     : " << nTrials << "\n"
               << "  posTol     : " << posTol * 1.0E3 << " mm\n"
-              << "  seed pose  : [" << qSeed[0] << ", " << qSeed[1] << ", " << qSeed[2] << ", " << qSeed[3] << "]\n"
-              << "  seed tip   : [" << pSeed[0] << ", " << pSeed[1] << ", " << pSeed[2] << "]\n"
+              << "  seed pose  : beta [" << qSeedBeta[0] << ", " << qSeedBeta[1]
+              << "], alpha grid {0, +-pi/2, +-pi} (both tubes)\n"
               << "  b1 bounds  : [" << lb[0] << ", " << ub[0] << "]   b2 bounds: [" << lb[1] << ", " << ub[1] << "]\n"
+              << "  a1 bounds  : [" << lb[2] << ", " << ub[2] << "]   a2 bounds: [" << lb[3] << ", " << ub[3] << "]\n"
               << "  clearance  : " << clr << "\n"
               << std::endl;
 
@@ -184,12 +191,15 @@ int main(int argc, char **argv)
                 continue;  // degenerate window for this beta2; redraw
 
             qTrue[0UL] = b1Min + u01(rng) * (b1Max - b1Min);
-            qTrue[2UL] = -M_PI + u01(rng) * 2.00 * M_PI;              // a1 in [-pi, pi]
-            qTrue[3UL] = qTrue[2UL] - M_PI + u01(rng) * 2.00 * M_PI;  // a2 anchored to a1
+            // Dataset-native alpha domain: a2 absolute on its principal branch,
+            // a1 anchored to it -- the same fundamental domain posCTRL's finish()
+            // returns, so every sampled shape has an exactly-representable goal.
+            qTrue[3UL] = -M_PI + u01(rng) * 2.00 * M_PI;              // a2 in [-pi, pi]
+            qTrue[2UL] = qTrue[3UL] - M_PI + u01(rng) * 2.00 * M_PI;  // a1 anchored to a2
 
             // Reject anything the planner itself would not accept: a target the
             // planner could never legally reach is not a fair test of the solver.
-            if (!plannerIsValid(qTrue, lb, ub, clr) || !satisfiesBounds(qTrue, lb, ub))
+            if (!plannerIsValid(qTrue, lim4) || !satisfiesBounds(qTrue, lb, ub))
                 continue;
 
             qOut = qTrue;
@@ -211,10 +221,21 @@ int main(int argc, char **argv)
         PosVec target;
         pinn.getPosDistal(qTrue, wf, target);
 
-        // ---- solve from the fixed realistic seed ----
+        // ---- solve from a realistic post-pre-rotation seed ----
+        JointVec qSeed = qSeedBeta;
+        const double seedAlpha = seedAlphas[i % seedAlphas.size()];
+        qSeed[2UL] = seedAlpha;
+        qSeed[3UL] = seedAlpha;
+        PosVec pSeed;
+        pinn.getPosDistal(qSeed, wf, pSeed);
+
         JointVec q = qSeed;
         Trial t;
         t.seedDistance = blaze::norm(target - pSeed);
+        t.seedAlpha = seedAlpha;
+        t.qTrue = qTrue;
+        t.target = target;
+        t.targetAzimuth = std::atan2(target[1UL], target[0UL]);
 
         const auto t0 = std::chrono::steady_clock::now();
         pinn.posCTRL(q, target, posTol, wf, &t.diag);
@@ -227,7 +248,7 @@ int main(int argc, char **argv)
 
         t.qOut = q;
         t.boundsOk = satisfiesBounds(q, lb, ub);
-        t.validOk = plannerIsValid(q, lb, ub, clr);
+        t.validOk = plannerIsValid(q, lim4);
         t.plannerWouldAccept = t.boundsOk && t.validOk;
 
         trials.push_back(t);
@@ -302,6 +323,46 @@ int main(int argc, char **argv)
                   << "\n";
     }
 
+    // ---- convergence vs target azimuth (the axis the field failures live on) ----
+    std::cout << "\n=== convergence vs target azimuth atan2(y, x) ===\n";
+    std::cout << std::left << std::setw(14) << "azimuth[deg]"
+              << std::right << std::setw(6) << "n"
+              << std::setw(9) << "<tol"
+              << std::setw(9) << "<3mm"
+              << std::setw(11) << "resid_p50"
+              << std::setw(11) << "resid_max"
+              << std::setw(9) << "plan_ok"
+              << "\n";
+    for (int s = 0; s < 8; ++s)
+    {
+        const double lo = -M_PI + s * (M_PI / 4.0);
+        const double hi = lo + M_PI / 4.0;
+        std::vector<double> resid;
+        size_t n = 0UL, okTol = 0UL, ok3 = 0UL, planOk = 0UL;
+        for (const auto &t : trials)
+        {
+            if (t.targetAzimuth < lo || t.targetAzimuth >= hi)
+                continue;
+            ++n;
+            resid.push_back(t.residual * 1.0E3);
+            if (t.residual <= posTol) ++okTol;
+            if (t.residual < 3.0E-3) ++ok3;
+            if (t.plannerWouldAccept) ++planOk;
+        }
+        if (n == 0UL)
+            continue;
+        std::ostringstream label;
+        label << std::fixed << std::setprecision(0) << lo * 180.0 / M_PI << ".." << hi * 180.0 / M_PI;
+        std::cout << std::left << std::setw(14) << label.str() << std::right
+                  << std::setw(6) << n
+                  << std::setw(8) << std::fixed << std::setprecision(1) << pct(okTol, n) << "%"
+                  << std::setw(8) << pct(ok3, n) << "%"
+                  << std::setw(11) << std::setprecision(3) << percentile(resid, 0.50)
+                  << std::setw(11) << percentile(resid, 1.00)
+                  << std::setw(8) << std::setprecision(1) << pct(planOk, n) << "%"
+                  << "\n";
+    }
+
     // ---- diagnostics that decide between the competing failure hypotheses ----
     size_t nFail = 0UL, failNonMono = 0UL, failClamped = 0UL, budgetExhausted = 0UL;
     size_t rejected = 0UL, rejectedButConverged = 0UL, boundsFail = 0UL, validFail = 0UL;
@@ -365,7 +426,8 @@ int main(int argc, char **argv)
         if (q[1UL] < lb[1UL]) ++vB2Lo;
         if (q[0UL] < lb[0UL]) ++vB1Lo;
         if (q[0UL] > q[1UL] - clr) ++vOrder;
-        if (std::fabs(q[3UL] - q[2UL]) > M_PI) ++vAngle;
+        if (std::fabs(q[2UL] - q[3UL]) > M_PI ||
+            q[3UL] < lim4.alpha2_absolute[0UL] || q[3UL] > lim4.alpha2_absolute[1UL]) ++vAngle;
     }
     std::cout << "\n  WHICH CONSTRAINT (of the " << rejected << " rejected):\n"
               << std::setprecision(4)
@@ -382,13 +444,23 @@ int main(int argc, char **argv)
     if (!csvPath.empty())
     {
         std::ofstream csv(csvPath);
-        csv << "seed_dist_m,residual_m,seconds,iterations,restarts,clamped_steps,non_monotonic_steps,"
-               "max_jinv_norm,initial_error_m,converged,bounds_ok,valid_ok\n";
+        csv << "seed_dist_m,seed_alpha,residual_m,seconds,"
+               "target_x,target_y,target_z,target_azimuth,"
+               "qtrue_b1,qtrue_b2,qtrue_a1,qtrue_a2,"
+               "qout_b1,qout_b2,qout_a1,qout_a2,"
+               "iterations,restarts,clamped_steps,alpha_capped_steps,non_monotonic_steps,"
+               "max_jinv_norm,initial_error_m,max_abs_alpha2_queried,max_abs_alpha_rel_queried,"
+               "converged,bounds_ok,valid_ok\n";
         csv << std::setprecision(9);
         for (const auto &t : trials)
-            csv << t.seedDistance << ',' << t.residual << ',' << t.seconds << ','
+            csv << t.seedDistance << ',' << t.seedAlpha << ',' << t.residual << ',' << t.seconds << ','
+                << t.target[0UL] << ',' << t.target[1UL] << ',' << t.target[2UL] << ',' << t.targetAzimuth << ','
+                << t.qTrue[0UL] << ',' << t.qTrue[1UL] << ',' << t.qTrue[2UL] << ',' << t.qTrue[3UL] << ','
+                << t.qOut[0UL] << ',' << t.qOut[1UL] << ',' << t.qOut[2UL] << ',' << t.qOut[3UL] << ','
                 << t.diag.iterations << ',' << t.diag.restarts << ',' << t.diag.clampedSteps << ','
-                << t.diag.nonMonotonicSteps << ',' << t.diag.maxJinvNorm << ',' << t.diag.initialError << ','
+                << t.diag.alphaCappedSteps << ',' << t.diag.nonMonotonicSteps << ','
+                << t.diag.maxJinvNorm << ',' << t.diag.initialError << ','
+                << t.diag.maxAbsAlpha2Queried << ',' << t.diag.maxAbsAlphaRelQueried << ','
                 << (t.diag.converged ? 1 : 0) << ',' << (t.boundsOk ? 1 : 0) << ',' << (t.validOk ? 1 : 0) << '\n';
         std::cout << "\nwrote " << csvPath << std::endl;
     }

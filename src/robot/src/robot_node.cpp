@@ -428,11 +428,36 @@ private:
         m_x_des[3UL] = msg->position[3UL];
         // m_logger->info("[RobotNode] Pos target received: [{:.4f}, {:.4f}, {:.4f}, {:.4f}]",
         //                m_x_des[0], m_x_des[1], m_x_des[2], m_x_des[3]);
+        warnIfTargetOutsideLimits(m_x_des);
         break;
       }
     }
 
     // std::cout << "CtrlMode:" << m_mode << std::endl;
+  }
+
+  // The drives enforce POSITION_LIMIT themselves and simply stop short with no
+  // feedback; surface a dropped/short target here so it is visible in the log.
+  void warnIfTargetOutsideLimits(const blaze::StaticVector<double, 4UL> &target)
+  {
+    const blaze::StaticVector<double, 4UL> &lo = m_trans_limit ? minDynamicPosLimit : minDynamicPosLimitInf;
+    const blaze::StaticVector<double, 4UL> &hi = m_trans_limit ? maxDynamicPosLimit : maxDynamicPosLimitInf;
+    for (size_t i = 0; i < 4UL; ++i)
+    {
+      if (target[i] < lo[i] || target[i] > hi[i])
+      {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - m_last_limit_warn_time < std::chrono::seconds(1))
+          return;
+        m_last_limit_warn_time = now;
+        m_logger->warn("[RobotNode] Position target outside the active limits - the drive will stop short: "
+                       "{} target {:.4f} not in [{:.4f}, {:.4f}] "
+                       "(full target, wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
+                       k_joint_names[i], target[i], lo[i], hi[i],
+                       target[0], target[1], target[2], target[3]);
+        return;
+      }
+    }
   }
 
   // Subscription callback function updates the current catheter tip status using EMTracker topic
@@ -1553,6 +1578,7 @@ private:
   // member variables
   std::atomic<bool> m_stop_worker{false};
   std::array<bool, 4> m_enable_fault_prev = {0, 0, 0, 0}; // for edge-triggered fault logging
+  std::chrono::steady_clock::time_point m_last_limit_warn_time{}; // rate-limits warnIfTargetOutsideLimits
   // One initializer per declarator: `bool a, b, c = false;` initializes only `c`, and a
   // stray `true` in m_flag_manual silently drops every joint_space/target message.
   bool m_flag_manual = false;

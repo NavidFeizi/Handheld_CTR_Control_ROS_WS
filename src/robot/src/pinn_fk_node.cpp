@@ -229,7 +229,17 @@ public:
       q = m_q;
       wf = m_wf;
     }
+    const blaze::StaticVector<double, N> q_raw = q;
     ctr_common::clampJointPositions(q, m_q_min, m_q_max, this->get_logger());
+    if (blaze::maxNorm(q - q_raw) > 1e-9)
+    {
+      // The clamp is otherwise silent: the published shape/sim_out then describe a
+      // DIFFERENT configuration than the robot is actually in.
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "FK input clamped to the dataset range [b1, b2, a1, a2]: "
+                           "[%.4f, %.4f, %.4f, %.4f] -> [%.4f, %.4f, %.4f, %.4f]",
+                           q_raw[0], q_raw[1], q_raw[2], q_raw[3], q[0], q[1], q[2], q[3]);
+    }
     
     // just for test
     // // Generate time-varying force input

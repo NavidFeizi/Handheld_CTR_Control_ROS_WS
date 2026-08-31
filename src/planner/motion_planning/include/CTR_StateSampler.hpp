@@ -141,19 +141,31 @@ void CTR_StateSampler<controlInputs>::sampleUniform(ompl::base::State *state)
 
     if (revolveFirst || rotationFocus)
     {
-        auto wrapClamp = [](double v, double lo, double hi) -> double
-        {
-            while (v >  M_PI) v -= 2.0 * M_PI;
-            while (v < -M_PI) v += 2.0 * M_PI;
-            return std::min(std::max(v, lo), hi);
-        };
-        sampled_State->values[2UL] = wrapClamp(rng_.gaussian(m_alpha1_goal, rotStd), m_alpha1_Min, m_alpha1_max);
-        sampled_State->values[3UL] = wrapClamp(rng_.gaussian(m_alpha2_goal, rotStd), m_alpha2_Min, m_alpha2_max);
+        // Plain clamp to the box -- angles are absolute motor values, so wrapping
+        // here would teleport the sample a physical turn away. (The previous
+        // version wrapped to [-π, π] BEFORE clamping: for any goal α outside the
+        // principal branch -- perfectly legal in the ±1.5π/±2.5π box -- every
+        // goal-biased sample was thrown to the far end of the feasible strip and
+        // rejected, killing the rotate-before-deploy bias exactly for the targets
+        // that needed it most.)
+        const double a2 = std::clamp(rng_.gaussian(m_alpha2_goal, rotStd), m_alpha2_Min, m_alpha2_max);
+        // α₁'s feasible window is the training constraint α₂ ± π intersected with
+        // its own box, so the pair is feasible by construction.
+        const double a1_lo = std::max(a2 - M_PI, m_alpha1_Min);
+        const double a1_hi = std::min(a2 + M_PI, m_alpha1_max);
+        sampled_State->values[2UL] = std::clamp(rng_.gaussian(m_alpha1_goal, rotStd), a1_lo, a1_hi);
+        sampled_State->values[3UL] = a2;
     }
     else
     {
-        sampled_State->values[2UL] = rng_.uniformReal(m_alpha1_Min, m_alpha1_max);
-        sampled_State->values[3UL] = rng_.uniformReal(m_alpha2_Min, m_alpha2_max);
+        // α₂ uniform over its absolute travel, α₁ uniform over the coupled window
+        // α₂ ± π (∩ its own box). Sampling both independently over their full
+        // boxes made ~50% of uniform samples violate |α₁ − α₂| ≤ π by construction.
+        const double a2 = rng_.uniformReal(m_alpha2_Min, m_alpha2_max);
+        const double a1_lo = std::max(a2 - M_PI, m_alpha1_Min);
+        const double a1_hi = std::min(a2 + M_PI, m_alpha1_max);
+        sampled_State->values[2UL] = rng_.uniformReal(a1_lo, a1_hi);
+        sampled_State->values[3UL] = a2;
     }
 }
 
@@ -184,17 +196,15 @@ void CTR_StateSampler<controlInputs>::sampleUniformNear(ompl::base::State *state
     q->values[0] = clampPerturb(b0n, lo0, hi0);
     q->values[1] = clampPerturb(b1n, lo1, hi1);
 
-    // Revolute joints (indices 2-3): shortest-arc perturbation, clamped to bounds.
-    const double alphaMin[2] = {m_alpha1_Min, m_alpha2_Min};
-    const double alphaMax[2] = {m_alpha1_max, m_alpha2_max};
-    for (size_t i = 2; i < 4; ++i)
-    {
-        double val = qn->values[i] + rng_.uniformReal(-distance, distance);
-        while (val >  M_PI) val -= 2.0 * M_PI;
-        while (val < -M_PI) val += 2.0 * M_PI;
-        val = std::min(std::max(val, alphaMin[i - 2]), alphaMax[i - 2]);
-        q->values[i] = val;
-    }
+    // Revolute joints: perturb α₂ inside its box, then α₁ inside the coupled
+    // window α₂ ± π (∩ its own box). No wrap -- these are absolute motor angles,
+    // and wrapping a perturbation teleports the sample a physical turn away.
+    const double a2 = std::clamp(qn->values[3UL] + rng_.uniformReal(-distance, distance),
+                                 m_alpha2_Min, m_alpha2_max);
+    const double a1_lo = std::max(a2 - M_PI, m_alpha1_Min);
+    const double a1_hi = std::min(a2 + M_PI, m_alpha1_max);
+    q->values[2UL] = std::clamp(qn->values[2UL] + rng_.uniformReal(-distance, distance), a1_lo, a1_hi);
+    q->values[3UL] = a2;
 }
 
 template <size_t controlInputs>
@@ -221,17 +231,14 @@ void CTR_StateSampler<controlInputs>::sampleGaussian(ompl::base::State *state,
     q->values[0] = clampGauss(b0m, lo0, hi0);
     q->values[1] = clampGauss(b1m, lo1, hi1);
 
-    // Revolute joints (indices 2-3): Gaussian perturbation wrapped to [-π, π].
-    const double alphaMin[2] = {m_alpha1_Min, m_alpha2_Min};
-    const double alphaMax[2] = {m_alpha1_max, m_alpha2_max};
-    for (size_t i = 2; i < controlInputs; ++i)
-    {
-        double val = qm->values[i] + rng_.gaussian(0.0, stdDev);
-        while (val >  M_PI) val -= 2.0 * M_PI;
-        while (val < -M_PI) val += 2.0 * M_PI;
-        val = std::min(std::max(val, alphaMin[i - 2]), alphaMax[i - 2]);
-        q->values[i] = val;
-    }
+    // Revolute joints: Gaussian perturbation of α₂ inside its box, α₁ inside the
+    // coupled window α₂ ± π (∩ its own box). No wrap (absolute motor angles).
+    const double a2 = std::clamp(qm->values[3UL] + rng_.gaussian(0.0, stdDev),
+                                 m_alpha2_Min, m_alpha2_max);
+    const double a1_lo = std::max(a2 - M_PI, m_alpha1_Min);
+    const double a1_hi = std::min(a2 + M_PI, m_alpha1_max);
+    q->values[2UL] = std::clamp(qm->values[2UL] + rng_.gaussian(0.0, stdDev), a1_lo, a1_hi);
+    q->values[3UL] = a2;
 }
 
 template <size_t controlInputs>

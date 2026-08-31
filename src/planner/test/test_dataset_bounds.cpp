@@ -105,8 +105,8 @@ ctr_kinematics_pinn::JointLimits4 shippedLimits()
   ctr_kinematics_pinn::JointLimits4 lim;
   lim.beta2_absolute = kBeta2Absolute;
   lim.beta1_relative = kBeta1Relative;
-  lim.alpha1_absolute = {-M_PI, M_PI};
-  lim.alpha2_window = M_PI;
+  lim.alpha2_absolute = {-1.5 * M_PI, 1.5 * M_PI};  // dataset alpha2_range (absolute; alpha3 = 0)
+  lim.alpha1_relative = {-M_PI, M_PI};              // dataset alpha1_range, RELATIVE to alpha2
   return lim;
 }
 }  // namespace
@@ -191,15 +191,93 @@ TEST(FeasibleSet, WindowsOnlyProduceFeasibleConfigurations)
   }
 }
 
-TEST(FeasibleSet, AlphaWindowIsAnchoredToAlpha1)
+// ===========================================================================
+// The alpha domain, dataset-native form: alpha2 absolute (+-1.5pi, matching the
+// hardware travel and the normaliser baked into the TorchScript archive) and
+// alpha1 RELATIVE to it (+-pi). The inverted form -- alpha1 absolute in
+// [-pi, pi], alpha2 anchored to it -- is the same relative-vs-absolute mixup
+// this suite already pins for beta1; it spilled alpha2 out to +-2pi (untrained,
+// unreachable) exactly in the azimuthal wedge around alpha1 = +-pi.
+// ===========================================================================
+
+TEST(FeasibleSet, AlphaWindowIsAnchoredToAlpha2)
 {
   const auto lim = shippedLimits();
   const std::array<double, 2> beta = {-0.0640, -0.0340};
 
-  EXPECT_TRUE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 1.0, 1.0 + M_PI}, lim, 1e-12));
-  EXPECT_FALSE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 1.0, 1.0 + 1.01 * M_PI}, lim, 0.0));
-  // alpha1 itself is bounded, unlike alpha2 which is only constrained relatively.
-  EXPECT_FALSE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 1.01 * M_PI, 1.01 * M_PI}, lim, 0.0));
+  EXPECT_TRUE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 1.0 + M_PI, 1.0}, lim, 1e-12));
+  EXPECT_FALSE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 1.0 + 1.01 * M_PI, 1.0}, lim, 0.0));
+  // alpha2 itself is bounded by the trained travel...
+  EXPECT_FALSE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 1.51 * M_PI, 1.51 * M_PI}, lim, 0.0));
+  // ...while alpha1 may legally exceed 1.5pi through the relative window.
+  EXPECT_TRUE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 2.4 * M_PI, 1.45 * M_PI}, lim, 1e-12));
+}
+
+// The pose family the OLD domain rejected: the robot wound up past alpha1 = pi
+// (measured values reached +6.75 rad on hardware; 12,945 recorded samples with
+// |alpha1| > pi had a 0.0% deployment rate purely because of the artificial
+// branch cut).
+TEST(FeasibleSet, WoundUpPosesInsideTheTrainedBoxAreFeasible)
+{
+  const auto lim = shippedLimits();
+  const std::array<double, 2> beta = {-0.0640, -0.0340};
+
+  // alpha1 = 1.2pi with alpha2 = 1.1pi: both in the trained box; the old
+  // alpha1 in [-pi, pi] rule threw the start state away.
+  EXPECT_TRUE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 1.2 * M_PI, 1.1 * M_PI}, lim, 0.0));
+  // The extreme trained corner: alpha2 at its travel limit, alpha1 a full
+  // relative window beyond it.
+  EXPECT_TRUE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 2.5 * M_PI, 1.5 * M_PI}, lim, 1e-12));
+  // One step beyond the trained alpha1 span is out.
+  EXPECT_FALSE(ctr_kinematics_pinn::isFeasible4({beta[0], beta[1], 2.51 * M_PI, 1.5 * M_PI}, lim, 0.0));
+}
+
+TEST(AlphaHelpers, WrapToPiIsPeriodicOntoPrincipalBranch)
+{
+  using ctr_kinematics_pinn::wrapToPi;
+  EXPECT_NEAR(wrapToPi(0.0), 0.0, 1e-12);
+  EXPECT_NEAR(wrapToPi(2.0 * M_PI + 0.3), 0.3, 1e-12);
+  EXPECT_NEAR(wrapToPi(-2.0 * M_PI - 0.3), -0.3, 1e-12);
+  EXPECT_NEAR(wrapToPi(6.75), 6.75 - 2.0 * M_PI, 1e-12);  // the measured wound-up alpha1
+  // Half-open branch [-pi, pi): +pi maps to -pi.
+  EXPECT_NEAR(wrapToPi(M_PI), -M_PI, 1e-12);
+  EXPECT_NEAR(wrapToPi(-M_PI), -M_PI, 1e-12);
+}
+
+TEST(AlphaHelpers, NearestGoalRepresentativePreservesShapeAndMinimisesTravel)
+{
+  const auto lim = shippedLimits();
+
+  // Start wound to ~1.4pi on both axes; IK returns the principal-branch goal
+  // (-pi + 0.1). The +2pi representative (pi + 0.1) is a whole turn closer and
+  // still inside the trained box.
+  const std::array<double, 4> q_goal = {-0.09, -0.05, -M_PI + 0.1, -M_PI + 0.1};
+  const std::array<double, 4> q_start = {-0.156, -0.072, 1.4 * M_PI, 1.4 * M_PI};
+  const auto rep = ctr_kinematics_pinn::nearestGoalRepresentative(q_goal, q_start, lim);
+
+  EXPECT_NEAR(rep[2], M_PI + 0.1, 1e-12);
+  EXPECT_NEAR(rep[3], M_PI + 0.1, 1e-12);
+  // The relative angle -- the tube shape -- is untouched.
+  EXPECT_NEAR(rep[2] - rep[3], q_goal[2] - q_goal[3], 1e-12);
+  // Betas pass through.
+  EXPECT_DOUBLE_EQ(rep[0], q_goal[0]);
+  EXPECT_DOUBLE_EQ(rep[1], q_goal[1]);
+  // And the result is still feasible.
+  EXPECT_TRUE(ctr_kinematics_pinn::alphaFeasible(rep[2], rep[3], lim));
+}
+
+TEST(AlphaHelpers, NearestGoalRepresentativeNeverLeavesTheTrainedBox)
+{
+  const auto lim = shippedLimits();
+
+  // A shift toward the start would leave the box (alpha2 + 2pi > 1.5pi), so the
+  // in-box k = 0 representative must survive even though it is farther.
+  const std::array<double, 4> q_goal = {-0.09, -0.05, 0.4 * M_PI, 0.4 * M_PI};
+  const std::array<double, 4> q_start = {-0.156, -0.072, 1.5 * M_PI, 1.5 * M_PI};
+  const auto rep = ctr_kinematics_pinn::nearestGoalRepresentative(q_goal, q_start, lim);
+
+  EXPECT_NEAR(rep[2], 0.4 * M_PI, 1e-12);
+  EXPECT_NEAR(rep[3], 0.4 * M_PI, 1e-12);
 }
 
 // The tolerance exists for measured encoder values straddling a boundary by

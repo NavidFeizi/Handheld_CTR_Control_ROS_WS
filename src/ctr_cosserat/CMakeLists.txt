@@ -32,6 +32,19 @@ target_link_libraries(ctr_cosserat
     gfortran
 )
 
+# Opt-in PINN-vs-Cosserat FK cross-check (benchmark/fk_xcheck.cpp). OFF by
+# default: it links LibTorch (through ctr_kinematics_pinn) purely as a
+# diagnostic tool; the exported ctr_cosserat library stays Torch-free.
+option(CTR_COSSERAT_BUILD_XCHECK "Build the PINN-vs-Cosserat FK cross-check tool" OFF)
+if(CTR_COSSERAT_BUILD_XCHECK)
+  find_package(ctr_kinematics_pinn REQUIRED)  # re-runs the Torch pin (CONFIG_EXTRAS)
+  find_package(Blaze REQUIRED)
+  find_package(nlohmann_json REQUIRED)
+  add_executable(fk_xcheck benchmark/fk_xcheck.cpp)
+  target_link_libraries(fk_xcheck PRIVATE ctr_cosserat ctr_kinematics_pinn::ctr_kinematics_pinn)
+  set_target_properties(fk_xcheck PROPERTIES BUILD_WITH_INSTALL_RPATH FALSE)
+endif()
+
 install(DIRECTORY include/ DESTINATION include)
 install(TARGETS ctr_cosserat
   EXPORT export_ctr_cosserat

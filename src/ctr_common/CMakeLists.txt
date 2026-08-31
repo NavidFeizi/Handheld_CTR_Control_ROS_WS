@@ -32,6 +32,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_joint_conventions ctr_common)
   ament_add_gtest(test_csv_io test/test_csv_io.cpp)
   target_link_libraries(test_csv_io ctr_common)
+  ament_add_gtest(test_diag_csv test/test_diag_csv.cpp)
+  target_link_libraries(test_diag_csv ctr_common)
 endif()
 
 ament_package()

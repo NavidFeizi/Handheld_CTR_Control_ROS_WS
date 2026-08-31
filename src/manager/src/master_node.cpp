@@ -3,6 +3,7 @@
 #include "ctr_common/csv_io.hpp"
 #include "manager/csv_path_io.hpp"
 #include "ctr_common/joint_conventions.hpp"
+#include "ctr_common/output_session.hpp"
 #include "ctr_common/runtime_paths.hpp"
 
 using namespace std::chrono_literals;
@@ -25,10 +26,89 @@ MasterNode::MasterNode(QWidget *parent)
     m_planner_timeout_s = declare_parameter<double>("planner_timeout_s", m_planner_timeout_s);
     m_plan_retry_cooldown_s = declare_parameter<double>("plan_retry_cooldown_s", m_plan_retry_cooldown_s);
 
+    initDiagCsv();
     m_gui_manager->initializeGui();
     initRosInterfaces();
     onCtrlModeClicked(static_cast<int>(HighLvlCtrMode::Planner));
     // m_high_level_mode = HighLvlCtrMode::Planner;
+}
+
+// ============================================================================
+// Structured diagnostics (manager_diag.csv)
+// ============================================================================
+//
+// One wide header shared by all event types; fields an event does not carry
+// stay empty. Correlate with the planner's planner_diag.csv by wall_time.
+void MasterNode::initDiagCsv()
+{
+    const auto diag_dir = ctr_common::makeSessionDir(
+        ctr_common::resolveDataRoot(*this, "manager") / "Output_Files" / "diagnostics", "manager");
+    m_diag.configure(diag_dir / "manager_diag.csv",
+                     "event,wall_time,xd_x,xd_y,xd_z,target_azimuth,target_theta,"
+                     "alpha1,alpha2,gate_diff1,gate_diff2,cmd_alpha,"
+                     "success,ik_error,message,"
+                     "tip_x,tip_y,tip_z,sim_x,sim_y,sim_z,probe_tip_err,"
+                     "waypoints_in,waypoints_out,max_step_alpha");
+    RCLCPP_INFO(get_logger(), "Manager diagnostics CSV: %s", m_diag.path().c_str());
+}
+
+void MasterNode::diagPreRotate(const Eigen::Vector3d &Xd, const manager_gate::PreRotation &pr)
+{
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(6)
+       << "pre_rotate," << ctr_common::currentTimestamp() << ','
+       << Xd[0] << ',' << Xd[1] << ',' << Xd[2] << ',' << std::atan2(Xd[1], Xd[0]) << ',' << pr.target_theta << ','
+       << m_q[0] << ',' << m_q[2] << ',' << pr.gate_diff_1 << ',' << pr.gate_diff_2 << ',' << pr.cmd_alpha
+       << ",,,,,,,,,,,,,";
+    m_diag.append(os.str());
+}
+
+void MasterNode::diagPlanRequest(const Eigen::Vector3d &Xd, const char *mode)
+{
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(6)
+       << "plan_request," << ctr_common::currentTimestamp() << ','
+       << Xd[0] << ',' << Xd[1] << ',' << Xd[2] << ',' << std::atan2(Xd[1], Xd[0]) << ",,"
+       << m_q[0] << ',' << m_q[2] << ",,,,,," << mode << ",,,,,,,,,,";
+    m_diag.append(os.str());
+}
+
+void MasterNode::diagPlanResponse(const bool success, const double ik_error, const std::string &message)
+{
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(6)
+       << "plan_response," << ctr_common::currentTimestamp() << ",,,,,,,,,,,"
+       << (success ? 1 : 0) << ',' << ik_error << ',' << '"' << message << '"' << ",,,,,,,,,,";
+    m_diag.append(os.str());
+}
+
+void MasterNode::diagPathLoaded(const size_t waypoints_in, const size_t waypoints_out, const double max_step_alpha)
+{
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(6)
+       << "path_loaded," << ctr_common::currentTimestamp() << ",,,,,,,,,,,,,,,,,,,,,"
+       << waypoints_in << ',' << waypoints_out << ',' << max_step_alpha;
+    m_diag.append(os.str());
+}
+
+// The model-vs-registration discriminator, written when a deployment reaches
+// its final waypoint: if the PINN tip (sim) agrees with the EM tip but both
+// miss Xd, the target/registration is wrong; if sim and EM disagree, the model
+// (or its joint feedback) is wrong in this region.
+void MasterNode::diagDeployComplete(const Eigen::Vector3d &Xd, const Eigen::Vector3d &tip, const Eigen::Vector3d &sim)
+{
+    const double err = (tip - Xd).norm();
+    RCLCPP_INFO(get_logger(),
+                "Deployment complete: target = [%.4f, %.4f, %.4f], EM tip = [%.4f, %.4f, %.4f], PINN tip = [%.4f, %.4f, %.4f], "
+                "|tip - target| = %.4f m, |tip - PINN| = %.4f m",
+                Xd[0], Xd[1], Xd[2], tip[0], tip[1], tip[2], sim[0], sim[1], sim[2], err, (tip - sim).norm());
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(6)
+       << "deploy_complete," << ctr_common::currentTimestamp() << ','
+       << Xd[0] << ',' << Xd[1] << ',' << Xd[2] << ',' << std::atan2(Xd[1], Xd[0]) << ",,,,,,,,,,"
+       << tip[0] << ',' << tip[1] << ',' << tip[2] << ',' << sim[0] << ',' << sim[1] << ',' << sim[2] << ','
+       << err << ",,,";
+    m_diag.append(os.str());
 }
 
 // ============================================================================
@@ -643,6 +723,7 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
     RCLCPP_INFO(this->get_logger(), "Planner response - Success: %s", response->success ? "true" : "false");
     RCLCPP_INFO(this->get_logger(), "                 - Message: %s", response->message.c_str());
     RCLCPP_INFO(this->get_logger(), "                 - IK error: %.4f", response->value);
+    diagPlanResponse(response->success, response->value, response->message);
 
     m_planner_success = response->success;
     m_planner_ik_error = response->value;
@@ -993,31 +1074,36 @@ void MasterNode::control_loop()
 
     if (m_procedure && m_high_level_mode == HighLvlCtrMode::Planner)
     {
-        // Compute target angle in x-y plane
-        double target_theta = atan2(Xd[1], Xd[0]) + M_PI / 2.0;
+        // Pre-rotation gate. The gate diffs are BEARING misalignments (wrapped:
+        // a direction, not a travel), while the command is the travel-true
+        // nearest 2π-representative of the bearing inside the trained α box --
+        // see manager/bearing_gate.hpp for why the old raw-diff gate and
+        // wrapped-command pair made +y targets unplannable.
+        const auto pr = manager_gate::computePreRotation(Xd[0], Xd[1], m_q[0], m_q[2], k_alpha_limits);
+        const double target_theta = pr.target_theta;
 
-        // Normalize target_theta to be between -π and π
-        if (target_theta > M_PI)
-        {
-            target_theta -= 2.0 * M_PI;
-        }
-        else if (target_theta < -M_PI)
-        {
-            target_theta += 2.0 * M_PI;
-        }
-
-        // std::cout << "planner target: " << Xd.transpose() << ", theta: " << target_theta << std::endl;
-
-        double tube_1_theta_diff = std::abs(target_theta - m_q[0]);
-        double tube_2_theta_diff = std::abs(target_theta - m_q[2]);
+        double tube_1_theta_diff = pr.gate_diff_1;
+        double tube_2_theta_diff = pr.gate_diff_2;
         bool target_changed = (Xd - m_Xd_prev).norm() > k_target_threshold;
         bool q_changed = blaze::norm((m_q - m_q_prev) / k_input_scale) > k_q_threshold;
 
-        // If tube angles differ from target, command robot to updated angles
+        // If tube bearings differ from the target bearing, command the rotation
         if (tube_1_theta_diff > k_theta_threshold || tube_2_theta_diff > k_theta_threshold)
         {
-            blaze::StaticVector<double, 6> q = blaze::StaticVector<double, 6>({m_q[1], m_q[3], 0.0, target_theta, target_theta, 0.0});
+            blaze::StaticVector<double, 6> q = blaze::StaticVector<double, 6>({m_q[1], m_q[3], 0.0, pr.cmd_alpha, pr.cmd_alpha, 0.0});
             publish_position(q);
+            // Record the first command toward a new bearing (edge-triggered so a
+            // 100 Hz loop does not flood the CSV while the tubes slew).
+            if (std::abs(pr.cmd_alpha - m_last_prerotate_cmd) > 1e-6)
+            {
+                m_last_prerotate_cmd = pr.cmd_alpha;
+                RCLCPP_INFO(get_logger(),
+                            "Pre-rotating tubes: bearing %.4f rad -> command alpha = %.4f rad "
+                            "(current a1 = %.4f, a2 = %.4f; bearing off by %.1f/%.1f deg)",
+                            target_theta, pr.cmd_alpha, m_q[0], m_q[2],
+                            tube_1_theta_diff * 180.0 / M_PI, tube_2_theta_diff * 180.0 / M_PI);
+                diagPreRotate(Xd, pr);
+            }
             reportPlannerGate(tube_1_theta_diff, tube_2_theta_diff, target_changed, q_changed);
         }
         // If target position changed significantly, call planner to generate new path
@@ -1047,7 +1133,9 @@ void MasterNode::control_loop()
                 m_planner_request_time_s = this->now().seconds();
                 m_flag_planner_updated = true;
                 emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
-                RCLCPP_INFO(this->get_logger(), "Planner called.");
+                RCLCPP_INFO(this->get_logger(), "Planner called: target = [%.4f, %.4f, %.4f] (azimuth %.4f rad)",
+                            Xd[0], Xd[1], Xd[2], std::atan2(Xd[1], Xd[0]));
+                diagPlanRequest(Xd, "planner_mode");
             }
             else
             {
@@ -1098,6 +1186,11 @@ void MasterNode::control_loop()
                     m_auto_insert = false;
                     m_current_config_index = m_q_list_adjusted.size() - 1;
                     RCLCPP_DEBUG(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
+                    if (!m_deploy_complete_logged)
+                    {
+                        m_deploy_complete_logged = true;
+                        diagDeployComplete(Xd, X, Xsim);
+                    }
                 }
             }
         }
@@ -1175,7 +1268,9 @@ void MasterNode::control_loop()
 
             auto response_callback = std::bind(&MasterNode::handle_planner_response, this, std::placeholders::_1);
             auto future_result = m_planner_client->async_send_request(request, response_callback);
-            RCLCPP_INFO(this->get_logger(), "Planner called.");
+            RCLCPP_INFO(this->get_logger(), "Planner called (closed loop): target = [%.4f, %.4f, %.4f] (azimuth %.4f rad)",
+                        Xd_adj[0], Xd_adj[1], Xd_adj[2], std::atan2(Xd_adj[1], Xd_adj[0]));
+            diagPlanRequest(Xd_adj, "closed_loop");
 
             m_Xd_adj_prev = Xd_adj;
             m_q_prev = m_q;
@@ -1233,6 +1328,11 @@ void MasterNode::control_loop()
                     invalidateForceBaseline();
                     m_current_config_index = 0;
                     RCLCPP_DEBUG(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
+                    if (!m_deploy_complete_logged)
+                    {
+                        m_deploy_complete_logged = true;
+                        diagDeployComplete(Xd, X, Xsim);
+                    }
                 }
             }
         }
@@ -1324,6 +1424,14 @@ bool MasterNode::loadPlannedPath()
 
         m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
         m_current_config_index = 0;
+        m_deploy_complete_logged = false;
+
+        // Downsampler telemetry: a per-step Δα near 2π means a rotation phase
+        // was collapsed and would execute as one unmanaged full turn.
+        const double max_step_alpha = manager_csv::maxAlphaStep(m_q_list_adjusted);
+        RCLCPP_INFO(this->get_logger(), "Deployment list downsampled %zu -> %zu waypoints (max per-step dAlpha = %.3f rad)",
+                    m_q_list.size(), m_q_list_adjusted.size(), max_step_alpha);
+        diagPathLoaded(m_q_list.size(), m_q_list_adjusted.size(), max_step_alpha);
         return true;
     }
     return false;

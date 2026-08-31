@@ -26,7 +26,9 @@
 #include <filesystem>
 
 #include "ctr_common/csv_io.hpp"
+#include "ctr_common/diag_csv.hpp"
 #include "ctr_common/joint_conventions.hpp"
+#include "ctr_common/output_session.hpp"
 #include "ctr_common/runtime_paths.hpp"
 
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
@@ -86,13 +88,33 @@ public:
   {
     m_solve_time = this->declare_parameter<double>("solve_time", 3.0); // OMPL solve budget [s]
 
-    const std::string output_dir = (ctr_common::resolveDataRoot(*this, m_packageName) / "Shared_Files").string();
+    // Routes the planning library's logging::debug() lines (state-space bounds,
+    // planner range, rewiring diagnostics) to stdout. Read once at startup.
+    logging::verbose = this->declare_parameter<bool>("verbose_planner_log", false);
+
+    const std::filesystem::path data_root = ctr_common::resolveDataRoot(*this, m_packageName);
+    const std::string output_dir = (data_root / "Shared_Files").string();
     this->declare_parameter<std::string>("temp_dir", output_dir);
     m_tempDir = this->get_parameter("temp_dir").as_string();
     if (!std::filesystem::exists(m_tempDir))
     {
       std::filesystem::create_directories(m_tempDir);
     }
+
+    // One diagnostic record per planning request, structured for offline
+    // correlation with the manager's manager_diag.csv (join on wall time).
+    const auto diag_dir = ctr_common::makeSessionDir(data_root / "Output_Files" / "diagnostics", "planner");
+    m_diag.configure(diag_dir / "planner_diag.csv",
+                     "req_id,wall_time,command,target_x,target_y,target_z,target_azimuth,"
+                     "start_b1,start_b2,start_a1,start_a2,"
+                     "ik_b1,ik_b2,ik_a1,ik_a2,goal_repr_a1,goal_repr_a2,"
+                     "ik_residual_m,ik_converged,ik_time_s,ik_iterations,ik_restarts,"
+                     "ik_clamped_steps,ik_alpha_capped_steps,ik_nonmonotonic_steps,ik_max_jinv_norm,ik_initial_error_m,"
+                     "proj_delta_b1,proj_delta_b2,proj_delta_a1,proj_delta_a2,"
+                     "max_abs_alpha2_queried,max_abs_alpha_rel_queried,"
+                     "dalpha1_travel,dalpha2_travel,goal_alpha2_off_principal,"
+                     "plan_time_s,plan_success,message");
+    RCLCPP_INFO(this->get_logger(), "Planner diagnostics CSV: %s", m_diag.path().c_str());
   }
 
   // Setup ROS interfaces, including publishers, subscribers, and services.
@@ -247,13 +269,16 @@ public:
     if (request->command == "generateTrajectory")
     {
       blaze::StaticVector<double, 3UL> target = request->value;
-      // std::this_thread::sleep_for(std::chrono::milliseconds(50));
       double error = 0.0;
 
-      // target = {-0.00127, 0.00398, 0.13724};
-      // target = {-0.00056, 0.02588, 0.11926};
-      // target = {0.00801581, 0.0327939, 0.130476};
-      // target = {0.00395, 0.02749, 0.12326};
+      // ---- per-request diagnostic record (written on EVERY exit path) ----
+      const size_t req_id = ++m_req_counter;
+      IkDiagnostics ik_diag;
+      double ik_seconds = 0.0, plan_seconds = 0.0;
+      bool planning_status = false;
+      std::string outcome_message;
+      blaze::StaticVector<double, 4UL> q_initial(0.0), q_final(0.0);
+      std::array<double, 4UL> goal_repr{};
 
       try
       {
@@ -268,42 +293,58 @@ public:
 
         // Map the 6-element current configuration [β₁, β₂, β₃, α₁, α₂, α₃] (tube-3
         // entries are static/zero) down to the 4 actuated inputs [β₁, β₂, α₁, α₂].
-        blaze::StaticVector<double, 4UL> q_initial = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
-        blaze::StaticVector<double, 4UL> q_final = q_initial;
+        q_initial = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
+        q_final = q_initial;
 
         // Safe here: no solve is in flight (mutually exclusive service group).
         // Propagates to the FTL objective (cache cleared) and informed samplers.
         m_motionPlan.setCTR_externalForce(force);
         RCLCPP_INFO(this->get_logger(), "Planning with force estimate: f = [%.4f, %.4f, %.4f] N", force[0UL], force[1UL], force[2UL]);
+        RCLCPP_INFO(this->get_logger(), "Request #%zu: target = [%.4f, %.4f, %.4f] m, azimuth atan2(y,x) = %.4f rad",
+                    req_id, target[0UL], target[1UL], target[2UL], std::atan2(target[1UL], target[0UL]));
 
-        error = inverseKin(target, q_final, force);
+        error = inverseKin(target, q_final, force, ik_diag, ik_seconds);
+
+        // Mirror of the representative selection setGoalState() performs, so the
+        // record shows the α pair the planner actually planned toward.
+        goal_repr = ctr_kinematics_pinn::nearestGoalRepresentative(
+            {q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]},
+            {q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL]},
+            m_ctr_pinn.getJointLimits4());
 
         RCLCPP_INFO(this->get_logger(), "Initial config: q = %.4f, %.4f, %.4f, %.4f", q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL]);
-        RCLCPP_INFO(this->get_logger(), "Final config: q = %.4f, %.4f, %.4f, %.4f", q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]);
+        RCLCPP_INFO(this->get_logger(), "Final config: q = %.4f, %.4f, %.4f, %.4f (goal alpha representative: %.4f, %.4f)",
+                    q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL], goal_repr[2UL], goal_repr[3UL]);
 
-        bool planning_status = plan(q_initial, q_final, force);
+        planning_status = plan(q_initial, q_final, force, plan_seconds);
         if (planning_status)
         {
           m_target_last = target;
           response->success = true;
           response->value = error;
           response->message = "Path generated successfully.";
+          outcome_message = response->message;
         }
         else
         {
           response->success = false;
           response->value = error;
           response->message = "Planning failed to find a solution.";
-          return;
+          outcome_message = response->message;
         }
       }
       catch (const std::exception &e)
       {
         RCLCPP_ERROR(this->get_logger(), "Planning failed: %s", e.what());
         response->success = false;
+        // NOTE: 0.0 here means "threw before IK finished", not a perfect solve.
         response->value = error;
         response->message = e.what();
+        outcome_message = e.what();
       }
+
+      writePlanDiagRecord(req_id, "generateTrajectory", target, q_initial, q_final, goal_repr,
+                          error, ik_diag, ik_seconds, plan_seconds, planning_status, outcome_message);
     }
     else if (request->command == "replanDeployment")
     {
@@ -387,7 +428,8 @@ public:
   }
 
   // Service callback to triget tasks, enable, and control mode section
-  double inverseKin(const blaze::StaticVector<double, 3UL> &target, blaze::StaticVector<double, 4UL> &q, const blaze::StaticVector<double, 3UL> &force)
+  double inverseKin(const blaze::StaticVector<double, 3UL> &target, blaze::StaticVector<double, 4UL> &q, const blaze::StaticVector<double, 3UL> &force,
+                    IkDiagnostics &diag, double &ikSeconds)
   {
     // run IK to compute q_final. 1 mm, not the tighter 0.5 mm this used to ask
     // for: the extra 0.5 mm is well inside the manager's own 3 mm acceptance gate
@@ -397,21 +439,38 @@ public:
     constexpr double posTolerance = 1.00E-3;
     blaze::StaticVector<double, 3UL> tipPosition;
 
-    std::cout << "\nRunning IK..." << std::endl;
+    RCLCPP_INFO(this->get_logger(), "Running IK...");
     auto start = std::chrono::high_resolution_clock::now();
     // force-aware IK: uses the force registered via setCTR_externalForce()
-    const bool converged = m_motionPlan.solveInverseKinematics(q, target, posTolerance);
+    const bool converged = m_motionPlan.solveInverseKinematics(q, target, posTolerance, diag);
     auto end = std::chrono::high_resolution_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    std::cout << "IK time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
+    ikSeconds = elapsed * 1.00E-3;
+    // The IK wall time is NOT covered by solve_time: it is additive to the
+    // service round-trip, against the manager's planner_timeout_s budget.
+    RCLCPP_INFO(this->get_logger(), "IK time: %.3f seconds (%zu iterations, %zu restarts, %zu alpha-capped steps, max ||J^+|| = %.3e)",
+                ikSeconds, diag.iterations, diag.restarts, diag.alphaCappedSteps, diag.maxJinvNorm);
 
     m_ctr_pinn.getPosDistal(q, force, tipPosition);
     const double residual = blaze::norm(target - tipPosition);
-    std::cout << "CTR target joints are: q = " << blaze::trans(q)
-              << "target: " << blaze::trans(target)
-              << "tip position (after IK): " << blaze::trans(tipPosition)
-              << "error: " << residual * 1.00E3 << " mm\n"
-              << std::endl;
+    RCLCPP_INFO(this->get_logger(),
+                "IK result: q = [%.4f, %.4f, %.4f, %.4f], target = [%.4f, %.4f, %.4f], tip after IK = [%.4f, %.4f, %.4f], error = %.3f mm",
+                q[0UL], q[1UL], q[2UL], q[3UL], target[0UL], target[1UL], target[2UL],
+                tipPosition[0UL], tipPosition[1UL], tipPosition[2UL], residual * 1.00E3);
+
+    // Domain tripwire: after the wrapAngles fix these can never exceed the
+    // trained ranges (|α₂| ≤ 1.5π, |α₁ − α₂| ≤ π). A hit means the network was
+    // asked to extrapolate -- exactly the failure that made converged solves
+    // land wrong on hardware.
+    const auto &lim4 = m_ctr_pinn.getJointLimits4();
+    if (diag.maxAbsAlpha2Queried > lim4.alpha2_absolute[1UL] + 1.0E-9 ||
+        diag.maxAbsAlphaRelQueried > M_PI + 1.0E-9)
+    {
+      RCLCPP_WARN(this->get_logger(),
+                  "IK queried the network OUTSIDE its trained alpha domain: max|alpha2| = %.4f (limit %.4f), max|alpha1-alpha2| = %.4f (limit pi). "
+                  "FK/Jacobian values there are extrapolation - do not trust this solve.",
+                  diag.maxAbsAlpha2Queried, lim4.alpha2_absolute[1UL], diag.maxAbsAlphaRelQueried);
+    }
 
     // posCTRL is best-effort: it returns its closest-seen configuration without
     // signalling failure. Planning still proceeds with that configuration (as it
@@ -431,25 +490,26 @@ public:
   }
 
   // Service callback to triget tasks, enable, and control mode section
-  bool plan(const blaze::StaticVector<double, 4UL> &q_initial, const blaze::StaticVector<double, 4UL> &q_final, const blaze::StaticVector<double, 3UL> &force)
+  bool plan(const blaze::StaticVector<double, 4UL> &q_initial, const blaze::StaticVector<double, 4UL> &q_final, const blaze::StaticVector<double, 3UL> &force,
+            double &planSeconds)
   {
     bool planning_status = false;
-    // std::cout << "Target: x: " << m_manual_target[0] * 1.00E3 << " |  " << "y: " << m_manual_target[1] * 1.00E3 << " |  " << "z: " << m_manual_target[2] * 1.00E3 << std::endl;
 
     // setting the initial state: initial configuration of the robot
     m_motionPlan.setStartState(q_initial);
     m_motionPlan.setGoalState(q_final);
 
-    blaze::StaticVector<double, 4UL> scale = {1.00, 1.00, 20.0, 20.0};
-    double norm_diff = blaze::norm((m_q_initial_prev - q_initial) / scale);
-
-    std::cout << "\nStart state: " << blaze::trans(q_initial) << "Goal state: " << blaze::trans(q_final) << std::endl;
+    RCLCPP_INFO(this->get_logger(), "Start state: [%.4f, %.4f, %.4f, %.4f], Goal state: [%.4f, %.4f, %.4f, %.4f]",
+                q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL],
+                q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]);
 
     // setting up the planning problem and its definitions
     const double runTime = m_solve_time; // Planning time in seconds
 
-    // completely silence OMPL's own logging:
-    ompl::msg::setLogLevel(ompl::msg::LOG_NONE);
+    // OMPL's own warnings/errors are diagnostic gold ("Skipping invalid start
+    // state", "Unable to sample any valid states for goal tree") -- LOG_NONE
+    // used to hide all of them from the lab logs.
+    ompl::msg::setLogLevel(ompl::msg::LOG_WARN);
 
     const std::string plannedPathFile = m_tempDir + "/plannedPath.csv";
     auto start = std::chrono::high_resolution_clock::now();
@@ -458,7 +518,8 @@ public:
     m_first_plan = false;
     auto end = std::chrono::high_resolution_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    std::cout << "Planning time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
+    planSeconds = elapsed * 1.00E-3;
+    RCLCPP_INFO(this->get_logger(), "Planning time: %.3f seconds", planSeconds);
 
     m_q_initial_prev = q_initial;
 
@@ -467,7 +528,7 @@ public:
       // Export and publish only real solutions. On failure the previous CSV stays
       // on disk, so the master keeps executing the old plan (fallback contract).
       m_motionPlan.writeSolutionToFile(plannedPathFile);
-      std::cout << "Finished planning!! - Saved plan in: " << plannedPathFile << std::endl;
+      RCLCPP_INFO(this->get_logger(), "Finished planning - saved plan in: %s", plannedPathFile.c_str());
 
       m_has_active_plan = true;
       m_q_goal_last = q_final;
@@ -476,6 +537,38 @@ public:
     }
 
     return planning_status;
+  }
+
+  // One structured record per generateTrajectory request, on every exit path.
+  void writePlanDiagRecord(const size_t req_id, const char *command,
+                           const blaze::StaticVector<double, 3UL> &target,
+                           const blaze::StaticVector<double, 4UL> &q_initial,
+                           const blaze::StaticVector<double, 4UL> &q_final,
+                           const std::array<double, 4UL> &goal_repr,
+                           const double ik_residual, const IkDiagnostics &d,
+                           const double ik_seconds, const double plan_seconds,
+                           const bool plan_success, const std::string &message)
+  {
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(6);
+    os << req_id << ',' << ctr_common::currentTimestamp() << ',' << command << ','
+       << target[0UL] << ',' << target[1UL] << ',' << target[2UL] << ','
+       << std::atan2(target[1UL], target[0UL]) << ','
+       << q_initial[0UL] << ',' << q_initial[1UL] << ',' << q_initial[2UL] << ',' << q_initial[3UL] << ','
+       << q_final[0UL] << ',' << q_final[1UL] << ',' << q_final[2UL] << ',' << q_final[3UL] << ','
+       << goal_repr[2UL] << ',' << goal_repr[3UL] << ','
+       << ik_residual << ',' << (d.converged ? 1 : 0) << ',' << ik_seconds << ','
+       << d.iterations << ',' << d.restarts << ','
+       << d.clampedSteps << ',' << d.alphaCappedSteps << ',' << d.nonMonotonicSteps << ','
+       << d.maxJinvNorm << ',' << d.initialError << ','
+       << d.projectionDelta[0UL] << ',' << d.projectionDelta[1UL] << ','
+       << d.projectionDelta[2UL] << ',' << d.projectionDelta[3UL] << ','
+       << d.maxAbsAlpha2Queried << ',' << d.maxAbsAlphaRelQueried << ','
+       << (goal_repr[2UL] - q_initial[2UL]) << ',' << (goal_repr[3UL] - q_initial[3UL]) << ','
+       << (std::fabs(q_final[3UL]) > M_PI ? 1 : 0) << ','
+       << plan_seconds << ',' << (plan_success ? 1 : 0) << ','
+       << '"' << message << '"';
+    m_diag.append(os.str());
   }
 
   /// Load generated path in joint space, run it through FK to generate task-space path, and publish.
@@ -616,18 +709,36 @@ public:
           return q_list_out;
       }
 
+      // A waypoint is kept when EITHER prismatic or revolute motion since the
+      // last kept waypoint is significant. Filtering on β₁ alone (the old rule)
+      // collapsed every pure-rotation segment -- the whole Phase 1 rotation --
+      // into a single commanded step, leaving the α slew entirely unmanaged.
+      constexpr double alpha_step = 0.10; // [rad] ≈ 5.7° per commanded step
       size_t prev_idx = 0;
       q_list_out.push_back(q_list_in[0]);
 
       for (size_t i = 1; i < q_list_in.size(); ++i)
       {
-          if (std::abs(q_list_in[i][0] - q_list_in[prev_idx][0]) >= step_size)
+          const double d_beta  = std::abs(q_list_in[i][0UL] - q_list_in[prev_idx][0UL]);
+          const double d_alpha = std::max(std::abs(q_list_in[i][2UL] - q_list_in[prev_idx][2UL]),
+                                          std::abs(q_list_in[i][3UL] - q_list_in[prev_idx][3UL]));
+          if (d_beta >= step_size || d_alpha >= alpha_step)
           {
               prev_idx = i;
               q_list_out.push_back(q_list_in[i]);
           }
       }
       q_list_out.push_back(q_list_in.back());
+
+      // Downsampler telemetry: a large per-step Δα here means a rotation was
+      // collapsed and would execute as one unmanaged swing.
+      double max_step_alpha = 0.0;
+      for (size_t i = 1; i < q_list_out.size(); ++i)
+          max_step_alpha = std::max({max_step_alpha,
+                                     std::abs(q_list_out[i][2UL] - q_list_out[i - 1UL][2UL]),
+                                     std::abs(q_list_out[i][3UL] - q_list_out[i - 1UL][3UL])});
+      RCLCPP_INFO(this->get_logger(), "Path downsampled %zu -> %zu waypoints (max per-step dAlpha = %.3f rad)",
+                  q_list_in.size(), q_list_out.size(), max_step_alpha);
 
       return q_list_out;
   }
@@ -694,6 +805,10 @@ private:
   Planner<kControlInputs> m_motionPlan;
 
   blaze::StaticVector<double, 4UL> m_q_initial_prev = {0.00, 0.00, 0.00, 0.00};
+
+  // Per-request diagnostics (planner_diag.csv, DiagCsv is internally mutex-guarded).
+  ctr_common::DiagCsv m_diag;
+  size_t m_req_counter = 0UL;
 
   // Context of the last successfully exported plan; "replanDeployment" resumes from it.
   // Only mutated on the service thread (mutually exclusive group) — no locking needed.

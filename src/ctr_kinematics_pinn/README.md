@@ -146,8 +146,8 @@ states them:
 ```
 β₂      ∈ beta2_range     [-0.072, -0.034]
 β₁ − β₂ ∈ beta1_range     [-0.084, -0.030]
-α₁      ∈ alpha1_range    [-π, π]
-α₂ − α₁ ∈ [-π, π]
+α₂      ∈ alpha2_range    [-1.5π, 1.5π]
+α₁ − α₂ ∈ alpha1_range    [-π, π]
 ```
 
 The β₁ relative window is doing double duty, which is exactly why half of it is easy
@@ -190,7 +190,7 @@ pose, and every `setStartState()` throws `Start state is invalid!`. That was a r
 regression in this workspace — `3efc430` dropped the conversion when it merged the three
 PINN copies, and the planner could not plan from home until it was restored.
 
-### α₁ is relative to α₂ — and that one is a HARD constraint
+### α₁ is relative to α₂ — the exact same convention as β₁
 
 The loader prints the convention for every joint, not just β₁:
 
@@ -199,25 +199,35 @@ Dataset parameters:
     beta1_range: beta2 + [-0.084, -0.03]
     beta2_range: beta3 + [-0.072, -0.034]
     alpha1_range: alpha2 + [-3.14159, 3.14159]
-    alpha2_range: alpha3 + [-6.28319, 6.28319]
+    alpha2_range: alpha3 + [-4.71239, 4.71239]
 ```
 
 Every range is stored relative to the next-outer tube; β₃ and α₃ are always 0, so β₂ and
-α₂ are effectively absolute and only β₁ and α₁ carry an offset.
+α₂ are effectively absolute and only β₁ and α₁ carry an offset. The absolute forms are
+therefore α₂ ∈ ±1.5π (which is also the drives' rotary travel, `robot_node`'s
+`k_maxStaticLimitAll[2]`) and α₁ ∈ ±2.5π.
 
-For α₁ the relative form is not a bookkeeping detail to be converted away — it is the
-constraint the model was **trained** under:
+For α₁ the relative window is additionally the constraint the model was **trained**
+under:
 
 > **α₂ − π ≤ α₁ ≤ α₂ + π must hold for every configuration**, everywhere: sampled states,
 > interpolated motions, IK outputs, planned waypoints, and joint targets sent to hardware.
 
-Feed the PINN a configuration outside that band and its output is not merely inaccurate,
-it is unconstrained extrapolation. Do **not** "fix" α₁'s bound the way β₁'s was fixed:
-the planner enforces the band through `CTR_StateValidityChecker`'s `conditionAngle` term
-and `CTR_DiscreteMotionValidator`, which is the correct place for a relative constraint.
-Widening α₁'s box bound would also change `m_space->getMaximumExtent()`, which sets both
-the planner's step range and `setLongestValidSegmentFraction` (`Planner.hpp:417-424`,
-`:864`) — retuning the motion validator's granularity as a side effect.
+Feed the PINN a configuration outside that band — or outside α₂'s ±1.5π travel — and its
+output is not merely inaccurate, it is unconstrained extrapolation (the normaliser baked
+into the TorchScript archive spans exactly 1.1× those ranges; there is no clamp inside
+the network). `getInputPosBounds()` converts **both** relative windows (β₁ and α₁) to
+absolute box bounds; `isFeasible4` enforces the α pair in its dataset-native form.
+
+Historical note: until 2026-08 `alpha1_range` was consumed as an *absolute* α₁ box with
+α₂ anchored to α₁ — the mirror image of the correct domain. That spilled α₂ out to ±2π
+(untrained AND physically unreachable), creating an azimuthal wedge around α₁ ≈ ±π where
+the IK "converged" on extrapolated garbage and executed plans landed visibly off target.
+The wedge is exactly 1/16 of α-space, which is why the failure looked like "targets on
+one side of the workspace plan fine, diametrically opposed ones never work". posCTRL's
+wrap, its restart seeding, `finish()`'s projection, the OMPL bounds/sampler and the
+manager's pre-rotation all anchor on α₂ now; `fk_xcheck` (in `ctr_cosserat`) documents
+the extrapolation error in the old wedge against the Cosserat model.
 
 ## LibTorch pin
 
