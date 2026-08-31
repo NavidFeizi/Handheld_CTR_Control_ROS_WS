@@ -638,12 +638,16 @@ int CTRobot::checkPosLimits(const blaze::StaticVector<double, 4> &posTarget) con
   {
     if (posTarget[i] < m_lowerBounds[i])
     {
-      std::cout << "static lower bound reached" << std::endl;
+      m_logger->warn("[CAN Master] Axis {} target {:.4f} below static lower bound {:.4f} => position target ignored "
+                     "(wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
+                     i, posTarget[i], m_lowerBounds[i], posTarget[0], posTarget[1], posTarget[2], posTarget[3]);
       return -1;
     }
     if (posTarget[i] > m_upperBounds[i])
     {
-      std::cout << "static upper bound reached" << std::endl;
+      m_logger->warn("[CAN Master] Axis {} target {:.4f} above static upper bound {:.4f} => position target ignored "
+                     "(wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
+                     i, posTarget[i], m_upperBounds[i], posTarget[0], posTarget[1], posTarget[2], posTarget[3]);
       return -1;
     }
   }
@@ -652,12 +656,14 @@ int CTRobot::checkPosLimits(const blaze::StaticVector<double, 4> &posTarget) con
   this->convPosToRobotFrame(posTarget, posInCTRFrame);
   if ((posInCTRFrame[3] - posInCTRFrame[1]) < m_minClearance)
   {
-    std::cout << "dynamic position lower limit reached - preventing collision => position target ignored" << std::endl;
+    m_logger->warn("[CAN Master] Carriage clearance {:.4f} m below minimum {:.4f} m - preventing collision => position target ignored",
+                   posInCTRFrame[3] - posInCTRFrame[1], m_minClearance);
     return -1;
   }
   if ((posInCTRFrame[3] - posInCTRFrame[1]) > m_maxClearance)
   {
-    std::cout << "dynamic position upper limit reached - preventing illegan tube configuration => position target ignored" << std::endl;
+    m_logger->warn("[CAN Master] Carriage clearance {:.4f} m above maximum {:.4f} m - preventing illegal tube configuration => position target ignored",
+                   posInCTRFrame[3] - posInCTRFrame[1], m_maxClearance);
     return -1;
   }
   return 0;
