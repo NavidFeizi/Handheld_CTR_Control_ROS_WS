@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <fstream>
 #include <iomanip>
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <string>

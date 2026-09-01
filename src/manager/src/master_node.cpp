@@ -623,6 +623,19 @@ void MasterNode::updateSimout(const interfaces::msg::Taskspace::SharedPtr msg)
 
 void MasterNode::updateForceEstimate(const interfaces::msg::Force::SharedPtr msg)
 {
+    // Reject and hold the last good value. A non-finite force here does real
+    // damage rather than just displaying wrong: the drift test below is
+    // `df <= threshold`, which is FALSE for NaN, so every cycle would look like
+    // a large drift and fire a replan until the attempt limit permanently
+    // suppressed replanning.
+    if (!std::isfinite(msg->x) || !std::isfinite(msg->y) || !std::isfinite(msg->z))
+    {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                             "Non-finite force estimate [%.3f, %.3f, %.3f] N - holding the last good value",
+                             msg->x, msg->y, msg->z);
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(m_force_mutex);
     m_f_est = Eigen::Vector3d(msg->x, msg->y, msg->z);
 }
@@ -740,11 +753,17 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
         // state, IK, or no solution) - carry it through rather than dropping it.
         armPlanRetry(response->message);
     }
-    else if (m_planner_ik_error >= k_ik_error_threshold)
+    else if (!(m_planner_ik_error < k_ik_error_threshold))
     {
-        // Previously silent: the planner reported success, the GUI showed success, and
-        // the path was quietly never loaded.
-        armPlanRetry("IK error " + std::to_string(m_planner_ik_error.load()) + " m exceeds the " +
+        // Accept-polarity on purpose. Written as `>= threshold` this gate PASSED a
+        // non-finite IK error, because every comparison against NaN is false: the
+        // planner reported success, the GUI printed "nan" in plain black text, and
+        // a no-op plan was loaded and deployed 57 mm from its target. Phrasing it
+        // as "not provably good enough" rejects NaN as well as a large error.
+        //
+        // The scripted-test gate in updateTestStateMachine() is written the same
+        // way for the same reason; the two used to disagree on NaN.
+        armPlanRetry("IK error " + std::to_string(m_planner_ik_error.load()) + " m is not below the " +
                      std::to_string(k_ik_error_threshold) + " m limit");
         m_planner_success = false;
     }
@@ -860,6 +879,15 @@ void MasterNode::maybeRequestDeploymentReplan()
             m_replan_backoff_s = m_replan_cooldown_s;
             RCLCPP_INFO(this->get_logger(), "Force drift recovered (%.3f N) - replanning re-armed", df);
         }
+    }
+    // A non-finite drift is not evidence of drift. Guard explicitly, because
+    // `df <= threshold` is false for NaN and would fall through to request a
+    // replan on every cycle.
+    if (!std::isfinite(df))
+    {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+                             "Force drift is not finite - not requesting a replan");
+        return;
     }
     if (df <= m_force_replan_threshold)
         return;
@@ -1612,6 +1640,9 @@ void MasterNode::updateTestStateMachine()
             // bool bypass_error_check = m_closed_loop_enabled && m_q_list_actuated.empty();
             bool bypass_error_check = false;
 
+            // Accept-polarity `<`, matching handle_planner_response(). Keep it that
+            // way: a non-finite IK error must fail this test, and inverting it to
+            // `>= threshold` would silently let one through.
             if ((m_planner_success || bypass_error_check) && m_planner_ik_error < k_ik_error_threshold && m_flag_planner_updated)
             {
                 RCLCPP_INFO(get_logger(), "[Test] Planning successful, switching to Deployment mode");

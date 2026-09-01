@@ -90,7 +90,12 @@ public:
     /// @param wf: external distal force estimate (3)
     /// @param yref: reference trajectory over horizon (h x m)
     /// @param u_apply: output control to apply at current step (n)
-    void step(const VecN &q0, const blaze::StaticVector<double, 3UL> &wf, const MatHM &yref, VecN &u_apply);
+    /// @brief One MPC cycle. Returns false when the QP could not be solved or
+    ///        produced a non-finite solution; in that case u_apply is set to zero
+    ///        velocity, the warm-start state is left untouched, and the solver is
+    ///        re-initialised on the next call. The caller is responsible for
+    ///        logging (this library is ROS-free).
+    bool step(const VecN &q0, const blaze::StaticVector<double, 3UL> &wf, const MatHM &yref, VecN &u_apply);
 
     /// Test hook: force the next step() through the full solver re-init path
     /// (used to verify warm-started and re-initialized solves agree).

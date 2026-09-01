@@ -6,6 +6,8 @@
 
 #include <blaze/Math.h>
 
+#include <cmath>
+
 namespace robot_quat
 {
 
@@ -31,10 +33,27 @@ inline void quat_rotate(const blaze::StaticVector<double, 4UL> &q, const blaze::
   v_out = v + qw * t + blaze::cross(qv, t);
 }
 
-// Quaternion inverse: conjugate divided by norm squared
+// Quaternion inverse: conjugate divided by norm squared.
+//
+// The division is guarded. Callers hand this the PINN's raw predicted quaternion
+// (the network output is not normalised), and an unguarded 0/0 here manufactures
+// Inf/NaN from finite inputs -- which then propagates into the EKF gain, the
+// force state, and from there into every node that evaluates the model. The
+// conditional normalisations at the call sites do NOT protect this: they skip
+// normalising a degenerate quaternion and hand that same quaternion straight
+// here, and a NaN norm fails their `> 1e-10` test too.
+//
+// A degenerate input has no meaningful inverse, so return the identity: it makes
+// the resulting error quaternion "no rotation" rather than poisoning the caller.
+// Use quatIsUsable() (ctr_common/finite_guard.hpp) to detect and skip the update
+// instead of relying on this fallback.
 inline blaze::StaticVector<double, 4UL> quat_inverse(const blaze::StaticVector<double, 4UL> &q)
 {
-  double norm_sq = blaze::dot(q, q);
+  const double norm_sq = blaze::dot(q, q);
+  if (!std::isfinite(norm_sq) || norm_sq < 1.0e-12)
+  {
+    return blaze::StaticVector<double, 4UL>{1.0, 0.0, 0.0, 0.0};
+  }
   return blaze::StaticVector<double, 4UL>{q[0], -q[1], -q[2], -q[3]} / norm_sq;
 }
 

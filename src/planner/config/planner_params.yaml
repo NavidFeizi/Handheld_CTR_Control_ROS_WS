@@ -1,7 +1,14 @@
 # Single source of truth for the planner node parameters.
 planner_node:
   ros__parameters:
-    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_FP64"
+    # MUST match robot_params.yaml (pinn_fk_node and ekf_node) and mpc_params.yaml.
+    # ..._v3 and ..._FP64 are DIFFERENT networks of identical size whose
+    # parameters.json files are byte-identical, so nothing flagged the mismatch:
+    # IK converged on one network while pinn_fk reported the tip from the other,
+    # and the disagreement appeared as an unattributable tip error at the end of
+    # a deployment. Each node now logs its model's size and FNV-1a hash at
+    # startup - compare those across nodes if a tip error is ever unexplained.
+    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_v3"
     models_dir: ""    # empty -> installed share/ctr_kinematics_pinn/models
     solve_time: 3.0   # OMPL solve budget per request [s]
     data_root: ""     # empty -> env CTR_DATA_ROOT -> legacy workspace climb

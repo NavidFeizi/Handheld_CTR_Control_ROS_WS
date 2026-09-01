@@ -27,6 +27,7 @@
 
 #include "ctr_common/csv_io.hpp"
 #include "ctr_common/diag_csv.hpp"
+#include "ctr_common/finite_guard.hpp"
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/output_session.hpp"
 #include "ctr_common/runtime_paths.hpp"
@@ -106,6 +107,7 @@ public:
     const auto diag_dir = ctr_common::makeSessionDir(data_root / "Output_Files" / "diagnostics", "planner");
     m_diag.configure(diag_dir / "planner_diag.csv",
                      "req_id,wall_time,command,target_x,target_y,target_z,target_azimuth,"
+                     "fext_x,fext_y,fext_z,"
                      "start_b1,start_b2,start_a1,start_a2,"
                      "ik_b1,ik_b2,ik_a1,ik_a2,goal_repr_a1,goal_repr_a2,"
                      "ik_residual_m,ik_converged,ik_time_s,ik_iterations,ik_restarts,"
@@ -181,6 +183,17 @@ public:
   // Update the EKF external tip-force estimate.
   void updateForceEstimate(const interfaces::msg::Force::ConstSharedPtr &msg)
   {
+    // Reject and hold the last good value. This force reaches the network as an
+    // input via the IK, the FTL swept cost and the informed samplers, so a
+    // non-finite sample would make IK a no-op and every candidate cost NaN.
+    if (!std::isfinite(msg->x) || !std::isfinite(msg->y) || !std::isfinite(msg->z))
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "Non-finite force estimate [%.3f, %.3f, %.3f] N - holding the last good value",
+                           msg->x, msg->y, msg->z);
+      return;
+    }
+
     std::lock_guard<std::mutex> lock(m_feedback_mutex);
     m_force_est[0UL] = msg->x;
     m_force_est[1UL] = msg->y;
@@ -279,12 +292,15 @@ public:
       std::string outcome_message;
       blaze::StaticVector<double, 4UL> q_initial(0.0), q_final(0.0);
       std::array<double, 4UL> goal_repr{};
+      // Hoisted out of the try so the diagnostics row records the f_ext the
+      // request actually used. It was console-only before, which made a bad
+      // force impossible to correlate with a bad plan after the fact.
+      blaze::StaticVector<double, 3UL> force(0.0);
 
       try
       {
         // One consistent snapshot of joint feedback and EKF force for the whole request.
         blaze::StaticVector<double, 6UL> q_snapshot;
-        blaze::StaticVector<double, 3UL> force;
         {
           std::lock_guard<std::mutex> lock(m_feedback_mutex);
           q_snapshot = m_current_q;
@@ -295,6 +311,29 @@ public:
         // entries are static/zero) down to the 4 actuated inputs [β₁, β₂, α₁, α₂].
         q_initial = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
         q_final = q_initial;
+
+        // Refuse to plan on inputs that cannot produce a meaningful answer. The
+        // force and the joint snapshot are both NETWORK INPUTS: a non-finite
+        // value makes every FK call return NaN, and posCTRL's descent gate is
+        // `while (dist2Tgt > posTol)`, which is FALSE for NaN -- so IK silently
+        // performs zero iterations, returns the seed unchanged, and the planner
+        // then "succeeds" on a start-equals-goal path. That is exactly how a
+        // deployment completed 57 mm from its target with Success: Yes.
+        if (!ctr_common::allFinite(force))
+        {
+          throw std::runtime_error(
+              "EKF force estimate is not finite - refusing to plan (restart ekf_node)");
+        }
+        if (!ctr_common::allFinite(q_initial))
+        {
+          throw std::runtime_error(
+              "Joint feedback is not finite - refusing to plan");
+        }
+        if (!ctr_common::allFinite(target))
+        {
+          throw std::runtime_error(
+              "Requested target is not finite - refusing to plan");
+        }
 
         // Safe here: no solve is in flight (mutually exclusive service group).
         // Propagates to the FTL objective (cache cleared) and informed samplers.
@@ -315,6 +354,27 @@ public:
         RCLCPP_INFO(this->get_logger(), "Initial config: q = %.4f, %.4f, %.4f, %.4f", q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL]);
         RCLCPP_INFO(this->get_logger(), "Final config: q = %.4f, %.4f, %.4f, %.4f (goal alpha representative: %.4f, %.4f)",
                     q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL], goal_repr[2UL], goal_repr[3UL]);
+
+        // Reject a goal that IK never actually moved to.
+        //
+        // setGoalState() validates only box bounds and tube ordering, so a goal
+        // identical to the start is perfectly "valid": Phase 1 solves instantly,
+        // Phase 2 emits a single waypoint, every FTL candidate scores exactly 0
+        // (the `wps.size() < 2` early return, not a measurement), and the plan is
+        // reported EXACT_SOLUTION. Nothing downstream could tell that apart from
+        // a real plan.
+        if (!std::isfinite(error))
+        {
+          throw std::runtime_error(
+              "IK residual is not finite - refusing to emit a plan");
+        }
+        if (blaze::maxNorm(q_final - q_initial) < 1.0e-9 &&
+            blaze::norm(target - m_target_last) > 1.0e-9)
+        {
+          throw std::runtime_error(
+              "IK returned the start configuration unchanged for a moved target - "
+              "refusing to emit a no-op plan (residual " + std::to_string(error) + " m)");
+        }
 
         planning_status = plan(q_initial, q_final, force, plan_seconds);
         if (planning_status)
@@ -344,7 +404,7 @@ public:
       }
 
       writePlanDiagRecord(req_id, "generateTrajectory", target, q_initial, q_final, goal_repr,
-                          error, ik_diag, ik_seconds, plan_seconds, planning_status, outcome_message);
+                          force, error, ik_diag, ik_seconds, plan_seconds, planning_status, outcome_message);
     }
     else if (request->command == "replanDeployment")
     {
@@ -545,6 +605,7 @@ public:
                            const blaze::StaticVector<double, 4UL> &q_initial,
                            const blaze::StaticVector<double, 4UL> &q_final,
                            const std::array<double, 4UL> &goal_repr,
+                           const blaze::StaticVector<double, 3UL> &force,
                            const double ik_residual, const IkDiagnostics &d,
                            const double ik_seconds, const double plan_seconds,
                            const bool plan_success, const std::string &message)
@@ -554,6 +615,7 @@ public:
     os << req_id << ',' << ctr_common::currentTimestamp() << ',' << command << ','
        << target[0UL] << ',' << target[1UL] << ',' << target[2UL] << ','
        << std::atan2(target[1UL], target[0UL]) << ','
+       << force[0UL] << ',' << force[1UL] << ',' << force[2UL] << ','
        << q_initial[0UL] << ',' << q_initial[1UL] << ',' << q_initial[2UL] << ',' << q_initial[3UL] << ','
        << q_final[0UL] << ',' << q_final[1UL] << ',' << q_final[2UL] << ',' << q_final[3UL] << ','
        << goal_repr[2UL] << ',' << goal_repr[3UL] << ','
@@ -710,16 +772,24 @@ public:
       }
 
       // A waypoint is kept when EITHER prismatic or revolute motion since the
-      // last kept waypoint is significant. Filtering on β₁ alone (the old rule)
-      // collapsed every pure-rotation segment -- the whole Phase 1 rotation --
-      // into a single commanded step, leaving the α slew entirely unmanaged.
+      // last kept waypoint is significant.
+      //   - Filtering on β₁ alone (the original rule) collapsed every
+      //     pure-rotation segment -- the whole Phase 1 rotation -- into a single
+      //     commanded step, leaving the α slew entirely unmanaged.
+      //   - It also made β₂ travel invisible, so a β₂-dominant deployment
+      //     collapsed to one unmanaged jump. Phase 2's "least-travel stops
+      //     first" schedule makes β₂-dominant sub-phases routine, so both
+      //     prismatic joints have to be measured.
+      // Keep this rule identical to manager/csv_path_io.hpp's copy, which is the
+      // one that actually drives the robot.
       constexpr double alpha_step = 0.10; // [rad] ≈ 5.7° per commanded step
       size_t prev_idx = 0;
       q_list_out.push_back(q_list_in[0]);
 
-      for (size_t i = 1; i < q_list_in.size(); ++i)
+      for (size_t i = 1; i + 1 < q_list_in.size(); ++i)
       {
-          const double d_beta  = std::abs(q_list_in[i][0UL] - q_list_in[prev_idx][0UL]);
+          const double d_beta  = std::max(std::abs(q_list_in[i][0UL] - q_list_in[prev_idx][0UL]),
+                                          std::abs(q_list_in[i][1UL] - q_list_in[prev_idx][1UL]));
           const double d_alpha = std::max(std::abs(q_list_in[i][2UL] - q_list_in[prev_idx][2UL]),
                                           std::abs(q_list_in[i][3UL] - q_list_in[prev_idx][3UL]));
           if (d_beta >= step_size || d_alpha >= alpha_step)
@@ -728,7 +798,13 @@ public:
               q_list_out.push_back(q_list_in[i]);
           }
       }
-      q_list_out.push_back(q_list_in.back());
+      // Always end on the final configuration, exactly once. The loop stops
+      // before the last element, so this cannot duplicate a waypoint the loop
+      // already kept.
+      if (q_list_in.size() > 1UL)
+      {
+          q_list_out.push_back(q_list_in.back());
+      }
 
       // Downsampler telemetry: a large per-step Δα here means a rotation was
       // collapsed and would execute as one unmanaged swing.

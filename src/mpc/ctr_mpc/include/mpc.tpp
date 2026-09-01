@@ -460,7 +460,7 @@ void MPC<h, n, m>::updateWeights(VecM Q_diag, VecM Qf_diag, VecN R_u_diag, VecN 
 // }
 
 template <size_t h, size_t n, size_t m>
-void MPC<h, n, m>::step(const VecN &q0, const blaze::StaticVector<double, 3UL> &wf, const MatHM &yref, VecN &u_apply)
+bool MPC<h, n, m>::step(const VecN &q0, const blaze::StaticVector<double, 3UL> &wf, const MatHM &yref, VecN &u_apply)
 {
     const size_t nh = h * n;
     VecHM yref_stack;
@@ -487,6 +487,21 @@ void MPC<h, n, m>::step(const VecN &q0, const blaze::StaticVector<double, 3UL> &
     bool solver_ok = true;
     if (!m_solver_ready)
     {
+        // clearSolver() BEFORE re-initialising. OSQP's initSolver() fails on a
+        // solver that is already initialised, and this branch is reached not
+        // only on the very first cycle but every time the solver is forced back
+        // to re-init: forceSolverReinit(), or a previous failed solve.
+        //
+        // Without this the re-init silently failed and the old code fell through
+        // to getSolution() anyway, returning the previous cycle's solution. That
+        // is what let MpcQp.WarmStartMatchesReinit pass while never actually
+        // exercising a successful re-init -- the "re-init path" it compares was
+        // really a stale-solution path. The fallback branch below always had the
+        // clearSolver() call; this branch was missing it.
+        if (m_solver->isInitialized())
+        {
+            m_solver->clearSolver();
+        }
         m_solver->data()->clearHessianMatrix();
         solver_ok = m_solver->data()->setHessianMatrix(m_H_eigen) &&
                     m_solver->data()->setGradient(m_g_eigen) &&
@@ -516,11 +531,36 @@ void MPC<h, n, m>::step(const VecN &q0, const blaze::StaticVector<double, 3UL> &
                         m_solver->initSolver();
         }
     }
-    if (!solver_ok || m_solver->solveProblem() != OsqpEigen::ErrorExitFlag::NoError)
+    // A failed solve must NOT be applied.
+    //
+    // This used to print "Failed to solve QP!" to std::cout -- invisible under
+    // `ros2 launch` -- and then fall through to getSolution() anyway. Since
+    // std::clamp() returns NaN unchanged, a non-finite solution was accumulated
+    // into m_u_nom_stack, which is the warm-start state: the controller was then
+    // permanently poisoned and published non-finite joint velocity commands
+    // every cycle thereafter.
+    //
+    // On failure: command zero velocity (a velocity controller with no valid
+    // solution must stop, not coast on a stale command), leave the nominal stack
+    // untouched, and force a clean solver re-init next cycle. The failure is
+    // reported to the caller rather than printed, because this library is
+    // ROS-free and the node owns the logger.
+    const bool solved = solver_ok &&
+                        m_solver->solveProblem() == OsqpEigen::ErrorExitFlag::NoError;
+
+    Eigen::VectorXd dU;
+    if (solved)
     {
-        std::cout << "Failed to solve QP!" << std::endl;
+        dU = m_solver->getSolution();
     }
-    Eigen::VectorXd dU = m_solver->getSolution();
+
+    if (!solved || dU.size() < static_cast<Eigen::Index>(nh) || !dU.allFinite())
+    {
+        m_solver_ready = false; // re-init from scratch on the next cycle
+        u_apply = 0.0;
+        return false;
+    }
+
     blaze::StaticVector<double, nh> du_stack;
     for (size_t i = 0; i < nh; ++i)
     {
@@ -535,6 +575,7 @@ void MPC<h, n, m>::step(const VecN &q0, const blaze::StaticVector<double, 3UL> &
     }
     u_apply = subvector(m_u_nom_stack, 0, n);
     subvector(m_u_nom_stack, 0, n * (h - 1)) = subvector(m_u_nom_stack, n, n * (h - 1));
+    return true;
 }
 
 //---------------------------------Class Helper functions ---------------------------------//

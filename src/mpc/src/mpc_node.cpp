@@ -17,6 +17,7 @@
 #include "interfaces/msg/force.hpp"
 
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
+#include "ctr_common/finite_guard.hpp"
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
 #include "mpc.hpp"
@@ -560,6 +561,20 @@ private:
   /// @brief Update disterbance distal force (m_wf = f)
   void updateExternalForce(const interfaces::msg::Force::ConstSharedPtr &msg)
   {
+    // The tip-position callback above already validates its input; the force was
+    // the unguarded one, and it is the more dangerous of the two. It goes into
+    // the model as a network input and from there into the QP's Hessian and
+    // gradient, and std::clamp() passes NaN through, so one bad sample
+    // permanently poisons the warm-started nominal-input stack and publishes
+    // non-finite joint velocity commands. Reject it, keep the last good force.
+    if (!ctr_common::allFinite(std::array<double, 3UL>{msg->x, msg->y, msg->z}))
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "Non-finite external force [%.3f, %.3f, %.3f] N - holding the last good value",
+                           msg->x, msg->y, msg->z);
+      return;
+    }
+
     std::lock_guard<std::mutex> lock(m_state_mutex);
     m_wf[0] = msg->x;
     m_wf[1] = msg->y;
@@ -629,7 +644,28 @@ private:
       // }
     }
 
-    m_mpc->step(q, wf, ref_h, u_apply);
+    const bool qp_ok = m_mpc->step(q, wf, ref_h, u_apply);
+
+    // step() now reports a failed or non-finite solve instead of silently
+    // applying it, and zeroes u_apply in that case. Log it here -- the library is
+    // ROS-free, and the old std::cout message was invisible under `ros2 launch`.
+    if (!qp_ok)
+    {
+      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                            "MPC QP solve failed - commanding zero velocity and re-initialising the solver");
+    }
+
+    // Belt and braces: never command a non-finite velocity. The driver's limit
+    // checks are all `<`/`>` comparisons, which are false for NaN, so a bad
+    // value would clear every bound and clearance test and then be cast to int32
+    // encoder counts -- undefined behaviour that yields INT32_MIN on x86, i.e. a
+    // full-travel command.
+    if (!ctr_common::allFinite(u_apply))
+    {
+      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                            "MPC produced a non-finite command - commanding zero velocity");
+      u_apply = 0.0;
+    }
 
     m_u_last = u_apply;
 

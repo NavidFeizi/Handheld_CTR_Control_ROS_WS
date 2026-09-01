@@ -417,7 +417,13 @@ bool Cia301Node::EnableOp_(const bool enable)
 {
     logger->debug("[Node " + m_nodeId + "] " + "requested to switch operation to : " + std::to_string(enable));
 
-    int max_attempts = 10;
+    // The retry loop used to hammer the drive with back-to-back SDO writes and
+    // reads with no delay between attempts, so all 10 attempts were spent inside
+    // a few milliseconds. The rotary drives (nodes 1 and 3) do not leave
+    // "Operation Enabled" that fast, so they hit the limit and latched
+    // ENABLE_FAULT on EVERY run. Give the drive time to actually change state.
+    const int max_attempts = m_enable_max_attempts;
+    const std::chrono::milliseconds retry_delay{m_enable_retry_delay_ms};
     int attempt_count = 0;
 
     m_statusWord.update(Wait(AsyncRead<uint16_t>(STATUS_WORD_IDX, 0x0000))); // get status word on SDO)
@@ -437,6 +443,7 @@ bool Cia301Node::EnableOp_(const bool enable)
                 return false;
             }
             Wait(AsyncWrite<uint16_t>(CONTROL_WORD_IDX, 0, 0x000F));                 // set the state macine to enabled operation
+            Wait(AsyncWait(duration(retry_delay)));                                  // let the drive act before re-reading
             m_statusWord.update(Wait(AsyncRead<uint16_t>(STATUS_WORD_IDX, 0x0000))); // get status word on SDO
             attempt_count++;
         }
@@ -459,6 +466,7 @@ bool Cia301Node::EnableOp_(const bool enable)
                 return false;
             }
             Wait(AsyncWrite<uint16_t>(CONTROL_WORD_IDX, 0, 0x0007));                 // set the state macine to switched on
+            Wait(AsyncWait(duration(retry_delay)));                                  // let the drive act before re-reading
             m_statusWord.update(Wait(AsyncRead<uint16_t>(STATUS_WORD_IDX, 0x0000))); // get status word on SDO
             attempt_count++;
         }
@@ -1084,9 +1092,19 @@ bool Cia301Node::isReached() const
     {
         return m_statusWord.bit10;
     }
+    else if (m_current_operation_mode == OpMode::Homing)
+    {
+        // In Homing mode CiA-402 signals completion with bit12 (homing attained)
+        // AND bit10 (target reached) - the same pair the homing routine itself
+        // checks. Returning false here regardless meant CTRobot::waitUntilTransReach()
+        // polled a predicate that could not become true until the mode left
+        // Homing, spinning for the whole homing sequence and emitting ~6000 debug
+        // lines per run.
+        return m_statusWord.bit12 && m_statusWord.bit10;
+    }
     else
     {
-        logger->debug("[Node " + m_nodeId + "]Target reached is only defined for PP and PV modes ");
+        logger->debug("[Node " + m_nodeId + "]Target reached is only defined for PP, PV and Homing modes ");
         return 0;
     }
 }

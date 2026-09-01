@@ -29,6 +29,12 @@ ekf_node:
     sample_time: 0.025
     model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_v3"
     models_dir: ""
+    # Physics order [b1, b2, a1, a2]; must match pinn_fk_node's q0. Seeds the FK
+    # prediction until joint_space/feedback arrives (the EM tracker leads the
+    # robot nodes by 14 s at bringup). Must be feasible per dataset_bounds.hpp —
+    # the old implicit all-zero seed was not, so every run began by querying the
+    # network outside its trained box.
+    q0: [-0.100, -0.055, 0.0, 0.0]
     f_dot: 0.2               # N/s — production value from system_bringup (robot.py's old 0.1 lost)
     # 6x6 measurement covariance, row-major. Formerly built with numpy in three
     # launch files (sim.py's hand-typed copy was malformed); values below are

@@ -15,6 +15,7 @@
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/srv/config.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include "ctr_common/finite_guard.hpp"
 #include "ctr_robot_driver/Robot.hpp"
 
 using namespace std::chrono_literals;
@@ -442,6 +443,24 @@ private:
   {
     const blaze::StaticVector<double, 4UL> &lo = m_trans_limit ? minDynamicPosLimit : minDynamicPosLimitInf;
     const blaze::StaticVector<double, 4UL> &hi = m_trans_limit ? maxDynamicPosLimit : maxDynamicPosLimitInf;
+
+    // Non-finite first: `target[i] < lo[i] || target[i] > hi[i]` is false for
+    // NaN, so a corrupt target would slip past this warning silently. The driver
+    // rejects it (CTRobot::checkPosLimits), but the operator still needs to know
+    // a controller is emitting garbage.
+    if (!ctr_common::allFinite(target))
+    {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - m_last_limit_warn_time >= std::chrono::seconds(1))
+      {
+        m_last_limit_warn_time = now;
+        m_logger->error("[RobotNode] Position target is not finite - the driver will reject it "
+                        "(wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
+                        target[0], target[1], target[2], target[3]);
+      }
+      return;
+    }
+
     for (size_t i = 0; i < 4UL; ++i)
     {
       if (target[i] < lo[i] || target[i] > hi[i])

@@ -18,6 +18,7 @@
 #include <filesystem>
 
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
+#include "ctr_common/finite_guard.hpp"
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
 #include <iostream>
@@ -200,6 +201,17 @@ public:
   /// Update current joints configuration
   void updateJointsConfig(const interfaces::msg::Jointspace::ConstSharedPtr &msg)
   {
+    // A non-finite joint would pass straight through the clamp below --
+    // std::clamp() returns NaN unchanged -- AND suppress its warning, because
+    // `maxNorm(q - q_raw) > 1e-9` is false when the difference is NaN. The FK
+    // output would be NaN with nothing at all in the log to say why.
+    if (!ctr_common::allFinite(msg->position))
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "Non-finite joint feedback - holding the previous joint vector.");
+      return;
+    }
+
     std::lock_guard<std::mutex> lock(m_state_mutex);
     m_q = ctr_common::wireToPhysics4(msg->position);
   }
@@ -207,6 +219,19 @@ public:
   /// @brief Update disterbance distal force (m_wf = f)
   void updateExternalForce(const interfaces::msg::Force::ConstSharedPtr &msg)
   {
+    // The force is a NETWORK INPUT: getPosDistal() concatenates it straight into
+    // the model's input tensor, so a single non-finite sample makes the tip pose
+    // and all three tube shapes NaN, and keeps them NaN for as long as the bad
+    // value is held. Reject it and keep the last good force instead.
+    if (!std::isfinite(msg->x) || !std::isfinite(msg->y) || !std::isfinite(msg->z))
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "Non-finite external force [%.3f, %.3f, %.3f] N - holding the last good value. "
+                           "The EKF force estimate is corrupt.",
+                           msg->x, msg->y, msg->z);
+      return;
+    }
+
     std::lock_guard<std::mutex> lock(m_state_mutex);
     m_wf[0] = msg->x;
     m_wf[1] = msg->y;

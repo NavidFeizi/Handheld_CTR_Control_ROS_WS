@@ -13,6 +13,7 @@
 #include "interfaces/msg/ekf_residual.hpp"
 
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
+#include "ctr_common/finite_guard.hpp"
 #include "ctr_common/joint_conventions.hpp"
 #include "robot/quat_utils.hpp"
 using namespace robot_quat;
@@ -50,11 +51,27 @@ private:
   double m_f_dot;
   double m_force_threshold = 0.50; // N
   bool m_first_measurement_received = false;
+  // The tip measurement is not the only prerequisite for a correction: the
+  // JOINTS have to be real too. Bringup starts the EM tracker 14 s before the
+  // robot nodes, so tip poses always arrive first and every early correction
+  // used to run on the q0 seed rather than on hardware feedback.
+  bool m_first_joint_received = false;
 
   blaze::StaticVector<double, nx> m_x_pred;
   blaze::StaticMatrix<double, nx, nx> m_A;
   blaze::StaticMatrix<double, nx, nx> m_P; // state covariance
   blaze::StaticMatrix<double, nx, nx> m_Q; // process noise covariance
+
+  // Dataset-native joint window for the FK queries, same source and same
+  // relative-beta1 convention pinn_fk_node uses. Without this the EKF queried
+  // the network outside its trained box whenever feedback left the dataset
+  // range, which is extrapolation dressed up as a prediction.
+  blaze::StaticVector<double, nu> m_q_min, m_q_max;
+
+  // Last force estimate that was finite, so a rejected update never publishes a
+  // non-finite value downstream (pinn_fk, the planner and the MPC all feed this
+  // straight into the PINN as a network input).
+  blaze::StaticVector<double, nx> m_force_last_good{0.0, 0.0, 0.0};
 
   rclcpp::TimerBase::SharedPtr m_control_timer;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_EKF;
@@ -145,6 +162,25 @@ private:
       throw std::runtime_error("Invalid R dimension");
     }
 
+    // Physics order [beta1, beta2, alpha1, alpha2]; same default as
+    // pinn_fk_node's q0. The old all-zero seed was INFEASIBLE (beta2 = 0 is
+    // outside the trained [-0.072, -0.034], and beta1 - beta2 = 0 is outside
+    // [-0.084, -0.030]), so the first FK queries of every run were made deep in
+    // extrapolation. Only the tip measurement was gated, and bringup gives the
+    // EM tracker a 14 s head start, so those queries always happened.
+    declare_parameter<std::vector<double>>("q0", {-0.100, -0.055, 0.0, 0.0});
+    const std::vector<double> q0 = get_parameter("q0").as_double_array();
+    if (q0.size() != nu)
+    {
+      RCLCPP_ERROR(this->get_logger(), "q0 must have %zu elements, got %zu", nu, q0.size());
+      throw std::runtime_error("Invalid q0 dimension");
+    }
+    if (!ctr_common::allFinite(q0))
+    {
+      RCLCPP_ERROR(this->get_logger(), "q0 must be finite");
+      throw std::runtime_error("Non-finite q0");
+    }
+
     // Initialize with NaNs so EKF can skip update until first valid measurement.
     for (size_t i = 0; i < ny; ++i)
     {
@@ -152,7 +188,7 @@ private:
     }
     for (size_t i = 0; i < nu; ++i)
     {
-      m_q[i] = 0.0;
+      m_q[i] = q0[i];
     }
     for (size_t i = 0; i < nx; ++i)
     {
@@ -208,6 +244,13 @@ private:
     // instantiate EKF model object
     m_pinn = std::make_shared<PINNs<nu>>(ctr_common::resolveModelsDir(*this).string(), m_model_name, 1UL, backbonePoints);
 
+    // Dataset-native ranges, exactly as pinn_fk_node resolves them:
+    // clampJointPositions() re-applies the tube coupling by shifting beta1's
+    // window by the live beta2, so it needs the RELATIVE window that
+    // getDatasetInputRanges() returns, not the absolute box from
+    // getInputPosBounds().
+    std::tie(m_q_min, m_q_max) = m_pinn->getDatasetInputRanges();
+
     const double alpha = 1.0;
     m_A = alpha * blaze::IdentityMatrix<double>(nx);
 
@@ -259,12 +302,24 @@ private:
     {
       m_x[3UL + i] = msg->h[i]; // quaternion
     }
-    const double h_norm2 = msg->h[0] * msg->h[0] + msg->h[1] * msg->h[1] +
-                           msg->h[2] * msg->h[2] + msg->h[3] * msg->h[3];
-    if (h_norm2 < 1e-12)
+    // Was a zero-norm test, which is blind to the case that actually occurs:
+    // EMTracker::ToolData2QuatTransform writes a NaN quaternion when the tool or
+    // robot sensor frame is missing, and `NaN < 1e-12` is false. quatIsUsable()
+    // tests finiteness AND norm. The measurement is stored either way -- EKFStep
+    // decides per channel what to do with it -- so this stays a warning, not a
+    // filter.
+    if (!ctr_common::quatIsUsable(msg->h))
     {
-      RCLCPP_WARN_ONCE(this->get_logger(),
-                       "Tip orientation measurement is a zero-norm quaternion - the EKF orientation update is running on invalid data");
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "Tip orientation measurement is unusable (non-finite or zero-norm) "
+                           "[%.4f, %.4f, %.4f, %.4f] - falling back to the position-only correction",
+                           msg->h[0], msg->h[1], msg->h[2], msg->h[3]);
+    }
+    if (!ctr_common::allFinite(msg->p))
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "Tip position measurement is non-finite [%.4f, %.4f, %.4f] - skipping the EKF correction",
+                           msg->p[0], msg->p[1], msg->p[2]);
     }
     m_first_measurement_received = true;
     RCLCPP_DEBUG(this->get_logger(), "x: %0.4f, %0.4f, %0.4f, q: %0.4f, %0.4f, %0.4f, %0.4f", m_x[0], m_x[1], m_x[2], m_x[3], m_x[4], m_x[5], m_x[6]);
@@ -273,8 +328,17 @@ private:
   /// @brief update current robot joints position
   void updateJointsPosition(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
+    if (!ctr_common::allFinite(msg->position))
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "Non-finite joint feedback - holding the previous joint vector. "
+                           "A NaN here would silently poison every FK query.");
+      return;
+    }
+
     std::lock_guard<std::mutex> lock(m_state_mutex);
     m_q = ctr_common::wireToPhysics4(msg->position);
+    m_first_joint_received = true;
 
     RCLCPP_DEBUG(this->get_logger(), "q: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f", m_q[0], m_q[1], m_q[2], m_q[3], m_q[4], m_q[5]);
   }
@@ -467,19 +531,194 @@ private:
     }
   }
 
-  /// @brief Check if all measurement values are NaN
-  bool measurementIsMissing(const blaze::StaticVector<double, ny> &z) const
+  // ---------------------------------------------------------------------------
+  // Measurement validity, PER CHANNEL.
+  //
+  // This replaced an all-or-nothing measurementIsMissing() that returned true
+  // only when all SEVEN components were non-finite. That is precisely the hole
+  // the 2026-09-01 incident went through: the EM tracker's translation is
+  // NaN-masked by a Butterworth filter but its rotation was not, so a missing
+  // sensor frame produced a finite position beside a NaN quaternion. One finite
+  // element made the whole vector "present", the NaN entered the correction, and
+  // the force state was NaN for the rest of the session.
+  // ---------------------------------------------------------------------------
+
+  /// @brief True when the position channel of a measurement can be used.
+  bool positionIsUsable(const blaze::StaticVector<double, ny> &z) const
   {
-    bool all_nan = true;
-    for (size_t i = 0; i < ny; ++i)
+    return ctr_common::allFinite(blaze::subvector(z, 0UL, 3UL));
+  }
+
+  /// @brief True when the orientation channel of a measurement can be used.
+  ///        Checked against BOTH the measurement and the prediction, because
+  ///        quat_inverse() is applied to the prediction: a degenerate predicted
+  ///        quaternion would divide by ~0 there.
+  bool orientationIsUsable(const blaze::StaticVector<double, ny> &z_meas,
+                           const blaze::StaticVector<double, ny> &z_pred) const
+  {
+    return ctr_common::quatIsUsable(blaze::subvector(z_meas, 3UL, 4UL)) &&
+           ctr_common::quatIsUsable(blaze::subvector(z_pred, 3UL, 4UL));
+  }
+
+  /// @brief Common Kalman update: innovation covariance, damped solve, gain, and
+  ///        a GUARDED commit.
+  ///
+  /// The commit guard is what makes a NaN self-limiting. The new state and
+  /// covariance are computed into locals and written back only when both are
+  /// finite; otherwise the filter keeps its previous state and this cycle is
+  /// simply lost. Guarding here rather than at the inputs also covers the two
+  /// failure modes no input check can see: a non-finite H out of the
+  /// finite-difference Jacobian, and a blaze::solve() on a singular S.
+  ///
+  /// Before this, `m_x_pred = m_x_pred + L * r` was committed unconditionally,
+  /// m_P went non-finite with it, and since m_A is the identity both reproduced
+  /// the NaN forever with no reset path.
+  template <size_t nr, bool SO>
+  bool applyCorrection(const blaze::StaticVector<double, nr> &r,
+                       const blaze::StaticMatrix<double, nr, nx, SO> &H,
+                       const blaze::StaticMatrix<double, nr, nr> &R)
+  {
+    blaze::StaticMatrix<double, nr, nr> S = H * m_P * blaze::trans(H) + R;
+
+    // Damping
+    const double lambda = 1e-6;
+    for (size_t i = 0; i < nr; ++i)
     {
-      if (std::isfinite(z[i]))
-      {
-        all_nan = false;
-        break;
-      }
+      S(i, i) += lambda;
     }
-    return all_nan;
+
+    // Solve instead of explicit inverse
+    const blaze::StaticMatrix<double, nx, nr> PHt = m_P * blaze::trans(H);
+    const blaze::StaticMatrix<double, nr, nx> Kt = blaze::solve(S, blaze::trans(PHt));
+
+    // Kalman gain
+    const blaze::StaticMatrix<double, nx, nr> L = blaze::trans(Kt);
+
+    // --- 2b) State estimation measurement correction ---
+    const blaze::StaticVector<double, nx> x_new = m_x_pred + L * r;
+
+    // --- 2c) Estimation-error covariance measurement update (Joseph form) ---
+    //
+    // `temp` is materialised into a concrete matrix rather than left as `auto`.
+    // Blaze expression templates capture their operands by reference, so
+    // `auto temp = IdentityMatrix<double>(nx) - L * H;` binds a reference to the
+    // IdentityMatrix temporary and then uses it in a later statement, after that
+    // temporary has died. The three call sites this replaced all did that.
+    const blaze::StaticMatrix<double, nx, nx> temp =
+        blaze::IdentityMatrix<double>(nx) - L * H;
+    const blaze::StaticMatrix<double, nx, nx> P_new =
+        temp * m_P * blaze::trans(temp) + L * R * blaze::trans(L);
+
+    if (!ctr_common::allFinite(x_new) || !ctr_common::allFinite(P_new))
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "EKF correction rejected: the update is not finite (residual finite: %d, "
+                           "gain finite: %d). Holding the previous force estimate and covariance.",
+                           static_cast<int>(ctr_common::allFinite(r)),
+                           static_cast<int>(ctr_common::allFinite(L)));
+      return false;
+    }
+
+    m_x_pred = x_new;
+    m_P = P_new;
+    return true;
+  }
+
+  /// @brief Position-only correction (3 rows). Also the fallback whenever the
+  ///        orientation channel is unusable, which keeps the force estimate
+  ///        tracking through a dropped EM frame instead of losing the session.
+  bool correctPositionOnly(const blaze::StaticVector<double, nu> &q,
+                           const blaze::StaticVector<double, ny> &z_meas,
+                           const blaze::StaticVector<double, ny> &z_pred,
+                           blaze::StaticVector<double, 3UL> &pos_residual)
+  {
+    blaze::StaticVector<double, 3UL> r;                         // residual
+    blaze::StaticMatrix<double, 3UL, nx, blaze::columnMajor> H; // measurement Jacobian
+    const blaze::StaticMatrix<double, 3UL, 3UL> R = blaze::submatrix(m_R, 0UL, 0UL, 3UL, 3UL);
+
+    // Position residual
+    r = blaze::subvector(z_meas, 0UL, 3UL) - blaze::subvector(z_pred, 0UL, 3UL);
+    for (size_t i = 0; i < 3UL; ++i)
+    {
+      pos_residual[i] = r[i];
+    }
+
+    this->m_pinn->jacobian_wrt_force(q, m_x_pred, H);
+
+    return applyCorrection(r, H, R);
+  }
+
+  /// @brief Full correction using position and orientation. Callers must have
+  ///        established orientationIsUsable() first, so the normalisations below
+  ///        cannot divide by zero and quat_inverse() cannot blow up.
+  bool correctPositionAndOrientation(const blaze::StaticVector<double, nu> &q,
+                                     const blaze::StaticVector<double, ny> &z_meas,
+                                     const blaze::StaticVector<double, ny> &z_pred,
+                                     blaze::StaticVector<double, 3UL> &pos_residual,
+                                     blaze::StaticVector<double, 3UL> &rot_residual_rad)
+  {
+    blaze::StaticVector<double, 4UL> quat_meas = blaze::subvector(z_meas, 3UL, 4UL);
+    blaze::StaticVector<double, 4UL> quat_pred = blaze::subvector(z_pred, 3UL, 4UL);
+
+    // Normalize. Unconditional: quatIsUsable() guarantees norm >= 1e-6.
+    quat_meas /= blaze::norm(quat_meas);
+    quat_pred /= blaze::norm(quat_pred);
+
+    // Align measurement sign to prediction to avoid antipodal jumps.
+    if (blaze::dot(quat_meas, quat_pred) < 0.0)
+    {
+      quat_meas = -quat_meas;
+    }
+
+    const blaze::StaticVector<double, 4UL> quat_err = quat_multiply(quat_inverse(quat_pred), quat_meas);
+    const blaze::StaticVector<double, 3UL> r_rot = quat_to_rotvec(quat_err);
+
+    if constexpr (!exclude_roll)
+    {
+      blaze::StaticVector<double, 6UL> r;            // residual
+      blaze::StaticMatrix<double, 6UL, nx> H;        // measurement Jacobian
+      blaze::StaticMatrix<double, 6UL, 6UL> R = m_R; // measurement noise covariance
+
+      blaze::subvector(r, 0UL, 3UL) = blaze::subvector(z_meas, 0UL, 3UL) - blaze::subvector(z_pred, 0UL, 3UL);
+      blaze::subvector(r, 3UL, 3UL) = r_rot;
+      for (size_t i = 0; i < 3UL; ++i)
+      {
+        pos_residual[i] = r[i];
+        rot_residual_rad[i] = r_rot[i];
+      }
+
+      jacobian_wrt_wf_fd(q, m_x_pred, H);
+
+      return applyCorrection(r, H, R);
+    }
+    else
+    {
+      blaze::StaticVector<double, 5UL> r;      // residual [pos(3), rotvec_xy(2)]
+      blaze::StaticMatrix<double, 5UL, nx> H;  // measurement Jacobian
+      blaze::StaticMatrix<double, 5UL, 5UL> R; // active R block (position + orientation x-y)
+
+      reset(R);
+      for (size_t i = 0; i < 5UL; ++i)
+      {
+        for (size_t j = 0; j < 5UL; ++j)
+        {
+          R(i, j) = m_R(i, j);
+        }
+      }
+
+      blaze::subvector(r, 0UL, 3UL) = blaze::subvector(z_meas, 0UL, 3UL) - blaze::subvector(z_pred, 0UL, 3UL);
+      r[3UL] = r_rot[0UL];
+      r[4UL] = r_rot[1UL];
+      for (size_t i = 0; i < 3UL; ++i)
+      {
+        pos_residual[i] = r[i];
+        rot_residual_rad[i] = r_rot[i];
+      }
+
+      jacobian_wrt_wf_fd_xy(q, m_x_pred, H);
+
+      return applyCorrection(r, H, R);
+    }
   }
 
   /// @brief EKF step
@@ -495,6 +734,7 @@ private:
     blaze::StaticVector<double, 3UL> pos_residual;
     blaze::StaticVector<double, 3UL> rot_residual_rad;
     bool first_measurement_received = false;
+    bool first_joint_received = false;
 
     for (size_t i = 0; i < 3UL; ++i)
     {
@@ -508,6 +748,21 @@ private:
       q = m_q;
       z_meas = m_x;
       first_measurement_received = m_first_measurement_received;
+      first_joint_received = m_first_joint_received;
+    }
+
+    // Clamp the LOCAL copy into the dataset range before any FK query, exactly
+    // as pinn_fk_node does. The two nodes evaluate the same network and must not
+    // disagree about what a legal query is; without this the EKF extrapolated
+    // whenever feedback left the trained box.
+    const blaze::StaticVector<double, nu> q_raw = q;
+    ctr_common::clampJointPositions(q, m_q_min, m_q_max, this->get_logger());
+    if (blaze::maxNorm(q - q_raw) > 1e-9)
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "EKF FK input clamped to the dataset range [b1, b2, a1, a2]: "
+                           "[%.4f, %.4f, %.4f, %.4f] -> [%.4f, %.4f, %.4f, %.4f]",
+                           q_raw[0], q_raw[1], q_raw[2], q_raw[3], q[0], q[1], q[2], q[3]);
     }
 
     // 1a) States prediction time update (Gauss–Markov)
@@ -519,212 +774,82 @@ private:
     // 1c) Prediction system output
     this->m_pinn->getPosDistal(q, m_x_pred, z_pred);
 
-    if (first_measurement_received && !measurementIsMissing(z_meas))
+    // Correction, gated PER CHANNEL so a dropped EM frame degrades one channel
+    // for one cycle instead of poisoning the filter for the whole session.
+    if (!first_joint_received)
     {
-      // Correction
-      if constexpr (!use_orientation)
+      // The prediction is still running on the q0 seed: bringup starts the EM
+      // tracker 14 s ahead of the robot nodes, so tip poses arrive long before
+      // any joint feedback. Correcting here would fit the force to a
+      // configuration the robot is not in.
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                           "Waiting for joint_space/feedback before correcting - the force estimate stays at its "
+                           "initial value until the robot node publishes joint feedback.");
+    }
+    else if (first_measurement_received && positionIsUsable(z_meas))
+    {
+      if constexpr (use_orientation)
       {
-        // only use position measurements (neglect orientation) for correction step
-        blaze::StaticVector<double, 3UL> r;                         // residual
-        blaze::StaticMatrix<double, 3UL, nx, blaze::columnMajor> H; // measurement Jacobian
-        blaze::StaticMatrix<double, 3UL, 3UL> S;                    // innovation covariance
-        blaze::StaticMatrix<double, nx, 3UL> L;                     // Kalman gain
-        const blaze::StaticMatrix<double, 3UL, 3UL> R = blaze::submatrix(m_R, 0UL, 0UL, 3UL, 3UL);
-        // Position residual
-        blaze::subvector(r, 0UL, 3UL) = blaze::subvector(z_meas, 0UL, 3UL) - blaze::subvector(z_pred, 0UL, 3UL);
-        for (size_t i = 0; i < 3UL; ++i)
+        if (orientationIsUsable(z_meas, z_pred))
         {
-          pos_residual[i] = r[i];
-        }
-
-        this->m_pinn->jacobian_wrt_force(q, m_x_pred, H);
-
-        S = H * m_P * blaze::trans(H) + R;
-
-        const double lambda = 1e-6;
-        for (size_t i = 0; i < S.rows(); ++i)
-        {
-          S(i, i) += lambda;
-        }
-
-        // Solve instead of explicit inverse
-        blaze::StaticMatrix<double, nx, 3UL> PHt = m_P * blaze::trans(H);
-        blaze::StaticMatrix<double, 3UL, nx> Kt = blaze::solve(S, blaze::trans(PHt));
-
-        // Kalman gain
-        L = blaze::trans(Kt);
-
-        // --- 2b) State estimation measurement correction ---
-        m_x_pred = m_x_pred + L * r;
-
-        // --- 2c) Estimation-error covariance measurement update ---
-        auto temp = (blaze::IdentityMatrix<double>(nx) - L * H);
-        m_P = temp * m_P * trans(temp) + L * R * trans(L);
-      }
-      else
-      {
-        blaze::StaticVector<double, 4UL> quat_meas, quat_pred, quat_err; // quaternion measurement, prediction, and error
-
-        if constexpr (!exclude_roll)
-        {
-          blaze::StaticVector<double, 6UL> r;            // residual
-          blaze::StaticMatrix<double, 6UL, nx> H;        // measurement Jacobian
-          blaze::StaticMatrix<double, 6UL, 6UL> S;       // innovation covariance
-          blaze::StaticMatrix<double, nx, 6UL> L;        // Kalman gain
-          blaze::StaticMatrix<double, 6UL, 6UL> R = m_R; // measurement noise covariance
-
-          // --- 2a) Kalman gain matrix - including linearization ---
-          // Position residual
-          blaze::subvector(r, 0UL, 3UL) = blaze::subvector(z_meas, 0UL, 3UL) - blaze::subvector(z_pred, 0UL, 3UL);
-
-          // Quaternion residual
-          quat_meas = blaze::subvector(z_meas, 3UL, 4UL);
-          quat_pred = blaze::subvector(z_pred, 3UL, 4UL);
-
-          // Normalize
-          double norm_quat_meas = norm(quat_meas);
-          double norm_quat_pred = norm(quat_pred);
-          if (norm_quat_meas > 1e-10)
-            quat_meas /= norm_quat_meas;
-          if (norm_quat_pred > 1e-10)
-            quat_pred /= norm_quat_pred;
-
-          if (blaze::dot(quat_meas, quat_pred) < 0.0)
-          {
-            quat_meas = -quat_meas;
-          }
-
-          quat_err = quat_multiply(quat_inverse(quat_pred), quat_meas);
-          blaze::StaticVector<double, 3UL> r_rot = quat_to_rotvec(quat_err);
-          blaze::subvector(r, 3UL, 3UL) = r_rot;
-          for (size_t i = 0; i < 3UL; ++i)
-          {
-            pos_residual[i] = r[i];
-            rot_residual_rad[i] = r_rot[i];
-          }
-
-          jacobian_wrt_wf_fd(q, m_x_pred, H);
-
-          S = H * m_P * blaze::trans(H) + R;
-
-          // Damping
-          const double lambda = 1e-6;
-          for (size_t i = 0; i < S.rows(); ++i)
-          {
-            S(i, i) += lambda;
-          }
-
-          // Solve instead of explicit inverse
-          blaze::StaticMatrix<double, nx, 6UL> PHt = m_P * blaze::trans(H);
-          blaze::StaticMatrix<double, 6UL, nx> Kt = blaze::solve(S, blaze::trans(PHt));
-
-          // Kalman gain
-          L = blaze::trans(Kt);
-
-          // --- 2b) State estimation measurement correction ---
-          m_x_pred = m_x_pred + L * r;
-
-          // --- 2c) Estimation-error covariance measurement update ---
-          auto temp = (blaze::IdentityMatrix<double>(nx) - L * H);
-          m_P = temp * m_P * blaze::trans(temp) + L * R * blaze::trans(L); // Joseph form
+          correctPositionAndOrientation(q, z_meas, z_pred, pos_residual, rot_residual_rad);
         }
         else
         {
-          blaze::StaticVector<double, 5UL> r;      // residual [pos(3), rotvec_xy(2)]
-          blaze::StaticMatrix<double, 5UL, nx> H;  // measurement Jacobian
-          blaze::StaticMatrix<double, 5UL, 5UL> S; // innovation covariance
-          blaze::StaticMatrix<double, nx, 5UL> L;  // Kalman gain
-          blaze::StaticMatrix<double, 5UL, 5UL> R;
-
-          // Build active R block (position + orientation x-y).
-          reset(R);
-          for (size_t i = 0; i < 5UL; ++i)
-          {
-            for (size_t j = 0; j < 5UL; ++j)
-            {
-              R(i, j) = m_R(i, j);
-            }
-          }
-
-          // --- 2a) Kalman gain matrix - including linearization ---
-          // Position residual
-          blaze::subvector(r, 0UL, 3UL) = blaze::subvector(z_meas, 0UL, 3UL) - blaze::subvector(z_pred, 0UL, 3UL);
-
-          // Quaternion residual
-          quat_meas = blaze::subvector(z_meas, 3UL, 4UL);
-          quat_pred = blaze::subvector(z_pred, 3UL, 4UL);
-
-          // Normalize
-          double norm_quat_meas = norm(quat_meas);
-          double norm_quat_pred = norm(quat_pred);
-          if (norm_quat_meas > 1e-10)
-            quat_meas /= norm_quat_meas;
-          if (norm_quat_pred > 1e-10)
-            quat_pred /= norm_quat_pred;
-
-          // Align measurement sign to prediction to avoid antipodal jumps.
-          if (blaze::dot(quat_meas, quat_pred) < 0.0)
-          {
-            quat_meas = -quat_meas;
-          }
-
-          quat_err = quat_multiply(quat_inverse(quat_pred), quat_meas);
-          blaze::StaticVector<double, 3UL> r_rot = quat_to_rotvec(quat_err);
-          r[3UL] = r_rot[0UL];
-          r[4UL] = r_rot[1UL];
-          for (size_t i = 0; i < 3UL; ++i)
-          {
-            pos_residual[i] = r[i];
-            rot_residual_rad[i] = r_rot[i];
-          }
-
-          jacobian_wrt_wf_fd_xy(q, m_x_pred, H);
-
-          S = H * m_P * blaze::trans(H) + R;
-
-          // Damping
-          const double lambda = 1e-6;
-          for (size_t i = 0; i < S.rows(); ++i)
-          {
-            S(i, i) += lambda;
-          }
-
-          // Solve instead of explicit inverse
-          blaze::StaticMatrix<double, nx, 5UL> PHt = m_P * blaze::trans(H);
-          blaze::StaticMatrix<double, 5UL, nx> Kt = blaze::solve(S, blaze::trans(PHt));
-
-          // Kalman gain matrix
-          L = blaze::trans(Kt);
-
-          // --- 2b) State estimation measurement correction ---
-          m_x_pred = m_x_pred + L * r;
-
-          // --- 2c) Estimation-error covariance measurement update ---
-          auto temp = (blaze::IdentityMatrix<double>(nx) - L * H);
-          m_P = temp * m_P * blaze::trans(temp) + L * R * blaze::trans(L); // Joseph form
+          // Position is good, orientation is not. Previously this ingested the
+          // NaN quaternion and latched the filter; now it degrades gracefully.
+          RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                               "Orientation channel unusable this cycle - applying the position-only correction.");
+          correctPositionOnly(q, z_meas, z_pred, pos_residual);
         }
+      }
+      else
+      {
+        correctPositionOnly(q, z_meas, z_pred, pos_residual);
       }
     }
 
-    // Clip m_x_pred to force threshold
-    for (size_t i = 0; i < nx; ++i)
+    // Clip the estimate to the force magnitude the model was trained on
+    // (dataset f_max = 0.5 N). Clipping the VECTOR NORM, not each component:
+    // per-component clipping at 0.5 admitted ||f|| up to 0.5*sqrt(3) = 0.87 N,
+    // outside the trained box, and the resulting direction was not preserved.
+    //
+    // Note this can no longer scrub a non-finite value, and never could: the old
+    // `if (magnitude > m_force_threshold)` is false for NaN. Finiteness is
+    // enforced at the commit in applyCorrection() and again before publishing.
+    const double force_norm = blaze::norm(m_x_pred);
+    if (std::isfinite(force_norm) && force_norm > m_force_threshold)
     {
-      double magnitude = std::abs(m_x_pred[i]);
-      if (magnitude > m_force_threshold)
-      {
-        m_x_pred[i] = (m_x_pred[i] / magnitude) * m_force_threshold;
-      }
+      m_x_pred *= (m_force_threshold / force_norm);
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0);
 
     // publish force estimate
+    //
+    // Last line of defence. Every consumer of this topic feeds the value
+    // straight into the PINN as a network input (pinn_fk, the planner's IK and
+    // FTL cost, the MPC's QP), so a single non-finite sample here becomes a
+    // NaN tip pose, a NaN IK residual that passes every `<` threshold, and NaN
+    // joint velocity commands. Publish the last good value instead.
+    if (ctr_common::allFinite(m_x_pred))
+    {
+      m_force_last_good = m_x_pred;
+    }
+    else
+    {
+      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                            "Force estimate is not finite - publishing the last good value "
+                            "[%.4f, %.4f, %.4f] N. The filter state is corrupt; restart ekf_node.",
+                            m_force_last_good[0], m_force_last_good[1], m_force_last_good[2]);
+    }
+
     auto msg = interfaces::msg::Force();
-    msg.x = m_x_pred[0];
-    msg.y = m_x_pred[1];
-    msg.z = m_x_pred[2];
-    msg.magnitude = blaze::norm(m_x_pred);
+    msg.x = m_force_last_good[0];
+    msg.y = m_force_last_good[1];
+    msg.z = m_force_last_good[2];
+    msg.magnitude = blaze::norm(m_force_last_good);
     m_publisher_observer->publish(msg);
 
     // publish residual error

@@ -9,6 +9,7 @@
 #include <sstream>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <blaze/Blaze.h>
+#include "ctr_common/finite_guard.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
@@ -256,20 +257,56 @@ private:
     msg_base.p[0] = tool_pos_flt[0]; // to align with cathter robot system
     msg_base.p[1] = tool_pos_flt[1];
     msg_base.p[2] = tool_pos_flt[2];
+
     // scalar-first (w,x,y,z), matching Taskspace.msg h[4]. The EKF consumes h as
     // its orientation measurement, so it must not stay at the zero default.
-    msg_base.h[0] = tool_in_robot.rotation[0];
-    msg_base.h[1] = tool_in_robot.rotation[1];
-    msg_base.h[2] = tool_in_robot.rotation[2];
-    msg_base.h[3] = tool_in_robot.rotation[3];
-
-    const double h_norm2 = msg_base.h[0] * msg_base.h[0] + msg_base.h[1] * msg_base.h[1] +
-                           msg_base.h[2] * msg_base.h[2] + msg_base.h[3] * msg_base.h[3];
-    if (h_norm2 < 1e-12)
+    //
+    // It must not carry a NaN either. EMTracker::ToolData2QuatTransform uses NaN
+    // as its "frame missing / sensor disabled" sentinel for BOTH rotation and
+    // translation. The translation is masked downstream of that, because
+    // ButterworthFilter::add_data_point substitutes the previous value per
+    // component (see tool_pos_flt above) -- but the rotation had no equivalent,
+    // and the library-level rotation filter that would have masked it sits
+    // behind EMTracker::m_flag_filter, which is hard-wired false with no setter.
+    //
+    // Publishing the raw rotation therefore leaked the sentinel to the EKF,
+    // whose missing-measurement gate only skips when ALL SEVEN components are
+    // non-finite. A finite position beside a NaN quaternion sailed into the
+    // correction step and permanently NaN'd the force estimate, which is fed
+    // back into the PINN as a network input by pinn_fk, the planner and the MPC.
+    // Hold the last good orientation instead, mirroring what the position path
+    // already does, so a dropped frame degrades one channel for one cycle
+    // instead of taking down the whole force/FK/IK stack for the session.
+    if (ctr_common::quatIsUsable(tool_in_robot.rotation))
     {
-      RCLCPP_WARN_ONCE(this->get_logger(),
-                       "base_tool orientation quaternion is zero-norm - downstream EKF orientation measurements are invalid");
+      for (size_t i = 0UL; i < 4UL; ++i)
+      {
+        m_tool_rot_last_good[i] = tool_in_robot.rotation[i];
+      }
+      m_tool_rot_valid = true;
     }
+    else if (m_tool_rot_valid)
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "base_tool orientation is unusable (non-finite or zero-norm) - holding the last good "
+                           "quaternion [%.4f, %.4f, %.4f, %.4f]. The EM frame for the tool or robot sensor is "
+                           "missing or disabled.",
+                           m_tool_rot_last_good[0], m_tool_rot_last_good[1],
+                           m_tool_rot_last_good[2], m_tool_rot_last_good[3]);
+    }
+    else
+    {
+      // Nothing good has ever arrived: publish the identity rather than the
+      // sentinel. Consumers still validate, but they get a usable quaternion.
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "base_tool orientation is unusable and no valid orientation has been received yet - "
+                           "publishing identity. Check that the tool and robot sensors are seated and in volume.");
+    }
+
+    msg_base.h[0] = m_tool_rot_last_good[0];
+    msg_base.h[1] = m_tool_rot_last_good[1];
+    msg_base.h[2] = m_tool_rot_last_good[2];
+    msg_base.h[3] = m_tool_rot_last_good[3];
 
     msg_phantom_base.p[0] = m_robot_in_phantom.translation[0];
     msg_phantom_base.p[1] = m_robot_in_phantom.translation[1];
@@ -658,6 +695,11 @@ private:
   std::unique_ptr<EMTracker> m_emt;
   std::unique_ptr<ButterworthFilter<3UL>> m_filter;
   blaze::StaticVector<double, 3UL> m_tool_pos_flt_prev = blaze::StaticVector<double, 3UL>(0.0);
+  // Last usable tool orientation, held so a missing EM frame never publishes
+  // ToolData2QuatTransform's NaN sentinel. Seeded to identity, not zero: a
+  // zero-norm quaternion is not invertible either.
+  blaze::StaticVector<double, 4UL> m_tool_rot_last_good{1.0, 0.0, 0.0, 0.0};
+  bool m_tool_rot_valid = false;
   quatTransformation m_tool_in_phantom, m_robot_in_phantom, m_probe_in_phantom;
 
   rclcpp::TimerBase::SharedPtr m_timer;

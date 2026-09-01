@@ -118,6 +118,7 @@ Raise `boot_max_attempts` if a drive is a slow starter: bring-up gives up after
 | `sample_time` | 0.025 | s |
 | `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | Model in the PINN pool |
 | `models_dir` | `""` | Empty → installed pool |
+| `q0` | `[-0.100, -0.055, 0.0, 0.0]` | Initial joint configuration — **must match `pinn_fk_node.q0`** |
 | `f_dot` | 0.2 | N/s — process-noise rate on the force state |
 | `R` | 36 elements | 6×6 measurement covariance, row-major |
 

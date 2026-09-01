@@ -206,6 +206,13 @@ private:
   bool m_printPdos = false;                  // for tracing debug
   bool m_bit12Prev = false;
 
+  // CiA-402 enable/disable state-machine retry budget (EnableOp_). The rotary
+  // drives need tens of milliseconds to leave "Operation Enabled"; with no delay
+  // between attempts all 10 retries elapsed in a few milliseconds and both
+  // rotary nodes latched ENABLE_FAULT on every run.
+  int m_enable_max_attempts = 10;
+  int m_enable_retry_delay_ms = 20;
+
   // Configuration commands cross from the caller threads into the fiber here.
   // The payload travels with the tag: see node_command.hpp for why the old
   // flag-then-string pair could silently drop a command on one node.

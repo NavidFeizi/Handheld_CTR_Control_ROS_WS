@@ -75,6 +75,75 @@ TEST(AdjustStepSize, DownsamplesOnFirstCoordinate)
     EXPECT_GE(std::abs(out[i][0] - out[i - 1][0]), 2e-3 - 1e-12);
 }
 
+// Regression: the keep rule measured travel on beta1 (index 0) only, so a
+// beta2-dominant deployment of any magnitude was invisible to it and collapsed
+// to a single unmanaged jump. Phase 2's "least-travel stops first" schedule
+// produces beta2-dominant sub-phases routinely.
+TEST(AdjustStepSize, DownsamplesOnSecondPrismaticCoordinate)
+{
+  std::vector<blaze::StaticVector<double, 6>> in;
+  for (int i = 0; i <= 10; ++i)
+    in.push_back({0, i * 1e-3, 0, 0, 0, 0}); // beta2 travels, beta1 does not
+
+  const auto out = manager_csv::adjustConfigurationListStepSize(in, 2e-3);
+
+  // Must keep intermediate waypoints, not just first + last.
+  ASSERT_GT(out.size(), 2u) << "beta2 travel was invisible to the keep rule";
+  for (size_t i = 1; i + 1 < out.size(); ++i)
+    EXPECT_GE(std::abs(out[i][1] - out[i - 1][1]), 2e-3 - 1e-12);
+  EXPECT_DOUBLE_EQ(out.front()[1], 0.0);
+  EXPECT_DOUBLE_EQ(out.back()[1], 10e-3);
+}
+
+// Regression: back() used to be appended unconditionally after a loop that ran
+// to the end, so the final waypoint was emitted twice whenever the loop had
+// already kept it. That is why a two-waypoint plan reported "holding at
+// waypoint 2/2" on a duplicate.
+TEST(AdjustStepSize, DoesNotDuplicateFinalWaypoint)
+{
+  std::vector<blaze::StaticVector<double, 6>> in = {
+      {0.0, 0, 0, 0, 0, 0},
+      {2e-3, 0, 0, 0, 0, 0},
+      {4e-3, 0, 0, 0, 0, 0}};
+
+  const auto out = manager_csv::adjustConfigurationListStepSize(in, 2e-3);
+
+  ASSERT_EQ(out.size(), 3u);
+  EXPECT_DOUBLE_EQ(out[0][0], 0.0);
+  EXPECT_DOUBLE_EQ(out[1][0], 2e-3);
+  EXPECT_DOUBLE_EQ(out[2][0], 4e-3);
+}
+
+TEST(AdjustStepSize, SingleWaypointIsNotDuplicated)
+{
+  const std::vector<blaze::StaticVector<double, 6>> in = {{0.0, 0, 0, 0, 0, 0}};
+  const auto out = manager_csv::adjustConfigurationListStepSize(in, 2e-3);
+  ASSERT_EQ(out.size(), 1u);
+}
+
+TEST(AdjustStepSize, TwoWaypointsSurviveExactly)
+{
+  const std::vector<blaze::StaticVector<double, 6>> in = {
+      {0.0, 0, 0, 0, 0, 0}, {50e-3, 0, 0, 0, 0, 0}};
+  const auto out = manager_csv::adjustConfigurationListStepSize(in, 2e-3);
+  ASSERT_EQ(out.size(), 2u);
+  EXPECT_DOUBLE_EQ(out[1][0], 50e-3);
+}
+
+// The revolute term must still work, and must still be measured on both alphas.
+TEST(AdjustStepSize, DownsamplesOnRevolute)
+{
+  std::vector<blaze::StaticVector<double, 6>> in;
+  for (int i = 0; i <= 10; ++i)
+    in.push_back({0, 0, 0, 0, i * 0.05, 0}); // alpha2 (index 4) travels
+
+  const auto out = manager_csv::adjustConfigurationListStepSize(in, 2e-3);
+
+  ASSERT_GT(out.size(), 2u);
+  for (size_t i = 1; i + 1 < out.size(); ++i)
+    EXPECT_GE(std::abs(out[i][4] - out[i - 1][4]), 0.10 - 1e-12);
+}
+
 int main(int argc, char **argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

@@ -49,7 +49,7 @@ find_package(ctr_common REQUIRED)
 set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
 add_executable(ctr_robot src/robot_node.cpp)
-target_link_libraries(ctr_robot ctr_robot_driver::ctr_robot_driver Qt5::Widgets Qt5::Core Qt5::Concurrent)
+target_link_libraries(ctr_robot ctr_robot_driver::ctr_robot_driver ctr_common::ctr_common Qt5::Widgets Qt5::Core Qt5::Concurrent)
 ament_target_dependencies(ctr_robot rclcpp std_msgs std_srvs rclcpp_action interfaces ament_index_cpp)
 
 add_executable(qt_gui src/qt_node.cpp)

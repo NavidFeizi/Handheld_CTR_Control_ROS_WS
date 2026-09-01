@@ -32,6 +32,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(ctr_common REQUIRED)
 
 # EM tracker libraries
 add_subdirectory(lib_emtracker)
@@ -44,7 +45,7 @@ include(${OpenIGTLink_USE_FILE})
 
 add_executable(track src/EMtracker_node.cpp)
 target_link_libraries(track EMTlib)
-ament_target_dependencies(track rclcpp std_msgs std_srvs interfaces OpenIGTLink geometry_msgs tf2 tf2_ros ament_index_cpp)
+ament_target_dependencies(track rclcpp std_msgs std_srvs interfaces OpenIGTLink geometry_msgs tf2 tf2_ros ament_index_cpp ctr_common)
 
 install(TARGETS
   track

@@ -49,7 +49,7 @@ parameters](../../README.md#configuration-and-parameters).
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_FP64` | PINN model; the planner uses the FP64 build for solver stability |
+| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | PINN model. **Must match `robot_params.yaml` and `mpc_params.yaml`** — `_v3` and `_FP64` are different networks with byte-identical `parameters.json`, so a mismatch is invisible except as an unattributable tip error |
 | `models_dir` | `""` | Empty → installed `share/ctr_kinematics_pinn/models` |
 | `solve_time` | 3.0 | OMPL solve budget per request, seconds |
 | `data_root` | `""` | Empty → env `CTR_DATA_ROOT` → legacy workspace climb |

@@ -335,6 +335,10 @@ private:
     std::shared_ptr<torch::jit::Module> m_dnn;
     PhysicsParameters m_physics_params{};
     ModelParameters m_model_params{};
+    // Set from parameters.json's layers[0] at load: true for the force-aware
+    // input layout [s, tau, wf], false for the force-free [s, tau]. See
+    // loadParameters().
+    bool m_model_takes_force = true;
     DatasetParameters m_dataset_params{};
     // The feasible joint set, cached in the shared form so posCTRL and the
     // planner's validity checker cannot disagree about it. 4-DoF layout only.
@@ -1016,7 +1020,31 @@ std::shared_ptr<torch::jit::Module> PINNs<controlInputs>::loadModel(const std::s
     namespace fs = std::filesystem;
     TORCH_CHECK(fs::exists(model_path) && fs::is_regular_file(model_path), "FATAL: model file not found: ", model_path);
     auto module = std::make_shared<torch::jit::Module>(torch::jit::load(model_path, torch::kCPU));
-    std::cout << "Model loaded successfully from:\n    " << model_path << std::endl;
+
+    // Identify the weights, not just the directory name. Two model dirs in the
+    // pool (..._v3 and ..._FP64) hold DIFFERENT networks of identical size whose
+    // parameters.json files are byte-identical, so the directory name alone
+    // cannot tell you which network a node is running. When the planner's IK
+    // converges on one network and pinn_fk reports the tip from another, the
+    // disagreement shows up as an unattributable tip error.
+    const auto size_bytes = fs::file_size(model_path);
+    std::size_t digest = 1469598103934665603ULL; // FNV-1a 64 offset basis
+    {
+        std::ifstream f(model_path, std::ios::binary);
+        char buf[8192];
+        while (f.read(buf, sizeof(buf)) || f.gcount() > 0)
+        {
+            const std::streamsize n = f.gcount();
+            for (std::streamsize i = 0; i < n; ++i)
+            {
+                digest ^= static_cast<unsigned char>(buf[i]);
+                digest *= 1099511628211ULL; // FNV-1a 64 prime
+            }
+        }
+    }
+    std::cout << "Model loaded successfully from:\n    " << model_path
+              << "\n    size = " << size_bytes << " bytes, fnv1a64 = " << std::hex << digest
+              << std::dec << std::endl;
     return module;
 }
 
@@ -1042,6 +1070,21 @@ void PINNs<controlInputs>::loadParameters(const std::string &params_path)
     m_physics_params.Do = detail::vec_double_or_throw(physics, "outer_diameter");
     m_physics_params.Di = detail::vec_double_or_throw(physics, "inner_diameter");
 
+    // The loop below indexes Ls/Lc with a raw operator[] up to 3. A
+    // parameters.json with a shorter array would be out-of-bounds UB, and a
+    // garbage L[0] silently corrupts the arclength input `s` of every FK call --
+    // producing a wrong or non-finite tip while the joint vector still looks
+    // perfectly finite in any diagnostic.
+    for (const auto &named : {std::pair<const char *, const std::vector<double> *>{"straight_length", &m_physics_params.Ls},
+                              std::pair<const char *, const std::vector<double> *>{"curve_length", &m_physics_params.Lc},
+                              std::pair<const char *, const std::vector<double> *>{"outer_diameter", &m_physics_params.Do},
+                              std::pair<const char *, const std::vector<double> *>{"inner_diameter", &m_physics_params.Di}})
+    {
+        if (named.second->size() < 3UL)
+            throw ParameterLoadError(std::string("physics_params.") + named.first + " must have 3 entries, got " +
+                                     std::to_string(named.second->size()));
+    }
+
     for (size_t i = 0; i < 3; ++i)
         m_physics_params.L.push_back(m_physics_params.Ls[i] + m_physics_params.Lc[i]);
 
@@ -1052,6 +1095,52 @@ void PINNs<controlInputs>::loadParameters(const std::string &params_path)
     const auto &model = json_data["model_params"];
     m_model_params.tau_index = detail::vec_int_or_throw(model, "tau_idx");
     m_model_params.layers = detail::vec_int_or_throw(model, "layers");
+
+    // `layers` was parsed, printed and then never used, so a model whose width
+    // does not match this build went undetected until the first forward call
+    // threw a LibTorch shape error from inside a timer callback.
+    //
+    // Two input layouts exist in the model pool:
+    //   force-aware: [s, tau(controlInputs), wf(kForceDim)]  (ctr_8x91_*)
+    //   force-free:  [s, tau(controlInputs)]                 (handheld_*, grassmann_*)
+    // Both are legitimate -- there are getPosDistal() overloads for each -- so
+    // accept either width and reject anything else. A force-free model is still
+    // flagged, because every node in this workspace calls the force-aware
+    // overload and would fail at the first inference.
+    if (!m_model_params.layers.empty())
+    {
+        const int declared_in = m_model_params.layers.front();
+        const int in_force_aware = static_cast<int>(1UL + controlInputs + kForceDim);
+        const int in_force_free = static_cast<int>(1UL + controlInputs);
+
+        if (declared_in == in_force_aware)
+        {
+            m_model_takes_force = true;
+        }
+        else if (declared_in == in_force_free)
+        {
+            m_model_takes_force = false;
+            std::cerr << "WARNING: model declares a FORCE-FREE input layout (layers[0] = " << declared_in
+                      << " = [s, tau(" << controlInputs << ")]). Every node in this workspace calls the "
+                         "force-aware getPosDistal(tau, wf, ...), which needs "
+                      << in_force_aware << " inputs and will fail on this model." << std::endl;
+        }
+        else
+        {
+            throw ParameterLoadError("model input width mismatch: parameters.json declares layers[0] = " +
+                                     std::to_string(declared_in) + ", which is neither the force-aware width " +
+                                     std::to_string(in_force_aware) + " [s, tau(" + std::to_string(controlInputs) +
+                                     "), wf(" + std::to_string(kForceDim) + ")] nor the force-free width " +
+                                     std::to_string(in_force_free) + " for controlInputs = " +
+                                     std::to_string(controlInputs));
+        }
+
+        const int expected_out = static_cast<int>(kStateDim);
+        if (m_model_params.layers.back() != expected_out)
+            throw ParameterLoadError("model output width mismatch: parameters.json declares layers[last] = " +
+                                     std::to_string(m_model_params.layers.back()) + " but this build reads " +
+                                     std::to_string(expected_out) + " state columns");
+    }
 
     // dataset params
     if (!json_data.contains("dataset_params") || !json_data["dataset_params"].is_object())

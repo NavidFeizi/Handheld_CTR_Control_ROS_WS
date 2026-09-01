@@ -634,6 +634,22 @@ void CTRobot::convPosToRobotFrame(const blaze::StaticVector<double, 4> &posCurre
 /**/
 int CTRobot::checkPosLimits(const blaze::StaticVector<double, 4> &posTarget) const
 {
+  // Finiteness FIRST. Every test below is a `<` or `>` comparison, and all of
+  // them are false for NaN, so a non-finite target used to clear every bound
+  // check and every carriage-clearance check and reach the drives. There it
+  // becomes static_cast<int32_t>(target * ppu), which is undefined behaviour for
+  // NaN and yields INT32_MIN on x86 - a full-travel negative command.
+  for (size_t i = 0; i < posTarget.size(); ++i)
+  {
+    if (!std::isfinite(posTarget[i]))
+    {
+      m_logger->error("[CAN Master] Axis {} target is not finite => position target ignored "
+                      "(wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
+                      i, posTarget[0], posTarget[1], posTarget[2], posTarget[3]);
+      return -1;
+    }
+  }
+
   for (size_t i = 0; i < posTarget.size(); ++i)
   {
     if (posTarget[i] < m_lowerBounds[i])

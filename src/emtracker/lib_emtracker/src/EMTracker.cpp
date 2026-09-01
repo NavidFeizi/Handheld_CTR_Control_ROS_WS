@@ -572,7 +572,23 @@ void EMTracker::Read_Loop()
     std::chrono::duration<double, std::micro> loop_duration = t1 - t0;
     m_measured_sample_time = loop_duration.count() * 1.00E-6;
 
-    // Filter position and orientations
+    // Filter position and orientations.
+    //
+    // ⚠ m_flag_filter is ALWAYS FALSE: it is initialised false, reset to false in
+    // the constructor, and there is no setter anywhere (set_filter_params only
+    // changes coefficients). Every branch guarded by it is therefore dead code,
+    // and in particular the ROTATION filters below never run.
+    //
+    // That matters because ButterworthFilter::add_data_point() masks NaN per
+    // component, and ToolData2QuatTransform() writes a NaN quaternion when a
+    // sensor frame is missing. So the library masks the NaN on the translation
+    // path (EMtracker_node filters that separately) but never on the rotation
+    // path -- which is how the sentinel reached the EKF once the node started
+    // publishing tip orientation. EMtracker_node now holds the last good
+    // quaternion instead of relying on this.
+    //
+    // Either wire up a setter and make these filters real, or delete them; do not
+    // leave a NaN mask that looks active but is not.
     if (m_flag_filter)
     {
       m_transform_0_1.translation = m_filter_tran_robot->add_data_point(m_transform_0_1.translation);
@@ -617,11 +633,29 @@ void EMTracker::Read_Loop()
     // Calculate tool relative translational velocity
     m_transform_dot_1_2.translation = (m_transform_1_2.translation - m_transform_1_2_prev.translation) / m_measured_sample_time;
     // Calculate tool relative rotational velocity ************ this part of the code must be verified for correctness **********
+    //
+    // Two divide-by-zero traps here, both guarded:
+    //   - u_norm is exactly 0 whenever the tool is stationary, because then
+    //     delta_q = (1,0,0,0). The unguarded 0/0 produced a NaN angular velocity
+    //     for the most common state the robot is in.
+    //   - acos() of a value that rounds just past +/-1 returns NaN.
+    // This is currently contained only because EMtracker_node never publishes
+    // robot_tool_dot into msg_base.q / msg_base.w. That is exactly the situation
+    // the tip orientation was in before commit 1f7bf11 started publishing it, so
+    // guard it now rather than wait for the same bug a second time.
     const blaze::StaticVector<double, 4UL> delta_q = quaternionMultiply(m_transform_1_2.rotation, m_transform_1_2_prev.inv().rotation);
-    const double theta = 2.00 * acos(delta_q[0UL]);
     const blaze::StaticVector<double, 3UL> u = {delta_q[1UL], delta_q[2UL], delta_q[3UL]};
     const double u_norm = std::sqrt(u[0UL] * u[0UL] + u[1UL] * u[1UL] + u[2UL] * u[2UL]);
-    const blaze::StaticVector<double, 4UL> log_delta_q = {0.00, (theta * u[0UL]) / u_norm, (theta * u[1UL]) / u_norm, (theta * u[2UL]) / u_norm};
+    blaze::StaticVector<double, 4UL> log_delta_q{0.00, 0.00, 0.00, 0.00};
+    if (u_norm > 1.0e-12 && std::isfinite(delta_q[0UL]))
+    {
+      // Clamp before acos so a rounding overshoot past +/-1 cannot yield NaN.
+      const double w = std::clamp(delta_q[0UL], -1.00, 1.00);
+      const double theta = 2.00 * std::acos(w);
+      log_delta_q = {0.00, (theta * u[0UL]) / u_norm, (theta * u[1UL]) / u_norm, (theta * u[2UL]) / u_norm};
+    }
+    // else: no measurable rotation this cycle (or invalid input) -> zero angular
+    // velocity, which is the correct answer for a stationary tool.
     const blaze::StaticVector<double, 4UL> omega = 2.00 * log_delta_q / m_measured_sample_time;
     m_transform_dot_1_2.rotation = 0.50 * omega * m_transform_1_2.rotation;
     // update prev

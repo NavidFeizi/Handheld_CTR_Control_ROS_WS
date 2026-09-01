@@ -291,3 +291,42 @@ TEST(FeasibleSet, ToleranceAdmitsNoiseButNotRealViolations)
   // 1 mm out is a genuine violation, not noise.
   EXPECT_FALSE(ctr_kinematics_pinn::isFeasible4({-0.0640, -0.0340 + 1e-3, 0.0, 0.0}, lim, 1e-6));
 }
+
+// --------------------------------------------------------------------------
+// The FK seed both model-evaluating nodes start from.
+//
+// ekf_node used to initialise m_q to all zeros implicitly, and only gated its
+// correction on having a TIP measurement. Bringup starts the EM tracker 14 s
+// before the robot nodes, so tip poses always arrive before joint feedback and
+// the first FK queries of every run were made at q = [0,0,0,0] -- which is not
+// merely at the edge of the trained box, it is far outside it. Both nodes now
+// declare the same q0 in robot_params.yaml.
+// --------------------------------------------------------------------------
+
+TEST(FeasibleSet, SharedFkSeedQ0IsFeasible)
+{
+  const auto lim = shippedLimits();
+
+  // robot_params.yaml: pinn_fk_node.q0 and ekf_node.q0, physics order
+  // [beta1, beta2, alpha1, alpha2].
+  const std::array<double, 4> q0 = {-0.100, -0.055, 0.0, 0.0};
+
+  EXPECT_TRUE(ctr_kinematics_pinn::isFeasible4(q0, lim, 0.0))
+      << "the seed both FK nodes start from must be a legal configuration";
+
+  // Spell out why it is legal, so a future edit to the YAML fails here loudly.
+  EXPECT_GE(q0[1], lim.beta2_absolute[0]);
+  EXPECT_LE(q0[1], lim.beta2_absolute[1]);
+  EXPECT_GE(q0[0] - q0[1], lim.beta1_relative[0]);
+  EXPECT_LE(q0[0] - q0[1], lim.beta1_relative[1]);
+}
+
+TEST(FeasibleSet, AllZeroSeedIsInfeasible)
+{
+  const auto lim = shippedLimits();
+
+  // beta2 = 0 is outside [-0.072, -0.034] and beta1 - beta2 = 0 is outside
+  // [-0.084, -0.030]: two independent violations. Generous tolerance, to show
+  // this is nowhere near the boundary rather than a rounding question.
+  EXPECT_FALSE(ctr_kinematics_pinn::isFeasible4({0.0, 0.0, 0.0, 0.0}, lim, 1e-3));
+}

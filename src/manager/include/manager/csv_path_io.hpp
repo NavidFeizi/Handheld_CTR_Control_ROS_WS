@@ -47,11 +47,19 @@ inline std::vector<blaze::StaticVector<double, 6>> parsePathRows(
 inline constexpr double kAlphaStepDefault = 0.10;  // ≈ 5.7° per commanded step
 
 /// Downsample a configuration list so consecutive kept waypoints differ by at
-/// least step_size in β1 (index 0, the deployment translation) OR by at least
-/// alpha_step in either revolute joint (indices 3 and 4). Filtering on β1
-/// alone -- the old rule -- collapsed every pure-rotation segment (the whole
-/// Phase 1 rotation of a two-phase plan) into a single commanded step, so the
-/// entire α slew executed as one unmanaged swing.
+/// least step_size in EITHER prismatic joint (indices 0 and 1) OR by at least
+/// alpha_step in either revolute joint (indices 3 and 4).
+///
+/// Two rules learned the hard way:
+///   - Filtering on β1 alone collapsed every pure-rotation segment (the whole
+///     Phase 1 rotation of a two-phase plan) into a single commanded step, so
+///     the entire α slew executed as one unmanaged swing. Hence the α term.
+///   - Filtering on β1 alone ALSO made β2 travel invisible: a β2-dominant
+///     deployment of any magnitude collapsed to one unmanaged jump. Phase 2's
+///     "least-travel stops first" schedule produces β2-dominant sub-phases
+///     routinely, so this was reachable in normal operation. Hence the max over
+///     both prismatic joints.
+///
 /// The first and last configurations are always kept.
 inline std::vector<blaze::StaticVector<double, 6>> adjustConfigurationListStepSize(
     const std::vector<blaze::StaticVector<double, 6>> &q_list_in, double step_size,
@@ -65,9 +73,10 @@ inline std::vector<blaze::StaticVector<double, 6>> adjustConfigurationListStepSi
 
   size_t prev_idx = 0;
   q_list_out.push_back(q_list_in[0]);
-  for (size_t i = 1; i < q_list_in.size(); ++i)
+  for (size_t i = 1; i + 1 < q_list_in.size(); ++i)
   {
-    const double d_beta = std::abs(q_list_in[i][0] - q_list_in[prev_idx][0]);
+    const double d_beta = std::max(std::abs(q_list_in[i][0] - q_list_in[prev_idx][0]),
+                                   std::abs(q_list_in[i][1] - q_list_in[prev_idx][1]));
     const double d_alpha = std::max(std::abs(q_list_in[i][3] - q_list_in[prev_idx][3]),
                                     std::abs(q_list_in[i][4] - q_list_in[prev_idx][4]));
     if (d_beta >= step_size || d_alpha >= alpha_step)
@@ -76,7 +85,15 @@ inline std::vector<blaze::StaticVector<double, 6>> adjustConfigurationListStepSi
       q_list_out.push_back(q_list_in[i]);
     }
   }
-  q_list_out.push_back(q_list_in.back());
+  // Always end on the plan's final configuration, but do not duplicate it: the
+  // loop above stops before the last element, so this appends it exactly once.
+  // (It used to run to the end and then push back() unconditionally, emitting
+  // the final waypoint twice whenever the loop had already kept it -- which is
+  // why a 2-state plan reported "holding at waypoint 2/2" on a duplicate.)
+  if (q_list_in.size() > 1)
+  {
+    q_list_out.push_back(q_list_in.back());
+  }
 
   return q_list_out;
 }

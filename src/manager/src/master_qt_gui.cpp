@@ -317,11 +317,24 @@ void QtGuiManager::updatePlannerStatusTable(bool planning, bool success, double 
     }
     mp_planner_status_table->setItem(0, 1, success_item);
     
-    // Create IK error item and color it red if error exceeds threshold
-    QTableWidgetItem* ik_error_item = new QTableWidgetItem(QString::number(ik_error, 'f', 4));
-    if (ik_error > 0.003)
+    // Create IK error item and color it red if the error is bad OR not a number.
+    //
+    // The condition used to be `ik_error > 0.003`, which is FALSE for NaN, so a
+    // non-finite IK error was printed in ordinary black text beside "Success:
+    // Yes" - indistinguishable at a glance from a good solve. Test for "not
+    // provably good" instead, and label it so the operator sees what it is.
+    const bool ik_error_finite = std::isfinite(ik_error);
+    QTableWidgetItem* ik_error_item = new QTableWidgetItem(
+        ik_error_finite ? QString::number(ik_error, 'f', 4) : QString("INVALID"));
+    if (!(ik_error < 0.003))
     {
         ik_error_item->setForeground(QBrush(QColor(255, 0, 0))); // Red text
+    }
+    if (!ik_error_finite)
+    {
+        ik_error_item->setToolTip(
+            "The planner returned a non-finite IK error. The EKF force estimate feeds the "
+            "IK as a model input, so this usually means the force estimate is corrupt.");
     }
     mp_planner_status_table->setItem(0, 2, ik_error_item);
 }
