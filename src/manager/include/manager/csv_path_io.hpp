@@ -4,11 +4,15 @@
 // Pure planned-path CSV semantics, extracted from MasterNode so they are
 // testable without ROS or a filesystem.
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <vector>
 
 #include <blaze/Math.h>
+
+#include "ctr_common/home_pose.hpp"
 
 namespace manager_csv
 {
@@ -96,6 +100,77 @@ inline std::vector<blaze::StaticVector<double, 6>> adjustConfigurationListStepSi
   }
 
   return q_list_out;
+}
+
+/// Waypoints that take a configuration from `from` to the mechanical home pose
+/// (`ctr_common::homePoseCommanded()`), in the manager's physics order
+/// [β1, β2, β3, α1, α2, α3]. `from` is not included; the last element is home.
+///
+/// Auto Retract used to stop at waypoint 0 of plannedPath.csv -- the pose the
+/// robot happened to be in when the plan was made -- because the manager had no
+/// concept of home at all. This is the leg that closes that gap.
+///
+/// FOUR SUB-LEGS, and the order of all four is load-bearing.
+///
+///   1. β₁ retracts to the gate pose, β₂ stationary.
+///   2. β₂ retracts to home, β₁ stationary.
+///   3. β₁ retracts the rest of the way to home, β₂ stationary.
+///   4. α unwinds to zero, both carriages parked at home.
+///
+/// *Why α is last:* interpolating it alongside β would rotate tubes that are
+/// still inside the anatomy, which is exactly what the follow-the-leader plan
+/// exists to avoid.
+///
+/// *Why the β legs move ONE CARRIAGE AT A TIME:* home is a corner of the
+/// feasible set -- β₁ − β₂ sits at the −0.084 floor with only the
+/// `kHomePoseMargin` (0.1 mm) to spare. The drive evaluates β₁'s
+/// `POSITION_LIMIT` against the **live** β₂, which still holds the previous
+/// waypoint's value at the instant a new target arrives, so moving both at once
+/// tightens β₁'s bound by a whole step of β₂ travel (sub-millimetre, but an
+/// order of magnitude more than the margin) and the drive clips β₁ and stops
+/// short, silently. Moving one carriage while the other is parked at a value it
+/// has already reached removes the lag entirely. `test_csv_path_io` pins this.
+///
+/// The gate pose in sub-leg 1 is what makes sub-leg 2 legal: β₂ may not pass
+/// `β₁_live + 0.030`, so β₁ must be at least `kHomeLegClearanceGuard` below
+/// `β₂_home − 0.030` before β₂ can reach home. β₁ is only ever moved backwards
+/// (`std::min`), so a configuration already retracted past the gate skips it.
+inline std::vector<blaze::StaticVector<double, 6>> buildHomeLeg(
+    const blaze::StaticVector<double, 6> &from, double step_size,
+    double alpha_step = kAlphaStepDefault)
+{
+  // ctr_common works in wire order [α1, β1, α2, β2]; this list is physics order.
+  const auto home = ctr_common::homePoseCommanded();
+  const double home_alpha1 = home[0UL], home_beta1 = home[1UL];
+  const double home_alpha2 = home[2UL], home_beta2 = home[3UL];
+
+  const double beta1_gate =
+      std::min(from[0], home_beta2 - ctr_common::kLinearStageMinClearance -
+                            ctr_common::kHomeLegClearanceGuard);
+
+  const std::array<double, 4UL> p0 = {from[3], from[0], from[4], from[1]};
+  const std::array<double, 4UL> p1 = {from[3], beta1_gate, from[4], from[1]};
+  const std::array<double, 4UL> p2 = {from[3], beta1_gate, from[4], home_beta2};
+  const std::array<double, 4UL> p3 = {from[3], home_beta1, from[4], home_beta2};
+  const std::array<double, 4UL> p4 = {home_alpha1, home_beta1, home_alpha2, home_beta2};
+
+  std::vector<blaze::StaticVector<double, 6>> out;
+  // NOT named `emit`: Qt defines that as an empty macro, and this header is
+  // pulled into master_node.hpp.
+  const auto appendLeg = [&out](const std::vector<std::array<double, 4UL>> &legs)
+  {
+    for (const auto &w : legs)
+    {
+      // wire [α1, β1, α2, β2] -> physics [β1, β2, β3, α1, α2, α3]
+      out.push_back({w[1UL], w[3UL], 0.0, w[0UL], w[2UL], 0.0});
+    }
+  };
+
+  appendLeg(ctr_common::interpolatePose(p0, p1, step_size, alpha_step));
+  appendLeg(ctr_common::interpolatePose(p1, p2, step_size, alpha_step));
+  appendLeg(ctr_common::interpolatePose(p2, p3, step_size, alpha_step));
+  appendLeg(ctr_common::interpolatePose(p3, p4, step_size, alpha_step));
+  return out;
 }
 
 /// Largest per-step revolute jump in a (downsampled) configuration list [rad].

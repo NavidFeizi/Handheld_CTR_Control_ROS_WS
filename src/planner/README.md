@@ -56,9 +56,16 @@ parameters](../../README.md#configuration-and-parameters).
 | `verbose_planner_log` | `false` | Print the planning library's debug diagnostics (state-space bounds, planner range) |
 
 Every `generateTrajectory` request also appends a structured record (target, azimuth,
-start/goal configurations, IK diagnostics, projection deltas, timings, outcome) to
+start/goal configurations, IK diagnostics, projection deltas, timings, outcome, and
+the endpoint check below) to
 `<data_root>/Output_Files/diagnostics/planner/<timestamp>/planner_diag.csv`; correlate
 with the manager's `manager_diag.csv` by wall time.
+
+> **Collecting a run:** the CSV is only part of it. Everything in `Planner.hpp` logs
+> to raw `std::cout`/`std::cerr`, which bypasses `/rosout` and `ros2 bag` entirely —
+> phase stitching, per-candidate FTL costs, `[planDeployment]` rejections and OMPL's
+> own warnings appear **only** in this node's terminal. Capture the terminal
+> separately from `~/.ros/log/`. See the root README's "What to collect from a run".
 
 `temp_dir` is deliberately **not** set in the YAML. The node defaults it to
 `<data_root>/Shared_Files`, which is the live path channel to `manager` — overriding
@@ -133,6 +140,27 @@ Two targets, neither linking OMPL or Torch:
   bound empties the admissible β₁ interval at the retracted pose and every
   `setStartState()` throws. See `ctr_kinematics_pinn/README.md`.
 
+## The endpoint check
+
+After a successful plan is written, `checkPlanEndpoint()` reads `plannedPath.csv`
+back, runs FK on its **last row** under the plan's force, and logs
+`|FK(endpoint) − target|` (also four columns in `planner_diag.csv`:
+`endpoint_err_m`, `endpoint_tip_{x,y,z}`).
+
+This is the only end-to-end check in the pipeline, and it exists because every other
+gate is about the *goal configuration* rather than the *path*: the IK residual is
+measured at `q_final`, `setGoalState` validates only box bounds and tube ordering,
+and OMPL's goal threshold is a mixed metres/radians Euclidean over joint space. In
+the normal two-phase success path the last row is exactly the IK goal, so this should
+reproduce the IK residual; a larger value means the written path does not end where
+IK solved — a Phase 1/Phase 2 stitching gap, an approximate solution accepted as
+exact, or a truncated export. The manager's 3 mm acceptance gate sees only the IK
+residual and would not catch any of those.
+
+It does **not** tell you whether the tip physically lands on the target: FK here is
+the same PINN that generated the plan. Use it with the manager's `Deployment complete:`
+line (target vs EM tip vs PINN tip) to separate model error from execution error.
+
 ## Status notes
 
 The `manual_target` service registration is commented out in `planner_node.cpp` — the
@@ -149,6 +177,24 @@ that arrives before the robot is up plans from `q = 0` and `f = 0`.
 `igtlink_bridge` also holds a `planner/command` client, so the "single outstanding
 request" note above is enforced only by the manager. A Slicer-injected request serialises
 against the manager's in the service's (mutually exclusive) callback group.
+
+`planTwoPhase` forces the combined status to `EXACT_SOLUTION` after concatenating the
+two phases, discarding `plan()`'s return value. That is only safe while Phase 1 is
+itself exact — an approximate Phase 1 path does not end at the rotation waypoint that
+Phase 2 starts from, so the two are joined across a joint-space gap no validity or
+motion check ever sees. `RRTConnect` returns `EXACT_SOLUTION` or `TIMEOUT` and never
+`APPROXIMATE_SOLUTION`, so this is dormant in the production configuration; it is live
+for `BITstar` (configured with `find_approximate_solutions = true`) and every other
+optimizing planner. The behaviour is unchanged, but Phase 1 returning approximate now
+prints a loud `[planTwoPhase] WARNING` naming the consequence.
+
+`m_q_goal_last` stores the goal the planner **planned toward** — the 2πk
+representative `setGoalState` selects — not the raw `posCTRL` output. It used to hold
+the raw output on the principal branch, so once the representative shift fired, the
+robot was executing a goal 2π away from the stored one; `planDeployment`'s deliberately
+raw α check (0.05 rad tolerance) then saw ≈6.283 rad and aborted, rejecting **every**
+mid-deployment replan for the rest of the deployment and silently disabling force-drift
+correction. `Planner::selectGoalRepresentative` is public for exactly this reason.
 
 IK non-convergence now warns. `inverseKin` uses the `bool` from
 `Planner::solveInverseKinematics` and logs an `RCLCPP_WARN` with the residual when the

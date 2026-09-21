@@ -16,6 +16,7 @@
 #include "interfaces/srv/config.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include "ctr_common/finite_guard.hpp"
+#include "ctr_common/home_pose.hpp"
 #include "ctr_robot_driver/Robot.hpp"
 
 using namespace std::chrono_literals;
@@ -39,8 +40,6 @@ public:
     m_flag_use_target_action = false;
     m_trans_limit = true;
     m_encoders_set = {1, 1, 1, 1}; /// temoporarly for development
-    declare_parameters();
-
     // Runtime paths for the CANopen driver (formerly compile-time macros).
     CTRobot::RuntimePaths paths;
     paths.canopen_dir = declare_parameter<std::string>("canopen_dir", "");
@@ -57,6 +56,25 @@ public:
     auto robot = std::make_unique<CTRobot>();
     robot->setRuntimePaths(paths);
     m_robot = std::move(robot);
+
+    // Adopt the driver's "CTR" logger, which owns the only file sink in the
+    // system (log/Robot/<timestamp>.txt). Until this existed, m_logger was
+    // spdlog::default_logger() -- stdout only -- so every [RobotNode] line,
+    // including the joint-limit warnings and the whole homing narration, was
+    // absent from the one log file that gets collected off the lab machine.
+    // CTRobot::initLogger() runs in its constructor, so this is valid here.
+    // declare_parameters() follows deliberately: its velocity/acceleration
+    // clamp warnings belong in the file too.
+    if (auto driver_logger = m_robot->logger())
+    {
+      m_logger = std::move(driver_logger);
+    }
+    else
+    {
+      RCLCPP_WARN(get_logger(), "Driver exposes no logger - [RobotNode] messages stay on stdout only");
+    }
+
+    declare_parameters();
 
     m_robot->setMaxVel(m_maxVel);
     m_robot->setMaxAcc(m_maxAcc);
@@ -406,6 +424,19 @@ private:
   void jointSpaceTarget_callback(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
 
+    if (m_flag_homing.load())
+    {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - m_last_homing_drop_warn_time >= std::chrono::seconds(1))
+      {
+        m_last_homing_drop_warn_time = now;
+        m_logger->warn("[RobotNode] Ignoring joint_space/target while homing "
+                       "(wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
+                       msg->position[0UL], msg->position[1UL], msg->position[2UL], msg->position[3UL]);
+      }
+      return;
+    }
+
     if (!m_flag_manual && !m_flag_use_target_action)
     {
       // m_targpublisher_alive_tmep = true;
@@ -446,8 +477,8 @@ private:
 
     // Non-finite first: `target[i] < lo[i] || target[i] > hi[i]` is false for
     // NaN, so a corrupt target would slip past this warning silently. The driver
-    // rejects it (CTRobot::checkPosLimits), but the operator still needs to know
-    // a controller is emitting garbage.
+    // drops it in CTRobot::setTargetPos (the int32 cast is UB for NaN), but the
+    // operator still needs to know a controller is emitting garbage.
     if (!ctr_common::allFinite(target))
     {
       const auto now = std::chrono::steady_clock::now();
@@ -1445,6 +1476,43 @@ private:
     return res;
   }
 
+  // Say whether the robot ACTUALLY got home, and by how much it missed.
+  //
+  // waitUntilReach() polls the CiA-402 target-reached bit, and the driver clears
+  // that bit only once it has written a CHANGED target -- so a stale bit from
+  // the previous move can satisfy the wait immediately and report a completed
+  // move that never happened. Never declare "Homed" on the handshake alone.
+  void reportHomingResult(const char *route, const blaze::StaticVector<double, 4UL> &home_target)
+  {
+    double worst = 0.0;
+    size_t worst_axis = 0;
+    for (size_t i = 0; i < 4UL; ++i)
+    {
+      const double e = std::fabs(m_x[i] - home_target[i]);
+      if (e > worst)
+      {
+        worst = e;
+        worst_axis = i;
+      }
+    }
+
+    if (worst > k_home_tolerance)
+    {
+      m_logger->warn("[RobotNode] goHome() finished but did NOT reach home ({}): {} is {:.4f} off "
+                     "(tolerance {:.4f}). q = [{:.4f}, {:.4f}, {:.4f}, {:.4f}], "
+                     "target = [{:.4f}, {:.4f}, {:.4f}, {:.4f}]",
+                     route, k_joint_names[worst_axis], worst, k_home_tolerance,
+                     m_x[0UL], m_x[1UL], m_x[2UL], m_x[3UL],
+                     home_target[0UL], home_target[1UL], home_target[2UL], home_target[3UL]);
+      return;
+    }
+
+    m_logger->info("[RobotNode] Homed ({}): q = [{:.4f}, {:.4f}, {:.4f}, {:.4f}], "
+                   "target = [{:.4f}, {:.4f}, {:.4f}, {:.4f}], worst axis error {:.5f}",
+                   route, m_x[0UL], m_x[1UL], m_x[2UL], m_x[3UL],
+                   home_target[0UL], home_target[1UL], home_target[2UL], home_target[3UL], worst);
+  }
+
   // move all joints to home position (flush tubes with zero rotation)
   std::string goHome()
   {
@@ -1470,20 +1538,82 @@ private:
     constexpr blaze::StaticVector<double, 4UL> maxDcc = maxAcc;
     constexpr blaze::StaticVector<double, 4UL> maxVel = {60.00 * M_PI / 180.00, 10.00 / 1000.00, 60.00 * M_PI / 180.00, 10.00 / 1000.00}; // [deg/s] and [mm/s]
 
-    switchToConfigMode();
+    const blaze::StaticVector<double, 4UL> home_target = k_home_pos + k_home_pos_margin;
+
+    // Two routes home, because switchToConfigMode() REFUSES once a procedure is
+    // running. This used to be called bare, ignoring its return (every sibling
+    // task guards it), so during a procedure the mode stayed Position and
+    // targetCommand_timerCallback overwrote the home target with m_x_des one
+    // 10 ms tick later. waitUntilReach() then returned on a stale target-reached
+    // bit and "Homed" was logged without the robot moving -- four consecutive
+    // failed Go Home clicks on 2026-09-01 look exactly like this in the CAN log.
+    if (m_procedure)
+    {
+      if (m_mode != CtrlMode::Position)
+      {
+        m_logger->warn("[RobotNode] goHome() during a procedure needs Position mode (current mode {}) - terminated",
+                       static_cast<int>(m_mode));
+        return "terminated";
+      }
+
+      // Drive home THROUGH the Position path (m_x_des + the 10 ms timer) rather
+      // than around it, so the timer carries the target instead of clobbering it.
+      m_robot->setProfileParams(maxVel, maxAcc, maxDcc);
+      m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
+
+      // Subdivided: beta1's drive limit is anchored to the live beta2, so a
+      // single jump home is clipped until beta2 catches up. The feasible set is
+      // convex, so every interpolated waypoint is legal (ctr_common/home_pose.hpp).
+      const std::array<double, 4UL> from = {m_x[0UL], m_x[1UL], m_x[2UL], m_x[3UL]};
+      const std::array<double, 4UL> to = {home_target[0UL], home_target[1UL],
+                                          home_target[2UL], home_target[3UL]};
+      const auto legs = ctr_common::interpolatePose(from, to, k_home_leg_step_m, k_home_leg_step_rad);
+      m_logger->info("[RobotNode] Going to Home in {} steps from [{:.4f}, {:.4f}, {:.4f}, {:.4f}] "
+                     "(wire order [a1, b1, a2, b2])",
+                     legs.size(), from[0], from[1], from[2], from[3]);
+
+      m_flag_homing = true;
+      for (const auto &leg : legs)
+      {
+        m_x_des = {leg[0UL], leg[1UL], leg[2UL], leg[3UL]};
+        m_robot->waitUntilReach(m_cancel_flag);
+        if (m_cancel_flag.load())
+          break;
+      }
+      m_flag_homing = false;
+
+      // Restore the Position-mode profile the procedure was running with, or the
+      // next commanded motion silently inherits the slow homing profile.
+      m_robot->setProfileParams(m_maxVel, m_maxAcc, m_maxAcc);
+
+      if (check_cancel())
+        return "canceled";
+
+      reportHomingResult("position mode", home_target);
+
+      std::string res;
+      res = "OK";
+      return res;
+    }
+
+    if (switchToConfigMode())
+    {
+      m_logger->warn("[RobotNode] goHome() could not enter Config mode - task terminated");
+      return "terminated";
+    }
     // m_trans_limit = true; // enable translation limits
     m_robot->setOperationMode(OpMode::PositionProfile);
     m_robot->setProfileParams(maxVel, maxAcc, maxDcc);
     m_robot->setMaxTorque(maxTorqueNegative, maxTorquePositive);
     m_robot->enableOperation(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    m_robot->setTargetPos(k_home_pos + k_home_pos_margin);
+    m_robot->setTargetPos(home_target);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     m_robot->waitUntilReach(m_cancel_flag);
     if (check_cancel())
       return "canceled";
 
-    m_logger->info("[RobotNode] Homed");
+    reportHomingResult("config mode", home_target);
 
     std::string res;
     res = "OK";
@@ -1558,10 +1688,13 @@ private:
     }
   }
 
-  // tube related constants - may need to be adjusted if the tube set changes
-  static constexpr double k_inr_active_length = 0.216; // need to be adjusted based on the tube set
-  static constexpr double k_mdl_active_length = 0.132; // need to be adjusted based on the tube set
-  static constexpr double k_otr_active_length = 0.060; // need to be adjusted based on the tube set
+  // Tube geometry and the two mechanically distinguished poses live in
+  // ctr_common/home_pose.hpp -- `manager` needs the same numbers to build its
+  // retract-to-home leg, so they must not be redefined here. These aliases keep
+  // the names the rest of this file already uses.
+  static constexpr double k_inr_active_length = ctr_common::kInnerActiveLength;
+  static constexpr double k_mdl_active_length = ctr_common::kMiddleActiveLength;
+  static constexpr double k_otr_active_length = ctr_common::kOuterActiveLength;
 
   static constexpr blaze::StaticVector<double, 4> minDynamicPosLimitInf = {-10 * M_PI, -0.50, -10 * M_PI, -0.50}; // for when the limit is off
   static constexpr blaze::StaticVector<double, 4> maxDynamicPosLimitInf = {10 * M_PI, 0.50, 10 * M_PI, 0.50};     // for when the limit is off
@@ -1571,19 +1704,33 @@ private:
   // robot mechanics related constants -  may need to be adjusted if the robot design changes
   static constexpr blaze::StaticVector<double, 4UL> k_velocityPhysicalLimit = {3.0, 0.0125, 3.0, 0.0125};
   static constexpr blaze::StaticVector<double, 4UL> k_accelerationPhysicalLimit = {10.0, 0.10, 10.0, 0.10};
-  static constexpr blaze::StaticVector<double, 4> k_pos_preEngage = {0.0, -0.0640, 0.0, -0.0340};
+  static constexpr blaze::StaticVector<double, 4> k_pos_preEngage = {
+      ctr_common::kPreEngagePose[0], ctr_common::kPreEngagePose[1],
+      ctr_common::kPreEngagePose[2], ctr_common::kPreEngagePose[3]};
   static constexpr blaze::StaticVector<double, 4> k_pos_engage = {0.0, -0.0560, 0.0, -0.0290};
   static constexpr double k_pos_inr_prox_stop = -0.1670;
   // static constexpr double k_pos_mdl_prox_stop = -0.1230; // old design
   static constexpr double k_pos_mdl_prox_stop = -0.1130;
-  static constexpr double k_linear_stage_min_clearance = 0.030;
+  static constexpr double k_linear_stage_min_clearance = ctr_common::kLinearStageMinClearance;
 
   // driven constants
-  static constexpr double k_linear_stage_max_clearance = k_inr_active_length - k_mdl_active_length;
+  static constexpr double k_linear_stage_max_clearance = ctr_common::kLinearStageMaxClearance;
   static constexpr double k_rotary_stage_min_clearance = -2.0 * M_PI; // relative limit between the rotary joints
   static constexpr double k_rotary_stage_max_clearance = 2.0 * M_PI;  // relative limit between the rotary joints
-  static constexpr blaze::StaticVector<double, 4> k_home_pos_margin = {0.0, 0.0002, 0.0, 0.0001};
-  static constexpr blaze::StaticVector<double, 4> k_home_pos = {0.0, k_otr_active_length - k_inr_active_length, 0.0, k_otr_active_length - k_mdl_active_length};
+  static constexpr blaze::StaticVector<double, 4> k_home_pos_margin = {
+      ctr_common::kHomePoseMargin[0], ctr_common::kHomePoseMargin[1],
+      ctr_common::kHomePoseMargin[2], ctr_common::kHomePoseMargin[3]};
+  static constexpr blaze::StaticVector<double, 4> k_home_pos = {
+      ctr_common::kHomePose[0], ctr_common::kHomePose[1],
+      ctr_common::kHomePose[2], ctr_common::kHomePose[3]};
+  // Step size for a subdivided move home. 2 mm matches the manager's
+  // m_insertion_step so both retract legs execute at the same granularity.
+  static constexpr double k_home_leg_step_m = 2.0E-3;
+  static constexpr double k_home_leg_step_rad = 0.10;
+  // Worst per-axis miss goHome() will still call "Homed" (m for the prismatics,
+  // rad for the rotaries -- one threshold, the prismatics are the tight case).
+  static constexpr double k_home_tolerance = 5.0E-4;
+
   static constexpr blaze::StaticVector<double, 4> k_minStaticLimitAll = {-3 * M_PI, k_home_pos[1], -1.5 * M_PI, k_home_pos[3]};
   static constexpr blaze::StaticVector<double, 4> k_maxStaticLimitAll = {3 * M_PI, k_pos_preEngage[1], 1.5 * M_PI, k_pos_preEngage[3]};
 
@@ -1598,10 +1745,16 @@ private:
   std::atomic<bool> m_stop_worker{false};
   std::array<bool, 4> m_enable_fault_prev = {0, 0, 0, 0}; // for edge-triggered fault logging
   std::chrono::steady_clock::time_point m_last_limit_warn_time{}; // rate-limits warnIfTargetOutsideLimits
+  std::chrono::steady_clock::time_point m_last_homing_drop_warn_time{}; // rate-limits the homing drop warning
   // One initializer per declarator: `bool a, b, c = false;` initializes only `c`, and a
   // stray `true` in m_flag_manual silently drops every joint_space/target message.
   bool m_flag_manual = false;
   bool m_flag_use_target_action = false;
+  /// Raised while goHome() is walking m_x_des home in Position mode. Incoming
+  /// joint_space/target messages are ignored for the duration; otherwise the
+  /// manager (or MPC) would overwrite the home target mid-move, which is the
+  /// same clobber the 10 ms timer used to perform.
+  std::atomic<bool> m_flag_homing{false};
   bool m_trans_limit = false;
   bool m_emtracker_alive = false;
   bool m_targpublisher_alive = false;
@@ -1634,6 +1787,8 @@ private:
 
   std::unique_ptr<ICtrJointGroup> m_robot; // hardware seam (CTRobot on the real robot)
   // node-side spdlog sink (was inherited from CTRobot before the seam)
+  // Replaced in the constructor by the driver's "CTR" logger (the only one with
+  // a file sink). The stdout default is the fallback for a driver double.
   std::shared_ptr<spdlog::logger> m_logger = spdlog::default_logger();
   std::thread worker_thread_;
   std::mutex m_task_mutex;

@@ -5,7 +5,7 @@ using namespace lely;
 
 std::vector<double> Position_Target_Generator(double t);
 
-CTRobot::CTRobot(bool position_limit, blaze::StaticVector<double, 4UL> max_vel, blaze::StaticVector<double, 4UL> max_acc)
+CTRobot::CTRobot(blaze::StaticVector<double, 4UL> max_vel, blaze::StaticVector<double, 4UL> max_acc)
 {
   m_maxVel = max_vel; // [deg/s] and [mm/s]
   m_maxAcc = max_acc; // [deg/s^2] and [mm/s^2]
@@ -13,12 +13,15 @@ CTRobot::CTRobot(bool position_limit, blaze::StaticVector<double, 4UL> max_vel, 
   // m_max_vel = max_vel;             // deg->rev or mm->rev
   // this->m_sampleTime = sample_time; // commandPeriod [ms], minimum
   this->operation_mode = OpMode::VelocityProfile;
-  this->m_lowerBounds = {-2 * M_PI, 0.0, -2 * M_PI, 0.0};
-  this->m_upperBounds = {2 * M_PI, 97.0E-3, 2 * M_PI, 52.0E-3};
-  this->m_posOffsets = {0.0, -147.0E-3, 0.0, -77.0E-3};
-  this->m_minClearance = 30.0E-3;
-  this->m_maxClearance = 70.0E-3;
-  this->m_flagPositionLimit = position_limit;
+
+  // NOTE: this class used to carry its own static bounds, carriage-clearance
+  // window, position-offset vector and a position_limit flag, all feeding a
+  // checkPosLimits() whose only call site had been commented out inside
+  // setTargetPos(). They were dead AND stale -- the bounds expected beta in
+  // [0, 0.097] / [0, 0.052] while the live joint frame is [-0.156, -0.034], so
+  // re-enabling them would have rejected every target. Position limiting lives
+  // in RobotNode, which recomputes the coupled window from live feedback every
+  // 10 ms and pushes it to the drives as 0x607D over TPDO4.
 
   m_shared_state = std::make_shared<SharedState>(); // states are shared with the Cia301 nodes
   CTRobot::initLogger();
@@ -26,8 +29,7 @@ CTRobot::CTRobot(bool position_limit, blaze::StaticVector<double, 4UL> max_vel, 
 
 /* default constructor */
 CTRobot::CTRobot()
-    : CTRobot(false,
-              {200.00 * M_PI / 180.00, 10.00 * 1e-3, 200.00 * M_PI / 180.00, 10.00 * 1e-3},
+    : CTRobot({200.00 * M_PI / 180.00, 10.00 * 1e-3, 200.00 * M_PI / 180.00, 10.00 * 1e-3},
               {200.00 * M_PI / 180.00, 10.00 * 1e-3, 200.00 * M_PI / 180.00, 10.00 * 1e-3}) {} // Calls parameterized constructor
 
 
@@ -393,13 +395,26 @@ void CTRobot::setPosLimit(const blaze::StaticVector<double, 4> &min, const blaze
   operation mode must be set to PositionProfile in advance     */
 void CTRobot::setTargetPos(const blaze::StaticVector<double, 4> &target)
 {
-  // if (this->flag_position_limit)
-  // {
-  //   if (!(CTRobot::Position_limits_check(target) == 0))
-  //   {
-  //     return;
-  //   }
-  // }
+  // Finiteness is the one check that MUST stay here. Cia301Node::setPos does
+  // static_cast<int32_t>(value * ppu), which is undefined for NaN and yields
+  // INT32_MIN on x86 -- a full-travel negative command. Range limiting is a
+  // different matter and deliberately absent: the drives enforce RobotNode's
+  // coupled window themselves via 0x607D (pushed cyclically over TPDO4), and
+  // RobotNode::warnIfTargetOutsideLimits() logs a target that will be clipped.
+  for (size_t i = 0; i < target.size(); ++i)
+  {
+    if (!std::isfinite(target[i]))
+    {
+      if (m_logger)
+      {
+        m_logger->error("[CAN Master] Axis {} target is not finite => position target ignored "
+                        "(wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
+                        i, target[0], target[1], target[2], target[3]);
+      }
+      return;
+    }
+  }
+
   m_inrTubeRot->setPos(target[0]); // in [rad]
   m_inrTubeTrn->setPos(target[1]); // in [m]
   m_mdlTubeRot->setPos(target[2]); // in [rad]
@@ -621,69 +636,6 @@ void CTRobot::getInterface() const
 //   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 // }
 
-/* Gets the current absolute position (with respect to zero position) of all actuators in [mm] or [deg] unit */
-void CTRobot::convPosToRobotFrame(const blaze::StaticVector<double, 4> &posCurrent,
-                                  blaze::StaticVector<double, 4> &posInCTRFrame) const
-{
-  for (size_t i = 0; i < posCurrent.size(); ++i)
-  {
-    posInCTRFrame[i] = posCurrent[i] + this->m_posOffsets[i];
-  }
-}
-
-/**/
-int CTRobot::checkPosLimits(const blaze::StaticVector<double, 4> &posTarget) const
-{
-  // Finiteness FIRST. Every test below is a `<` or `>` comparison, and all of
-  // them are false for NaN, so a non-finite target used to clear every bound
-  // check and every carriage-clearance check and reach the drives. There it
-  // becomes static_cast<int32_t>(target * ppu), which is undefined behaviour for
-  // NaN and yields INT32_MIN on x86 - a full-travel negative command.
-  for (size_t i = 0; i < posTarget.size(); ++i)
-  {
-    if (!std::isfinite(posTarget[i]))
-    {
-      m_logger->error("[CAN Master] Axis {} target is not finite => position target ignored "
-                      "(wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
-                      i, posTarget[0], posTarget[1], posTarget[2], posTarget[3]);
-      return -1;
-    }
-  }
-
-  for (size_t i = 0; i < posTarget.size(); ++i)
-  {
-    if (posTarget[i] < m_lowerBounds[i])
-    {
-      m_logger->warn("[CAN Master] Axis {} target {:.4f} below static lower bound {:.4f} => position target ignored "
-                     "(wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
-                     i, posTarget[i], m_lowerBounds[i], posTarget[0], posTarget[1], posTarget[2], posTarget[3]);
-      return -1;
-    }
-    if (posTarget[i] > m_upperBounds[i])
-    {
-      m_logger->warn("[CAN Master] Axis {} target {:.4f} above static upper bound {:.4f} => position target ignored "
-                     "(wire order [a1, b1, a2, b2]: [{:.4f}, {:.4f}, {:.4f}, {:.4f}])",
-                     i, posTarget[i], m_upperBounds[i], posTarget[0], posTarget[1], posTarget[2], posTarget[3]);
-      return -1;
-    }
-  }
-  blaze::StaticVector<double, 4> posInCTRFrame = blaze::StaticVector<double, 4>(0.0);
-
-  this->convPosToRobotFrame(posTarget, posInCTRFrame);
-  if ((posInCTRFrame[3] - posInCTRFrame[1]) < m_minClearance)
-  {
-    m_logger->warn("[CAN Master] Carriage clearance {:.4f} m below minimum {:.4f} m - preventing collision => position target ignored",
-                   posInCTRFrame[3] - posInCTRFrame[1], m_minClearance);
-    return -1;
-  }
-  if ((posInCTRFrame[3] - posInCTRFrame[1]) > m_maxClearance)
-  {
-    m_logger->warn("[CAN Master] Carriage clearance {:.4f} m above maximum {:.4f} m - preventing illegal tube configuration => position target ignored",
-                   posInCTRFrame[3] - posInCTRFrame[1], m_maxClearance);
-    return -1;
-  }
-  return 0;
-}
 
 /* variable wait untill current position is reached to target position */
 void CTRobot::waitUntilReach(const std::atomic<bool> &cancel_flag) const

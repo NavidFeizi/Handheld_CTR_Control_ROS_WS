@@ -241,15 +241,37 @@ produced plans that executed and landed away from the probe. Acceptance test:
      names it, including the "rotary axes are wound up" diagnosis).
    - Watch for the new WARNs; each one is a specific defect signature:
      `IK queried the network OUTSIDE its trained alpha domain` (extrapolation
-     tripwire — should never fire now), `clampJointPositions` clamps in `pinn_fk`,
+     tripwire — the α₂ half of it was structurally dead and has been replaced by a
+     check on the returned α pair), `clampJointPositions` clamps in `pinn_fk`,
      zero-norm quaternion in `ekf_node`, joint-target limit warnings in `robot_node`.
    - Deploy, then read the `Deployment complete:` line — it prints target vs EM tip
      vs PINN tip. |EM tip − target| < 3 mm is the pass criterion; if the EM and PINN
      tips agree but both miss the target, suspect registration, not the model.
-3. Collect `Output_Files/diagnostics/planner/<ts>/planner_diag.csv` and
-   `Output_Files/diagnostics/manager/<ts>/manager_diag.csv` (one row per request /
-   gate event / deployment; correlate by wall time) together with the usual
-   `log/Robot/*.txt`.
+   - Also read the planner's `Plan endpoint:` line, which runs FK on the **last row
+     of the written CSV** and compares it to the requested target. Nothing else in
+     the pipeline performs that check: the IK residual is measured at the goal
+     configuration, and `setGoalState` validates only box bounds and tube ordering.
+     `|FK(endpoint) − target|` should equal the IK residual; a larger value means
+     the written path does not end where IK solved.
+3. Collect the run artifacts — see below. All of them, every time.
+
+### What to collect from a run
+
+A run is only diagnosable afterwards if **all four** of these come back together.
+The 2026-09-01 collection had only the first, which made the planner and the whole
+deployment loop unanalysable:
+
+| Artifact | Where | Why it is not optional |
+|---|---|---|
+| `log/Robot/<timestamp>.txt` | workspace `log/` | The CANopen driver's own narration. `robot_node`'s `[RobotNode]` lines now land here too — they used to go to `spdlog::default_logger()` (stdout), so the joint-limit warnings and the entire homing narration were absent from the only file anyone copied. |
+| `~/.ros/log/<run>/` | ROS default | Everything logged through `RCLCPP_*`: the manager's deployment trace, gate reports and stall warnings, the planner's IK and endpoint lines. |
+| The **planner terminal** scrollback | its own terminal | `Planner.hpp` logs to raw `std::cout`/`std::cerr`, which bypasses `/rosout` entirely — phase stitching, FTL schedule costs, `[planDeployment]` rejections and OMPL's own warnings appear **only** there. |
+| `Output_Files/diagnostics/{planner,manager}/<ts>/*_diag.csv` | resolved data root | One row per request / gate event / deployment; correlate the two by wall time. |
+
+Note the data root: if `data_root`/`CTR_DATA_ROOT` differ from the workspace layout,
+the diagnostics CSVs are **not** under the workspace. The path is printed once at
+startup on each node's `... diagnostics CSV:` line — read it rather than guessing.
+
 ---
 
 
@@ -438,6 +460,12 @@ already running and homed.
 5. Once the path is satisfactory, switch the Mode radio to **Deployment** and click
    **Auto Insert** to insert all the way to the target — or use the insert/retract
    physical buttons on the robot for step-by-step motion.
+6. **Auto Retract** reverses the loaded plan waypoint by waypoint and then walks an
+   additional **home leg** to the mechanical home pose (`k_home_pos` + margin,
+   β₁ −0.156 / β₂ −0.072). Both halves matter: reversing the plan alone only reaches
+   the pose the robot was in when the plan was made, which after an accepted
+   mid-deployment replan is partway into the anatomy. The home leg retracts β first
+   and unwinds α only once the tubes are out. Watch for `Retraction complete: at home`.
 
 To read targets from a file instead of the probe, click **Toggle: Probe Mode** to switch
 to **CSV Mode**. Targets are then read one by one from
@@ -463,6 +491,12 @@ follows:
 | `Plan rejected: IK error ... exceeds the ... limit` | A solution was found but its tip error is above `k_ik_error_threshold` (3 mm). The target is likely outside the reachable workspace. |
 | `Deployment idle: no waypoint list` | You are on the **Deployment** radio, which never requests a plan. Switch to **Select Target** and let the planner run first. |
 | `Deployment idle: holding at waypoint i/N` | Normal. Hold an insert/retract button on the robot, or click **Auto Insert** / **Auto Retract**. |
+| `Auto-retract STALLED: waiting N s for 'reached' ...` | A drive stopped short. The message prints commanded vs measured per joint and the four `reached` flags: the joint with a non-zero error that never reports reached is the one whose target was clipped at its `POSITION_LIMIT`. Nothing clamps or rejects such a target — the drive simply stops and says nothing — so this warning is the only evidence. |
+| `Mode change aborted an active auto-retract at waypoint i` | The mode radio, or a press of the handheld trigger, disarmed the retraction. Re-select **Deployment** and click **Auto Retract** again. |
+| `Retract reached the plan's start pose ...; continuing to home ...` | Normal, and the second half of every retraction: reversing the plan only reaches the pose the robot was in when the plan was made. The home leg covers the rest. |
+| `%zu of %zu home-leg waypoints are outside the feasible joint set` | The plan's start pose was already out of the box, so the drives will clip the home leg. Re-home before planning. |
+| `Replan could not be spliced ...` | A mid-deployment replan arrived with no executed prefix to splice onto; retraction will only reach that replan's start pose, not the original one. |
+| `Plan endpoint is N mm from the target` | The written path does not end where IK solved — a phase-stitching gap or a truncated export. The manager's acceptance gate sees only the IK residual and would not catch this. |
 | `Force-drift replanning suppressed after N consecutive rejections` | The planner rejected several replans in a row. Deployment continues on the previous plan; it re-arms when the drift halves or a plan is accepted. |
 | `Force-drift replanning is inactive: no plan force baseline` | A full retraction cleared the baseline. Plan again to re-establish it. |
 | `Could not transform robot_base to probe` | No probe sensor is tracked. Probe-mode targeting will not work; CSV mode still will. |

@@ -7,6 +7,9 @@
 #include <atomic>
 #include <bitset>
 #include <cstdint>
+#include <memory>
+
+#include "spdlog/spdlog.h"
 
 #include <blaze/Math.h>
 
@@ -66,6 +69,17 @@ public:
                                 blaze::StaticVector<int32_t, 4> &driver) const = 0;
     virtual void getDigitalIn(blaze::StaticVector<std::bitset<32>, 4> &in) const = 0;
     virtual void getInterface() const = 0;
+
+    // ============================== Diagnostics ==============================
+    /// The implementation's logger, if it owns one.
+    ///
+    /// CTRobot's "CTR" logger is the only one in the system with a file sink
+    /// (log/Robot/<timestamp>.txt); RobotNode's own default_logger() writes to
+    /// stdout and therefore vanished from every collected run log. Callers
+    /// adopt this so their messages land in the file that actually gets copied
+    /// off the lab machine. Returns nullptr for doubles that own no logger --
+    /// check before use.
+    virtual std::shared_ptr<spdlog::logger> logger() const { return nullptr; }
 
     // ============================== Waits ==============================
     virtual void waitUntilReach(const std::atomic<bool> &cancel_flag) const = 0;

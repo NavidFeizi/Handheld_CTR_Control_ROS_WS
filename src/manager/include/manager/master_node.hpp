@@ -16,7 +16,9 @@
 #include "std_srvs/srv/set_bool.hpp"
 
 #include "ctr_common/diag_csv.hpp"
+#include "ctr_common/home_pose.hpp"
 #include "manager/bearing_gate.hpp"
+#include "manager/csv_path_io.hpp"
 
 #include <blaze/Blaze.h>
 #include <Eigen/Dense>
@@ -160,7 +162,7 @@ private:
     void publish_position(const blaze::StaticVector<double, 6>& q);
 
     // Utility functions
-    bool loadPlannedPath();
+    bool loadPlannedPath(bool is_replan = false);
     bool read_path_from_csv(std::vector<blaze::StaticVector<double, 6>>& init_q_list,
                                const std::string& fileName);
     void read_targets_from_csv(std::vector<Eigen::Vector3d>& target_list, const std::string& fileName);
@@ -179,6 +181,26 @@ private:
     void diagPlanResponse(bool success, double ik_error, const std::string &message);
     void diagPathLoaded(size_t waypoints_in, size_t waypoints_out, double max_step_alpha);
     void diagDeployComplete(const Eigen::Vector3d &Xd, const Eigen::Vector3d &tip, const Eigen::Vector3d &sim);
+    void diagRetractComplete(bool reached_home, size_t home_tail_steps,
+                             const Eigen::Vector3d &tip, const Eigen::Vector3d &sim);
+    /// Build the home leg from `from` and log it. Caller holds m_deploy_mutex.
+    void beginHomeTail(const blaze::StaticVector<double, 6> &from);
+    /// Warn (throttled) when an armed deployment has been waiting on
+    /// `reached` for longer than k_reach_stall_warn_s. Caller holds m_deploy_mutex.
+    void reportReachStall(bool retracting, int index, size_t total);
+    /// Publish one deployment waypoint and record it for the stall watchdog.
+    /// Caller holds m_deploy_mutex.
+    void sendDeploymentWaypoint(const blaze::StaticVector<double, 6> &q, const char *phase,
+                                int index_1based, size_t total);
+    /// Log where Auto Retract will end up, when it is armed.
+    void logRetractPlan();
+    /// Remove Shared_Files/plannedPath.csv, if present.
+    void deletePlannedPathFile();
+    /// Tear down deployment state at the end of a retraction. Caller holds m_deploy_mutex.
+    void finishRetraction(bool reached_home, size_t home_tail_steps,
+                          const Eigen::Vector3d &tip, const Eigen::Vector3d &sim);
+    /// Mark that `reached` went true, restarting the stall watchdog.
+    void noteReachProgress() { m_last_reach_progress_s.store(this->now().seconds()); }
     
     // Member constants
     static constexpr size_t k_forward_button_idx = 1;
@@ -249,6 +271,30 @@ private:
     std::atomic<bool> m_auto_retract{false};  // GUI thread <-> control_loop
     bool m_retracting = false;
 
+    // Retract-to-home tail. Reversing the plan only gets back to
+    // m_q_list_adjusted[0] -- the pose the robot was in when the plan was made,
+    // which after an accepted replan is partway INTO the anatomy. Once the
+    // reversal is exhausted the loop walks these waypoints to the mechanical
+    // home pose instead of declaring itself done. Guarded by m_deploy_mutex.
+    std::vector<blaze::StaticVector<double, 6>> m_q_list_home_tail;
+    size_t m_home_tail_index = 0;
+    bool m_home_tail_active = false;
+
+    // Stall watchdog for the open-loop deployment loop. Both branches gate on
+    // getReachStatus() and do nothing at all when it is false -- and
+    // reportDeploymentGate() lives in the outer else, so it is unreachable in
+    // that state. An indefinite wait on a drive that stopped short therefore
+    // produced no output whatsoever; this is what makes it visible.
+    static constexpr double k_reach_stall_warn_s = 3.0;
+    /// Scripted-test-only guillotine on a retraction. It abandons the move
+    /// mid-way, so it must comfortably exceed a full reversal plus the home leg.
+    static constexpr double k_test_retraction_timeout_s = 180.0;
+    // Atomic: armed from the Qt thread (button/mode change), read and written
+    // by the control timer.
+    std::atomic<double> m_last_reach_progress_s{0.0};
+    blaze::StaticVector<double, 6> m_last_commanded_q = blaze::StaticVector<double, 6>(0.0);
+    bool m_last_commanded_valid = false;
+
     double k_ik_error_threshold = 0.003;
 
     // Structured diagnostics (thread-safe writer; records from the control loop
@@ -259,6 +305,16 @@ private:
     // Trained α boxes for the pre-rotation gate; the defaults ARE the shipped
     // dataset values (α₂ ± 1.5π absolute, α₁ − α₂ ± π), β fields unused here.
     const ctr_kinematics_pinn::JointLimits4 k_alpha_limits{};
+
+    // The full 4-DoF feasible set, for sanity-checking waypoints this node
+    // generates itself (the retract-to-home leg). The α box is the shipped
+    // dataset default; the β box is reconstructed from the hardware geometry in
+    // ctr_common/home_pose.hpp, which records the same numbers the dataset does
+    // -- β₂ spans home..pre-engage, and β₁ − β₂ spans the clearance window.
+    // See the closing paragraph of dataset_bounds.hpp's header comment.
+    static constexpr ctr_kinematics_pinn::JointLimits4 k_joint_limits{
+        {ctr_common::kHomePose[3], ctr_common::kPreEngagePose[3]},
+        {-ctr_common::kLinearStageMaxClearance, -ctr_common::kLinearStageMinClearance}};
 
     // Automated test variables
     std::atomic<bool> m_test_running{false};

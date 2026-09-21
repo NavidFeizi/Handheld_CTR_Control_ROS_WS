@@ -131,6 +131,58 @@ more than `min_remaining_waypoints` remain, it requests a replan of the remainin
 tail. Rejected requests back off exponentially with hysteresis, and the previous plan
 keeps executing — a failed replan degrades to the old path rather than stopping.
 
+An **accepted** replan is spliced, not swapped. `replanDeployment` re-plans only the
+remaining tail, from the robot's current (already partly inserted) configuration, so
+its row 0 is not the deployment start. `loadPlannedPath(is_replan = true)` therefore
+keeps the already-executed prefix and appends the new tail behind it. Resetting the
+index to 0 instead — which is what it used to do for both callers — redefined "fully
+retracted" as "back to wherever the replan happened", and a replan response landing
+while Auto Retract was armed ended the retraction without moving at all.
+
+## Retraction: two stages, and what "home" means
+
+`master` has two retraction implementations, and **neither one used to have any
+concept of home**. Both now do.
+
+1. **Reverse the plan.** Open loop walks `m_q_list_adjusted` backwards to index 0;
+   closed loop pops `m_q_list_actuated` down to its first entry. Either way the
+   endpoint is the pose the robot was in when the plan (or the first insert step)
+   happened — *not* the mechanical home.
+2. **Walk the home leg.** `manager_csv::buildHomeLeg` (in `include/manager/csv_path_io.hpp`)
+   generates waypoints from there to `ctr_common::homePoseCommanded()`.
+
+The home leg has two properties worth keeping:
+
+- **β retracts before α unwinds.** Interpolating both together would rotate tubes
+  that are still inside the anatomy, which is the thing the follow-the-leader plan
+  exists to avoid. The leg is two sequential sub-legs, and `test_csv_path_io` pins
+  the ordering.
+- **It is subdivided at `m_insertion_step` (2 mm).** β₁'s drive-side
+  `POSITION_LIMIT` is anchored to the *live* β₂ (β₁ ≥ β₂ − 0.084), so a single jump
+  to home asks β₁ to pass a bound that only relaxes once β₂ has caught up; the drive
+  clips it and stops short with no feedback. Straight-line interpolation is safe
+  because the feasible joint set is an intersection of half-spaces and hence convex —
+  see `ctr_common/home_pose.hpp`.
+
+`ctr_common::kHomePose` / `kPreEngagePose` are the single definition of those two
+poses, shared with `robot_node`'s static joint limits. `planner/test_dataset_bounds`
+pins them against the PINN dataset's feasible box.
+
+## Why a stalled deployment used to be invisible
+
+Both deployment branches gate on `getReachStatus()` — the AND of the four CiA-402
+`target reached` bits — and did nothing at all when it was false. `reportDeploymentGate()`
+lives in the outer `else`, so it was unreachable in exactly that state: an indefinite
+wait on a drive that stopped short produced no output, ever. Every per-waypoint
+command and both completion events were also `RCLCPP_DEBUG` in the open-loop path.
+
+Now: every commanded waypoint logs at INFO through `sendDeploymentWaypoint`, and
+after `k_reach_stall_warn_s` (3 s) without progress `reportReachStall` warns with
+commanded vs measured position per joint and the four individual `reached` flags.
+A joint with a non-zero error that never reports reached is one whose target the
+drive clipped at its `POSITION_LIMIT` — nothing in the robot node or the driver
+clamps or rejects such a target, so this warning is the only evidence it happened.
+
 Path CSVs are accepted in two layouts: a 6-column form and the planner's 4-column
 form, which is expanded with zero β3/α3. See `include/manager/csv_path_io.hpp`.
 
@@ -157,5 +209,7 @@ colcon test --packages-select manager --ctest-args -R test_csv_path_io
 
 `test/test_csv_path_io.cpp` covers the pure functions in `csv_path_io.hpp`:
 `parsePathRows` (6-column pass-through, 4-column expansion, malformed-row skipping,
-end-to-end text parse) and `adjustConfigurationListStepSize` (empty in/out, first and
-last preserved, downsampling on the deployment coordinate).
+end-to-end text parse), `adjustConfigurationListStepSize` (empty in/out, first and
+last preserved, downsampling on the deployment coordinate) and `buildHomeLeg`
+(exact endpoint, empty when already home, β-before-α ordering, every waypoint
+feasible per `isFeasible4`, no step above `m_insertion_step`).

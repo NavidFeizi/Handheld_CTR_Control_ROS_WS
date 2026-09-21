@@ -111,6 +111,194 @@ void MasterNode::diagDeployComplete(const Eigen::Vector3d &Xd, const Eigen::Vect
     m_diag.append(os.str());
 }
 
+// Written when Auto Retract finishes, so a retraction leaves the same kind of
+// trace an insertion does. Before this, the whole open-loop retract path logged
+// at DEBUG and recorded nothing -- a retraction that stopped partway and one
+// that never started were indistinguishable afterwards.
+void MasterNode::diagRetractComplete(const bool reached_home, const size_t home_tail_steps,
+                                     const Eigen::Vector3d &tip, const Eigen::Vector3d &sim)
+{
+    std::ostringstream msg;
+    msg << std::fixed << std::setprecision(6)
+        << "retract " << (reached_home ? "reached home" : "stopped at plan start")
+        << "; b1=" << m_q[1] << " b2=" << m_q[3] << " a1=" << m_q[0] << " a2=" << m_q[2];
+
+    RCLCPP_INFO(get_logger(),
+                "Retraction complete: %s. q = [b1 %.4f, b2 %.4f, a1 %.4f, a2 %.4f], "
+                "home = [b1 %.4f, b2 %.4f], home-leg steps = %zu",
+                reached_home ? "at home" : "at the plan's start pose (home leg unavailable)",
+                m_q[1], m_q[3], m_q[0], m_q[2],
+                ctr_common::homePoseCommanded()[1], ctr_common::homePoseCommanded()[3],
+                home_tail_steps);
+
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(6)
+       << "retract_complete," << ctr_common::currentTimestamp() << ",,,,,,"
+       << m_q[0] << ',' << m_q[2] << ",,,,"
+       << (reached_home ? 1 : 0) << ",," << '"' << msg.str() << '"' << ','
+       << tip[0] << ',' << tip[1] << ',' << tip[2] << ',' << sim[0] << ',' << sim[1] << ',' << sim[2]
+       << ",,," << home_tail_steps << ',';
+    m_diag.append(os.str());
+}
+
+// Caller holds m_deploy_mutex.
+void MasterNode::beginHomeTail(const blaze::StaticVector<double, 6> &from)
+{
+    m_q_list_home_tail = manager_csv::buildHomeLeg(from, m_insertion_step);
+    m_home_tail_index = 0;
+    m_home_tail_active = !m_q_list_home_tail.empty();
+
+    const auto home = ctr_common::homePoseCommanded();
+    RCLCPP_INFO(get_logger(),
+                "Retract reached the plan's start pose [b1 %.4f, b2 %.4f, a1 %.4f, a2 %.4f]; "
+                "continuing to home [b1 %.4f, b2 %.4f, a1 %.4f, a2 %.4f] over %zu steps",
+                from[0], from[1], from[3], from[4],
+                home[1], home[3], home[0], home[2], m_q_list_home_tail.size());
+
+    // The feasible joint set is convex and both endpoints are inside it, so
+    // every interpolated waypoint should be legal. Verify rather than assume:
+    // if this ever fires, the plan's start pose was already out of the box and
+    // the drives will clip the leg.
+    size_t infeasible = 0;
+    for (const auto &q : m_q_list_home_tail)
+    {
+        if (!ctr_kinematics_pinn::isFeasible4({q[0], q[1], q[3], q[4]}, k_joint_limits, 1.0e-6))
+        {
+            ++infeasible;
+        }
+    }
+    if (infeasible > 0)
+    {
+        RCLCPP_WARN(get_logger(),
+                    "%zu of %zu home-leg waypoints are outside the feasible joint set - "
+                    "the drives will clip them and the retraction may stop short",
+                    infeasible, m_q_list_home_tail.size());
+    }
+}
+
+// Caller holds m_deploy_mutex.
+void MasterNode::reportReachStall(const bool retracting, const int index, const size_t total)
+{
+    const double now_s = this->now().seconds();
+    const double last_s = m_last_reach_progress_s.load();
+    if (last_s <= 0.0)
+    {
+        m_last_reach_progress_s.store(now_s);
+        return;
+    }
+    const double waiting_s = now_s - last_s;
+    if (waiting_s < k_reach_stall_warn_s)
+    {
+        return;
+    }
+
+    // Nothing in this system reports "the drive stopped short": CTRobot issues
+    // the target and the drive clips it against its own POSITION_LIMIT with no
+    // feedback, so `reached` is the only signal and its absence was silent.
+    if (!m_last_commanded_valid)
+    {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Auto-%s waiting %.1f s for 'reached' at waypoint %d/%zu; "
+                             "no command has been sent yet (joints reached: %d %d %d %d)",
+                             retracting ? "retract" : "insert", waiting_s, index + 1, total,
+                             static_cast<int>(m_reachedJoints[0]), static_cast<int>(m_reachedJoints[1]),
+                             static_cast<int>(m_reachedJoints[2]), static_cast<int>(m_reachedJoints[3]));
+        return;
+    }
+
+    // m_q is wire order [a1, b1, a2, b2]; the waypoint is physics order.
+    const double err_b1 = m_last_commanded_q[0] - m_q[1];
+    const double err_b2 = m_last_commanded_q[1] - m_q[3];
+    const double err_a1 = m_last_commanded_q[3] - m_q[0];
+    const double err_a2 = m_last_commanded_q[4] - m_q[2];
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "Auto-%s STALLED: waiting %.1f s for 'reached' at waypoint %d/%zu. "
+                         "commanded [b1 %.4f, b2 %.4f, a1 %.4f, a2 %.4f] vs measured "
+                         "[b1 %.4f, b2 %.4f, a1 %.4f, a2 %.4f]; error [%.4f, %.4f, %.4f, %.4f]; "
+                         "per-joint reached [a1 %d, b1 %d, a2 %d, b2 %d]. A non-zero error on a "
+                         "joint that never reports reached means the drive clipped the target at "
+                         "its POSITION_LIMIT and stopped short.",
+                         retracting ? "retract" : "insert", waiting_s, index + 1, total,
+                         m_last_commanded_q[0], m_last_commanded_q[1], m_last_commanded_q[3], m_last_commanded_q[4],
+                         m_q[1], m_q[3], m_q[0], m_q[2],
+                         err_b1, err_b2, err_a1, err_a2,
+                         static_cast<int>(m_reachedJoints[0]), static_cast<int>(m_reachedJoints[1]),
+                         static_cast<int>(m_reachedJoints[2]), static_cast<int>(m_reachedJoints[3]));
+}
+
+// Caller holds m_deploy_mutex. One place to publish a waypoint, so the stall
+// watchdog always knows what was last commanded and every commanded step is
+// visible at INFO. The open-loop path used to log this at DEBUG only, which is
+// why a retraction that stopped partway left no trace at all.
+void MasterNode::sendDeploymentWaypoint(const blaze::StaticVector<double, 6> &q, const char *phase,
+                                        const int index_1based, const size_t total)
+{
+    publish_position(q);
+    m_last_commanded_q = q;
+    m_last_commanded_valid = true;
+
+    RCLCPP_INFO(this->get_logger(),
+                "Sent q [%d/%zu] (%s): b1=%.4f, b2=%.4f, a1=%.4f, a2=%.4f "
+                "(live: b1=%.4f, b2=%.4f, a1=%.4f, a2=%.4f)",
+                index_1based, total, phase, q[0], q[1], q[3], q[4],
+                m_q[1], m_q[3], m_q[0], m_q[2]);
+}
+
+// State the endpoint out loud when the operator arms Auto Retract. "Retract"
+// reverses the loaded plan and then walks a home leg; how far back the plan
+// itself reaches depends on where it was made, so print both distances rather
+// than leaving the operator to infer them from the tubes.
+void MasterNode::logRetractPlan()
+{
+    std::lock_guard<std::mutex> lock(m_deploy_mutex);
+    const auto home = ctr_common::homePoseCommanded();
+    if (m_q_list_adjusted.empty())
+    {
+        RCLCPP_WARN(get_logger(), "Auto Retract armed with no waypoint list - nothing to reverse");
+        return;
+    }
+    const auto &row0 = m_q_list_adjusted.front();
+    // m_q is wire order [a1, b1, a2, b2]; row0 is physics order.
+    RCLCPP_INFO(get_logger(),
+                "Auto Retract armed at waypoint %d/%zu. Plan start = [b1 %.4f, b2 %.4f]; "
+                "live = [b1 %.4f, b2 %.4f]; home = [b1 %.4f, b2 %.4f]. "
+                "|live - plan start| = [%.4f, %.4f] m, |plan start - home| = [%.4f, %.4f] m "
+                "(the second pair is the extra home leg).",
+                m_current_config_index + 1, m_q_list_adjusted.size(),
+                row0[0], row0[1], m_q[1], m_q[3], home[1], home[3],
+                std::fabs(m_q[1] - row0[0]), std::fabs(m_q[3] - row0[1]),
+                std::fabs(row0[0] - home[1]), std::fabs(row0[1] - home[3]));
+}
+
+// Closed-loop deployment consumes plannedPath.csv and removes it once the
+// stack is fully unwound, so a stale plan is never picked up by the next run.
+void MasterNode::deletePlannedPathFile()
+{
+    const std::filesystem::path file_path =
+        ctr_common::resolveDataRoot(*this, "manager") / "Shared_Files" / "plannedPath.csv";
+    std::error_code ec;
+    if (std::filesystem::exists(file_path, ec) && std::filesystem::remove(file_path, ec))
+    {
+        RCLCPP_INFO(this->get_logger(), "Deleted plannedPath.csv");
+    }
+}
+
+// Caller holds m_deploy_mutex.
+void MasterNode::finishRetraction(const bool reached_home, const size_t home_tail_steps,
+                                  const Eigen::Vector3d &tip, const Eigen::Vector3d &sim)
+{
+    m_auto_retract = false;
+    m_current_config_index = 0;
+    m_q_list_adjusted.clear();
+    m_q_list_home_tail.clear();
+    m_home_tail_index = 0;
+    m_home_tail_active = false;
+    m_last_commanded_valid = false;
+    m_last_reach_progress_s.store(0.0);
+    invalidateForceBaseline();
+    diagRetractComplete(reached_home, home_tail_steps, tip, sim);
+}
+
 // ============================================================================
 // Public Methods for GUI Callbacks
 // ============================================================================
@@ -176,6 +364,9 @@ void MasterNode::handleAutoInsertClicked()
         if (m_auto_insert)
         {
             m_auto_retract = false; // Disable auto-retract when auto-insert is enabled
+            // Re-seed the stall watchdog, or the idle time since the last step
+            // reads as a stall on the very first cycle.
+            m_last_reach_progress_s.store(0.0);
         }
         RCLCPP_INFO(this->get_logger(), "Auto-insert mode: %s", m_auto_insert ? "ON" : "OFF");
     }
@@ -193,6 +384,8 @@ void MasterNode::handleAutoRetractClicked()
         if (m_auto_retract)
         {
             m_auto_insert = false; // Disable auto-insert when auto-retract is enabled
+            m_last_reach_progress_s.store(0.0); // re-seed the stall watchdog
+            logRetractPlan();
         }
         RCLCPP_INFO(this->get_logger(), "Auto-retract mode: %s", m_auto_retract ? "ON" : "OFF");
     }
@@ -456,14 +649,26 @@ void MasterNode::onCtrlModeClicked(int id)
 {
     m_high_level_mode = static_cast<HighLvlCtrMode>(id);
 
+    // A mode change disarms both auto modes, in BOTH branches. The Deployment
+    // branch used to leave m_auto_retract set while Planner cleared it, so a
+    // stray press of the handheld trigger (which toggles the mode on a rising
+    // edge in manualInterface_callback) aborted an in-progress retraction with
+    // nothing in the log but "High-level control mode set to ...".
+    const bool was_retracting = m_auto_retract.exchange(false);
+    const bool was_inserting = m_auto_insert.exchange(false);
+    m_last_reach_progress_s.store(0.0);
+    if (was_retracting || was_inserting)
+    {
+        RCLCPP_WARN(this->get_logger(), "Mode change aborted an active auto-%s at waypoint %d",
+                    was_retracting ? "retract" : "insert", m_current_config_index);
+    }
+
     std::string mode_name;
     switch (static_cast<HighLvlCtrMode>(id))
     {
     case HighLvlCtrMode::Planner:
     {
         mode_name = "Planner";
-        m_auto_insert = false;
-        m_auto_retract = false;
         m_retracting = false;
         // m_gui_manager->getClosedLoopCheckbox()->setEnabled(false);
         break;
@@ -474,7 +679,6 @@ void MasterNode::onCtrlModeClicked(int id)
         // m_current_config_index = 0;
         // m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
         mode_name = m_closed_loop_enabled ? "Deployment (Closed-Loop)" : "Deployment";
-        m_auto_insert = false;
         m_retracting = false;
         // m_gui_manager->getClosedLoopCheckbox()->setEnabled(true);
         break;
@@ -796,7 +1000,7 @@ void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Pl
 {
     auto response = future.get();
 
-    if (response->success && loadPlannedPath())
+    if (response->success && loadPlannedPath(/*is_replan=*/true))
     {
         std::lock_guard<std::mutex> lock(m_force_mutex);
         m_f_at_plan = m_f_pending;
@@ -1179,6 +1383,19 @@ void MasterNode::control_loop()
         {
             m_retracting = false;
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
+            if (m_home_tail_active)
+            {
+                // The robot is partway along the home leg, so it is not at any
+                // plan waypoint and the index means nothing. Inserting from here
+                // would command an arbitrary jump back onto the old path.
+                m_auto_insert = false;
+                RCLCPP_WARN(this->get_logger(),
+                            "Cannot insert: a retract-to-home leg is in progress (step %zu/%zu) and "
+                            "the robot is no longer at a plan waypoint. Let the retraction finish, "
+                            "then plan again.",
+                            m_home_tail_index, m_q_list_home_tail.size());
+                return;
+            }
             if (m_q_list_adjusted.empty())
             {
                 // Must return: the index arithmetic below computes size() - 1 on an empty
@@ -1189,36 +1406,34 @@ void MasterNode::control_loop()
                 return;
             }
 
-            if (getReachStatus())
+            if (!getReachStatus())
             {
-                m_current_config_index += 1;
-                if (m_current_config_index < m_q_list_adjusted.size())
-                {
-                    // Capture frame in session A during auto-insertion
-                    if (m_test_running && m_auto_insert)
-                    {
-                        captureRecordingFrame("data");
-                    }
-                    
-                    publish_position(m_q_list_adjusted[m_current_config_index]);
+                reportReachStall(false, m_current_config_index, m_q_list_adjusted.size());
+                return;
+            }
 
-                    RCLCPP_DEBUG(this->get_logger(), "Sent q [%d/%zu]: β1=%.3f, β2=%.3f, α1=%.3f, α2=%.3f",
-                                 m_current_config_index + 1, m_q_list_adjusted.size(),
-                                 m_q_list_adjusted[m_current_config_index][0],
-                                 m_q_list_adjusted[m_current_config_index][1],
-                                 m_q_list_adjusted[m_current_config_index][3],
-                                 m_q_list_adjusted[m_current_config_index][4]);
-                }
-                else
+            noteReachProgress();
+            m_current_config_index += 1;
+            if (m_current_config_index < static_cast<int>(m_q_list_adjusted.size()))
+            {
+                // Capture frame in session A during auto-insertion
+                if (m_test_running && m_auto_insert)
                 {
-                    m_auto_insert = false;
-                    m_current_config_index = m_q_list_adjusted.size() - 1;
-                    RCLCPP_DEBUG(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
-                    if (!m_deploy_complete_logged)
-                    {
-                        m_deploy_complete_logged = true;
-                        diagDeployComplete(Xd, X, Xsim);
-                    }
+                    captureRecordingFrame("data");
+                }
+
+                sendDeploymentWaypoint(m_q_list_adjusted[m_current_config_index], "insert",
+                                       m_current_config_index + 1, m_q_list_adjusted.size());
+            }
+            else
+            {
+                m_auto_insert = false;
+                m_current_config_index = static_cast<int>(m_q_list_adjusted.size()) - 1;
+                RCLCPP_INFO(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
+                if (!m_deploy_complete_logged)
+                {
+                    m_deploy_complete_logged = true;
+                    diagDeployComplete(Xd, X, Xsim);
                 }
             }
         }
@@ -1226,7 +1441,7 @@ void MasterNode::control_loop()
         {
             m_retracting = true;
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
-            if (m_q_list_adjusted.empty())
+            if (m_q_list_adjusted.empty() && !m_home_tail_active)
             {
                 // Must return: the index arithmetic below computes size() - 1 on an empty
                 // vector, which underflows before being narrowed to int.
@@ -1236,32 +1451,58 @@ void MasterNode::control_loop()
                 return;
             }
 
-            if (getReachStatus())
+            if (!getReachStatus())
             {
-                m_current_config_index--;
-                if (m_current_config_index >= 0)
-                {
-                    publish_position(m_q_list_adjusted[m_current_config_index]);
+                reportReachStall(true,
+                                 m_home_tail_active ? static_cast<int>(m_home_tail_index)
+                                                    : m_current_config_index,
+                                 m_home_tail_active ? m_q_list_home_tail.size()
+                                                    : m_q_list_adjusted.size());
+                return;
+            }
 
-                    RCLCPP_DEBUG(this->get_logger(), "Sent q [%d/%zu]:  β1=%.3f, β2=%.3f, α1=%.3f, α2=%.3f",
-                                 m_current_config_index + 1, m_q_list_adjusted.size(),
-                                 m_q_list_adjusted[m_current_config_index][0],
-                                 m_q_list_adjusted[m_current_config_index][1],
-                                 m_q_list_adjusted[m_current_config_index][3],
-                                 m_q_list_adjusted[m_current_config_index][4]);
+            noteReachProgress();
+
+            // Second stage: the reversed plan is exhausted, walk the home leg.
+            // Reversing the plan only reaches m_q_list_adjusted[0], which is the
+            // pose the robot was in when the plan was made -- not the mechanical
+            // home, and after an accepted replan not even the deployment start.
+            if (m_home_tail_active)
+            {
+                if (m_home_tail_index < m_q_list_home_tail.size())
+                {
+                    sendDeploymentWaypoint(m_q_list_home_tail[m_home_tail_index], "retract-home",
+                                           static_cast<int>(m_home_tail_index) + 1,
+                                           m_q_list_home_tail.size());
+                    ++m_home_tail_index;
                 }
                 else
                 {
-                    m_auto_retract = false;
-                    m_current_config_index = 0;
-                    m_q_list_adjusted.clear();
-                    invalidateForceBaseline();
-                    RCLCPP_DEBUG(this->get_logger(), "Min deployment index reached: %d", m_current_config_index);
+                    finishRetraction(true, m_q_list_home_tail.size(), X, Xsim);
+                }
+                return;
+            }
+
+            m_current_config_index--;
+            if (m_current_config_index >= 0)
+            {
+                sendDeploymentWaypoint(m_q_list_adjusted[m_current_config_index], "retract",
+                                       m_current_config_index + 1, m_q_list_adjusted.size());
+            }
+            else
+            {
+                m_current_config_index = 0;
+                beginHomeTail(m_q_list_adjusted.front());
+                if (!m_home_tail_active)
+                {
+                    // Already at home to within one step; nothing left to walk.
+                    finishRetraction(true, 0, X, Xsim);
                 }
             }
         }
         else
         {
+            m_last_reach_progress_s.store(0.0);
             reportDeploymentGate();
         }
     }
@@ -1311,6 +1552,19 @@ void MasterNode::control_loop()
         {
             m_retracting = false;
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
+            if (m_home_tail_active)
+            {
+                // The robot is partway along the home leg, so it is not at any
+                // plan waypoint and the index means nothing. Inserting from here
+                // would command an arbitrary jump back onto the old path.
+                m_auto_insert = false;
+                RCLCPP_WARN(this->get_logger(),
+                            "Cannot insert: a retract-to-home leg is in progress (step %zu/%zu) and "
+                            "the robot is no longer at a plan waypoint. Let the retraction finish, "
+                            "then plan again.",
+                            m_home_tail_index, m_q_list_home_tail.size());
+                return;
+            }
             if (m_q_list_adjusted.empty())
             {
                 // Must return: the index arithmetic below computes size() - 1 on an empty
@@ -1321,46 +1575,44 @@ void MasterNode::control_loop()
                 return;
             }
 
-            if (getReachStatus())
+            if (!getReachStatus())
             {
-                if (m_q_list_actuated.empty())
+                reportReachStall(false, m_current_config_index, m_q_list_adjusted.size());
+                return;
+            }
+
+            noteReachProgress();
+            if (m_q_list_actuated.empty())
+            {
+                blaze::StaticVector<double, 6> q = blaze::StaticVector<double, 6>({m_q[1], m_q[3], 0.0, m_q[0], m_q[2], 0.0});
+                m_q_list_actuated.push_back(q);
+            }
+
+            m_current_config_index += 1;
+            if (m_current_config_index < static_cast<int>(m_q_list_adjusted.size()))
+            {
+                // Capture frame in session A during auto-insertion
+                if (m_test_running && m_auto_insert)
                 {
-                    blaze::StaticVector<double, 6> q = blaze::StaticVector<double, 6>({m_q[1], m_q[3], 0.0, m_q[0], m_q[2], 0.0});
-                    m_q_list_actuated.push_back(q);
+                    captureRecordingFrame("data");
                 }
 
-                m_current_config_index += 1;
-                if (m_current_config_index < m_q_list_adjusted.size())
+                sendDeploymentWaypoint(m_q_list_adjusted[m_current_config_index], "insert",
+                                       m_current_config_index + 1, m_q_list_adjusted.size());
+
+                m_q_list_actuated.push_back(m_q_list_adjusted[m_current_config_index]);
+            }
+            else
+            {
+                m_auto_insert = false;
+                m_q_list_adjusted.clear();
+                invalidateForceBaseline();
+                m_current_config_index = 0;
+                RCLCPP_INFO(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
+                if (!m_deploy_complete_logged)
                 {
-                    // Capture frame in session A during auto-insertion
-                    if (m_test_running && m_auto_insert)
-                    {
-                        captureRecordingFrame("data");
-                    }
-
-                    publish_position(m_q_list_adjusted[m_current_config_index]);
-
-                    RCLCPP_INFO(this->get_logger(), "Sent q [%d/%zu]:  β1=%.3f, β2=%.3f, α1=%.3f, α2=%.3f",
-                                m_current_config_index + 1, m_q_list_adjusted.size(),
-                                m_q_list_adjusted[m_current_config_index][0],
-                                m_q_list_adjusted[m_current_config_index][1],
-                                m_q_list_adjusted[m_current_config_index][3],
-                                m_q_list_adjusted[m_current_config_index][4]);
-
-                    m_q_list_actuated.push_back(m_q_list_adjusted[m_current_config_index]);
-                }
-                else
-                {
-                    m_auto_insert = false;
-                    m_q_list_adjusted.clear();
-                    invalidateForceBaseline();
-                    m_current_config_index = 0;
-                    RCLCPP_DEBUG(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
-                    if (!m_deploy_complete_logged)
-                    {
-                        m_deploy_complete_logged = true;
-                        diagDeployComplete(Xd, X, Xsim);
-                    }
+                    m_deploy_complete_logged = true;
+                    diagDeployComplete(Xd, X, Xsim);
                 }
             }
         }
@@ -1371,36 +1623,65 @@ void MasterNode::control_loop()
             m_auto_insert = false;
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
 
-            if (getReachStatus())
+            if (!getReachStatus())
             {
-                if (m_q_list_actuated.size() > 1)
+                reportReachStall(true,
+                                 m_home_tail_active ? static_cast<int>(m_home_tail_index) : 0,
+                                 m_home_tail_active ? m_q_list_home_tail.size() : m_q_list_actuated.size());
+                return;
+            }
+
+            noteReachProgress();
+
+            // Same two-stage retraction as the open-loop branch: unwind the
+            // commanded stack first, then walk the home leg. m_q_list_actuated[0]
+            // is only the pose the first insert step started from, which is not
+            // the mechanical home.
+            if (m_home_tail_active)
+            {
+                if (m_home_tail_index < m_q_list_home_tail.size())
                 {
-                    m_q_list_actuated.pop_back();
-                    publish_position(m_q_list_actuated.back());
-                    RCLCPP_INFO(this->get_logger(), "Sent q [%zu/%zu]:  β1=%.3f, β2=%.3f, α1=%.3f, α2=%.3f",
-                                m_q_list_actuated.size() + 1, m_q_list_actuated.size() + 2,
-                                m_q_list_actuated.back()[0], m_q_list_actuated.back()[1],
-                                m_q_list_actuated.back()[3], m_q_list_actuated.back()[4]);
+                    sendDeploymentWaypoint(m_q_list_home_tail[m_home_tail_index], "retract-home",
+                                           static_cast<int>(m_home_tail_index) + 1,
+                                           m_q_list_home_tail.size());
+                    ++m_home_tail_index;
                 }
                 else
                 {
-                    m_auto_retract = false;
+                    const size_t steps = m_q_list_home_tail.size();
+                    deletePlannedPathFile();
                     m_q_list_actuated.clear();
-                    m_q_list_adjusted.clear();
-                    invalidateForceBaseline();
-
-                    // Delete plannedPath.csv
-                    std::filesystem::path file_path =
-                        ctr_common::resolveDataRoot(*this, "manager") / "Shared_Files" / "plannedPath.csv";
-                    
-                    if (std::filesystem::exists(file_path))
-                    {
-                        std::filesystem::remove(file_path);
-                        RCLCPP_INFO(this->get_logger(), "Deleted plannedPath.csv");
-                    }
-                    
-                    RCLCPP_INFO(this->get_logger(), "Min deployment index reached: %zu", m_q_list_actuated.size());
+                    finishRetraction(true, steps, X, Xsim);
                 }
+                return;
+            }
+
+            if (m_q_list_actuated.size() > 1)
+            {
+                m_q_list_actuated.pop_back();
+                sendDeploymentWaypoint(m_q_list_actuated.back(), "retract",
+                                       static_cast<int>(m_q_list_actuated.size()),
+                                       m_q_list_actuated.size() + 1);
+            }
+            else if (!m_q_list_actuated.empty())
+            {
+                beginHomeTail(m_q_list_actuated.front());
+                if (!m_home_tail_active)
+                {
+                    deletePlannedPathFile();
+                    m_q_list_actuated.clear();
+                    finishRetraction(true, 0, X, Xsim);
+                }
+            }
+            else
+            {
+                // Nothing was ever commanded, so there is nothing to unwind.
+                // Do NOT "finish" here: the physical retract button can be held
+                // down, and finishing on every cycle would spam the diag file.
+                m_auto_retract = false;
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                                     "Nothing to retract: no waypoint has been commanded yet. "
+                                     "Use the robot GUI's 'Go to Home' to move to the home pose.");
             }
         }
     }
@@ -1432,7 +1713,19 @@ void MasterNode::publish_position(const blaze::StaticVector<double, 6> &q)
 // ============================================================================
 
 // Load the planner's CSV output and swap it in as the active deployment list.
-bool MasterNode::loadPlannedPath()
+//
+// `is_replan` is load-bearing. "replanDeployment" re-plans only the REMAINING
+// tail, from the robot's current (already partly inserted) configuration, so
+// its row 0 is not the deployment start. Resetting m_current_config_index to 0
+// for a replan -- which this function used to do unconditionally, for both
+// callers -- redefined "fully retracted" as "back to wherever the replan
+// happened". Auto Retract then completed partway in, cleared the list and
+// parked. Worse, a replan response landing while retract was armed left the
+// next tick decrementing 0 to -1, ending the retraction without moving at all.
+//
+// So a replan SPLICES: the already-executed prefix is kept and the new tail is
+// appended behind it, leaving a list that still reaches back to the true start.
+bool MasterNode::loadPlannedPath(const bool is_replan)
 {
     std::lock_guard<std::mutex> lock(m_deploy_mutex);
     if (read_path_from_csv(m_q_list, "plannedPath.csv"))
@@ -1450,14 +1743,51 @@ bool MasterNode::loadPlannedPath()
             RCLCPP_INFO(this->get_logger(), "plannedPath.csv loaded (written %.1f s ago)", age / 1000.0);
         }
 
-        m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
-        m_current_config_index = 0;
+        auto tail = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
+
+        const bool can_splice = is_replan && !m_q_list_adjusted.empty() &&
+                                m_current_config_index >= 0 &&
+                                m_current_config_index < static_cast<int>(m_q_list_adjusted.size());
+        if (can_splice)
+        {
+            const size_t prefix_size = static_cast<size_t>(m_current_config_index) + 1UL;
+            std::vector<blaze::StaticVector<double, 6>> spliced;
+            spliced.reserve(prefix_size + tail.size());
+            spliced.insert(spliced.end(), m_q_list_adjusted.begin(),
+                           m_q_list_adjusted.begin() + static_cast<long>(prefix_size));
+            spliced.insert(spliced.end(), tail.begin(), tail.end());
+            m_q_list_adjusted = std::move(spliced);
+            // The index still points at the last executed waypoint, so the next
+            // insertion step advances onto the new tail's first entry.
+            RCLCPP_INFO(this->get_logger(),
+                        "Replan spliced onto the executed path: %zu already-executed waypoints + "
+                        "%zu new = %zu total, resuming at index %d",
+                        prefix_size, tail.size(), m_q_list_adjusted.size(), m_current_config_index);
+        }
+        else
+        {
+            if (is_replan)
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "Replan could not be spliced (list size %zu, index %d) - "
+                            "retraction will only reach this replan's start pose",
+                            m_q_list_adjusted.size(), m_current_config_index);
+            }
+            m_q_list_adjusted = std::move(tail);
+            m_current_config_index = 0;
+        }
         m_deploy_complete_logged = false;
+        // A freshly loaded path supersedes any half-walked home leg.
+        m_q_list_home_tail.clear();
+        m_home_tail_index = 0;
+        m_home_tail_active = false;
+        m_last_commanded_valid = false;
 
         // Downsampler telemetry: a per-step Δα near 2π means a rotation phase
         // was collapsed and would execute as one unmanaged full turn.
         const double max_step_alpha = manager_csv::maxAlphaStep(m_q_list_adjusted);
-        RCLCPP_INFO(this->get_logger(), "Deployment list downsampled %zu -> %zu waypoints (max per-step dAlpha = %.3f rad)",
+        RCLCPP_INFO(this->get_logger(), "Deployment list %s %zu -> %zu waypoints (max per-step dAlpha = %.3f rad)",
+                    is_replan ? "replanned/spliced" : "downsampled",
                     m_q_list.size(), m_q_list_adjusted.size(), max_step_alpha);
         diagPathLoaded(m_q_list.size(), m_q_list_adjusted.size(), max_step_alpha);
         return true;
@@ -1763,14 +2093,26 @@ void MasterNode::updateTestStateMachine()
                 m_test_state_entry_time = current_time;
             }
         }
-        else if (time_in_state > 60.0)
+        else if (time_in_state > k_test_retraction_timeout_s)
         {
-            RCLCPP_WARN(get_logger(), "[Test] Retraction timeout, skipping to next target");
+            // This abandons a retraction MID-MOVE, leaving the tubes wherever
+            // they happen to be, so the budget has to cover the worst case: the
+            // whole reversed plan plus the home leg, at one 2 mm step per
+            // settle. Raised from 60 s when the home leg was added.
+            RCLCPP_WARN(get_logger(),
+                        "[Test] Retraction timeout after %.0f s at waypoint %d (home leg %s) - "
+                        "skipping to next target with the tubes still deployed",
+                        time_in_state, m_current_config_index,
+                        m_home_tail_active ? "in progress" : "not started");
             m_auto_retract = false;
             {
                 std::lock_guard<std::mutex> lock(m_deploy_mutex);
                 m_q_list_adjusted.clear();
                 m_q_list_actuated.clear();
+                m_q_list_home_tail.clear();
+                m_home_tail_index = 0;
+                m_home_tail_active = false;
+                m_last_commanded_valid = false;
             }
             invalidateForceBaseline();
             m_current_target_index++;

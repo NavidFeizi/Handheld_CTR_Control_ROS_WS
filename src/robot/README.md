@@ -182,6 +182,26 @@ Run these from the GUI in normal operation. The homing order matters — **linea
 first, then rotary**; the [root README](../../README.md) has the full operator
 procedure.
 
+### `goHome` works during a procedure
+
+`goHome` has two routes, because `switchToConfigMode()` refuses once `m_procedure`
+is set:
+
+- **Not in a procedure** — the historical path: Config mode, homing profile, one
+  `setTargetPos(k_home_pos + margin)`, `waitUntilReach`.
+- **In a procedure (Position mode)** — the target is driven through `m_x_des`, so
+  the 10 ms `targetCommand_timerCallback` *carries* it instead of clobbering it, in
+  2 mm interpolated steps, with `joint_space/target` ignored for the duration. The
+  Position-mode profile is restored afterwards.
+
+This used to be a silent no-op: the `switchToConfigMode()` call ignored its return
+value (every sibling task checks it), so during a procedure the mode stayed Position
+and the timer overwrote the home target one tick later. `waitUntilReach()` then
+returned on a stale target-reached bit and `"Homed"` was logged without the robot
+moving. Four consecutive failed **Go Home** clicks look exactly like this in
+`log/Robot/*.txt`: a `goHome` profile block (ACC 500, Vel 600/1000, torque logged as
+`-112`) with no motion between it and the next one.
+
 ## Hardware
 
 `ctr_robot` needs a live SocketCAN bus (`can0` by default) with the four drives
@@ -214,6 +234,28 @@ conversion — so they can be tested without Torch or hardware.
 
 ## Status notes
 
+- **`[RobotNode]` messages now reach the collected log file.** `m_logger` used to be
+  `spdlog::default_logger()` — stdout only — while `log/Robot/<timestamp>.txt` is the
+  file sink of the *driver's* separate `"CTR"` logger. Nothing this node logged could
+  appear in the one file anyone copies off the lab machine, which is why the
+  joint-limit warnings and the whole homing narration were missing from the
+  2026-09-01 run. The node now adopts the driver's logger via
+  `ICtrJointGroup::logger()` right after constructing it, before `declare_parameters()`
+  so the velocity/acceleration clamp warnings land there too. A driver double that
+  owns no logger returns `nullptr` and the stdout default stands.
+- **Position limits are enforced only by the drives.** `warnIfTargetOutsideLimits`
+  warns and nothing clamps or rejects: `jointsConfig_timerCallback` recomputes the
+  coupled window from live feedback every 10 ms and pushes it to the drives as
+  `0x607D` over TPDO4, and the drive clips the target and stops short with no
+  feedback. `CTRobot::checkPosLimits()` — which never had a live call site and whose
+  bounds were stale by an order of magnitude — has been deleted; only its finiteness
+  check survives, inside `setTargetPos`. See [`ctr_robot_driver`](../ctr_robot_driver/README.md).
+- **`m_encoders_set` is hardcoded to `{1,1,1,1}`** at construction ("temporarily for
+  development"), so `goHome`, `engageCollets`/`disengageCollets` and `findRotaryHome`
+  all pass their encoder precondition even when nothing has been homed, and
+  `robot_status.encoder[i]` reports that constant rather than
+  `CTRobot::getEncoderStatus()`. Unchanged here, but it is the next thing to fix in
+  this file.
 - **`cosserat_fk` is built and installed but never launched.** The
   `ld.add_action(cosserat_fk_node)` line is commented out in `robot.py`; the
   PINN-based `pinn_fk` superseded it. It remains useful as a reference

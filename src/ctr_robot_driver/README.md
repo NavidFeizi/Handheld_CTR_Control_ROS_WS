@@ -37,7 +37,14 @@ joint, in **wire order** `[α1, β1, α2, β2]`. Convert with
 | Configuration | `setMaxVel`, `setMaxAcc`, `setMaxTorque(neg, pos)`, `setProfileParams(vel, acc, dcc)`, `setOperationMode(OpMode)`, `setEncoders`, `setPosLimit(min, max)` |
 | Feedback | `getCurrent`, `getVel`, `getPos`, `getPosLimit` |
 | Status | `getSwitchStatus` (×2), `getEnableStatus`, `getEncoderStatus`, `getDisabledStatus` (×2), `getReachedStatus`, `getTemperature(cpu, driver)`, `getDigitalIn`, `getInterface` |
+| Diagnostics | `logger()` — the implementation's spdlog logger, or `nullptr` |
 | Waits | `waitUntilReach` / `waitUntilTransReach`, each with and without an `std::atomic<bool>&` cancel flag |
+
+`logger()` is not decoration. `CTRobot`'s `"CTR"` logger owns the **only file sink in
+the system** (`log/Robot/<timestamp>.txt`), and that file is what gets copied off the
+lab machine after a run. `RobotNode` adopts it in its constructor; before that it
+logged to `spdlog::default_logger()` (stdout), so none of its messages survived a
+run. A double that owns no logger returns `nullptr` — check before use.
 
 ## `CTRobot` — the CANopen implementation
 
@@ -45,11 +52,32 @@ joint, in **wire order** `[α1, β1, α2, β2]`. Convert with
 CANopen master lifetime.
 
 ```cpp
-CTRobot(bool position_limit,
-        blaze::StaticVector<double,4> maxVel,
+CTRobot(blaze::StaticVector<double,4> maxVel,
         blaze::StaticVector<double,4> maxAcc);
 CTRobot();
 ```
+
+### Position limiting is not this class's job
+
+`setTargetPos` performs **one** check — finiteness — and then writes the target
+through. That check has to be here: `Cia301Node::setPos` does
+`static_cast<int32_t>(value * ppu)`, which is undefined for NaN and yields
+`INT32_MIN` on x86, i.e. a full-travel negative command.
+
+Range limiting belongs to `RobotNode`, which recomputes the coupled window from live
+joint feedback every 10 ms and pushes it to the drives as object `0x607D` over TPDO4;
+the drive then clips the target itself. Note the consequence: **a clipped target
+stops the axis short with no feedback of any kind.** `RobotNode::warnIfTargetOutsideLimits`
+logs a target it can see will be clipped, and the manager's deployment stall warning
+catches the case where it happened anyway.
+
+`CTRobot::checkPosLimits()` used to exist for this and has been removed. It had no
+live call site — the only one was commented out inside `setTargetPos` — and its
+bounds (`β ∈ [0, 0.097] / [0, 0.052]`) predated the current joint frame
+(`β ∈ [-0.156, -0.034]`), so re-enabling it would have rejected every target. The
+`m_lowerBounds`/`m_upperBounds`/`m_posOffsets`/`m_minClearance`/`m_maxClearance`/
+`m_flagPositionLimit` members and `convPosToRobotFrame()` went with it, along with
+the constructor's `position_limit` parameter.
 
 ### `RuntimePaths` — set these first
 

@@ -115,7 +115,8 @@ public:
                      "proj_delta_b1,proj_delta_b2,proj_delta_a1,proj_delta_a2,"
                      "max_abs_alpha2_queried,max_abs_alpha_rel_queried,"
                      "dalpha1_travel,dalpha2_travel,goal_alpha2_off_principal,"
-                     "plan_time_s,plan_success,message");
+                     "plan_time_s,plan_success,message,"
+                     "endpoint_err_m,endpoint_tip_x,endpoint_tip_y,endpoint_tip_z");
     RCLCPP_INFO(this->get_logger(), "Planner diagnostics CSV: %s", m_diag.path().c_str());
   }
 
@@ -297,6 +298,11 @@ public:
       // force impossible to correlate with a bad plan after the fact.
       blaze::StaticVector<double, 3UL> force(0.0);
 
+      // Stale-value guard: the diag row is written on every exit path, so an
+      // early rejection must not report the previous request's endpoint.
+      m_plan_endpoint_err = std::numeric_limits<double>::quiet_NaN();
+      m_plan_endpoint_tip = blaze::StaticVector<double, 3UL>(std::numeric_limits<double>::quiet_NaN());
+
       try
       {
         // One consistent snapshot of joint feedback and EKF force for the whole request.
@@ -376,7 +382,7 @@ public:
               "refusing to emit a no-op plan (residual " + std::to_string(error) + " m)");
         }
 
-        planning_status = plan(q_initial, q_final, force, plan_seconds);
+        planning_status = plan(target, q_initial, q_final, force, plan_seconds);
         if (planning_status)
         {
           m_target_last = target;
@@ -518,18 +524,28 @@ public:
                 q[0UL], q[1UL], q[2UL], q[3UL], target[0UL], target[1UL], target[2UL],
                 tipPosition[0UL], tipPosition[1UL], tipPosition[2UL], residual * 1.00E3);
 
-    // Domain tripwire: after the wrapAngles fix these can never exceed the
-    // trained ranges (|α₂| ≤ 1.5π, |α₁ − α₂| ≤ π). A hit means the network was
-    // asked to extrapolate -- exactly the failure that made converged solves
-    // land wrong on hardware.
+    // Domain tripwire. Only the RELATIVE term is a live check: posCTRL's
+    // wrapAngles() pins α₂ onto the principal branch [-π, π) on every iterate,
+    // so maxAbsAlpha2Queried is structurally incapable of exceeding π, let
+    // alone 1.5π -- the old α₂ clause could never fire and its silence meant
+    // nothing. What CAN leave the trained box is the α₁ − α₂ offset during the
+    // descent, and the RESULT: posCTRL returns on the principal branch, but the
+    // representative the planner will actually plan toward is shifted by 2πk
+    // and has to stay inside α₂'s absolute travel.
     const auto &lim4 = m_ctr_pinn.getJointLimits4();
-    if (diag.maxAbsAlpha2Queried > lim4.alpha2_absolute[1UL] + 1.0E-9 ||
-        diag.maxAbsAlphaRelQueried > M_PI + 1.0E-9)
+    if (diag.maxAbsAlphaRelQueried > M_PI + 1.0E-9)
     {
       RCLCPP_WARN(this->get_logger(),
-                  "IK queried the network OUTSIDE its trained alpha domain: max|alpha2| = %.4f (limit %.4f), max|alpha1-alpha2| = %.4f (limit pi). "
+                  "IK queried the network OUTSIDE its trained alpha domain: max|alpha1-alpha2| = %.4f (limit pi). "
                   "FK/Jacobian values there are extrapolation - do not trust this solve.",
-                  diag.maxAbsAlpha2Queried, lim4.alpha2_absolute[1UL], diag.maxAbsAlphaRelQueried);
+                  diag.maxAbsAlphaRelQueried);
+    }
+    if (!ctr_kinematics_pinn::alphaFeasible(q[2UL], q[3UL], lim4, 1.0E-9))
+    {
+      RCLCPP_WARN(this->get_logger(),
+                  "IK returned an alpha pair outside the trained/travel box: alpha1 = %.4f, alpha2 = %.4f "
+                  "(alpha2 limit +/-%.4f, |alpha1 - alpha2| limit pi). setGoalState() will reject this.",
+                  q[2UL], q[3UL], lim4.alpha2_absolute[1UL]);
     }
 
     // posCTRL is best-effort: it returns its closest-seen configuration without
@@ -550,18 +566,30 @@ public:
   }
 
   // Service callback to triget tasks, enable, and control mode section
-  bool plan(const blaze::StaticVector<double, 4UL> &q_initial, const blaze::StaticVector<double, 4UL> &q_final, const blaze::StaticVector<double, 3UL> &force,
+  bool plan(const blaze::StaticVector<double, 3UL> &target,
+            const blaze::StaticVector<double, 4UL> &q_initial, const blaze::StaticVector<double, 4UL> &q_final, const blaze::StaticVector<double, 3UL> &force,
             double &planSeconds)
   {
     bool planning_status = false;
 
     // setting the initial state: initial configuration of the robot
     m_motionPlan.setStartState(q_initial);
+
+    // The goal the planner PLANS TOWARD is the 2πk representative nearest the
+    // start, which setGoalState() selects internally. Capture the same value
+    // here: m_q_goal_last used to be set from the raw posCTRL output on the
+    // principal branch, so once the representative shift fired, the robot was
+    // physically executing a goal 2π away from the one stored. planDeployment()
+    // compares the live alphas against it with a RAW difference and a 0.05 rad
+    // tolerance, saw ~6.283 rad and aborted -- every mid-deployment replan was
+    // rejected for the rest of the deployment, silently disabling force-drift
+    // correction. Requires the start state to be set first.
+    const auto q_goal_planned = m_motionPlan.selectGoalRepresentative(q_final);
     m_motionPlan.setGoalState(q_final);
 
     RCLCPP_INFO(this->get_logger(), "Start state: [%.4f, %.4f, %.4f, %.4f], Goal state: [%.4f, %.4f, %.4f, %.4f]",
                 q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL],
-                q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]);
+                q_goal_planned[0UL], q_goal_planned[1UL], q_goal_planned[2UL], q_goal_planned[3UL]);
 
     // setting up the planning problem and its definitions
     const double runTime = m_solve_time; // Planning time in seconds
@@ -591,8 +619,9 @@ public:
       RCLCPP_INFO(this->get_logger(), "Finished planning - saved plan in: %s", plannedPathFile.c_str());
 
       m_has_active_plan = true;
-      m_q_goal_last = q_final;
+      m_q_goal_last = q_goal_planned;
       m_force_at_plan = force;
+      checkPlanEndpoint(target, force);
       publishTaskSpacePath(); // FK below uses m_force_at_plan — keep after the update
     }
 
@@ -629,8 +658,58 @@ public:
        << (goal_repr[2UL] - q_initial[2UL]) << ',' << (goal_repr[3UL] - q_initial[3UL]) << ','
        << (std::fabs(q_final[3UL]) > M_PI ? 1 : 0) << ','
        << plan_seconds << ',' << (plan_success ? 1 : 0) << ','
-       << '"' << message << '"';
+       << '"' << message << '"' << ','
+       << m_plan_endpoint_err << ',' << m_plan_endpoint_tip[0UL] << ','
+       << m_plan_endpoint_tip[1UL] << ',' << m_plan_endpoint_tip[2UL];
     m_diag.append(os.str());
+  }
+
+  /// The end-to-end check nothing else in the pipeline performs.
+  ///
+  /// Every existing gate is about the GOAL CONFIGURATION: the IK residual is
+  /// measured at q_final, setGoalState() validates only box bounds and tube
+  /// ordering, and OMPL's own goal threshold is a mixed metres/radians
+  /// Euclidean over joint space. Nothing ever asks whether the tip of the path
+  /// that was actually written lands on the requested target. When a plan
+  /// executes and the tip ends up somewhere else, this is the number that says
+  /// whether the plan was wrong or the execution was.
+  ///
+  /// Reads the CSV back rather than the in-memory path on purpose: the file is
+  /// what the manager will execute.
+  void checkPlanEndpoint(const blaze::StaticVector<double, 3UL> &target,
+                         const blaze::StaticVector<double, 3UL> &force)
+  {
+    std::vector<blaze::StaticVector<double, kControlInputs>> q_list;
+    read_path_from_csv(q_list, "plannedPath.csv");
+    if (q_list.empty())
+    {
+      RCLCPP_ERROR(get_logger(), "Plan endpoint check: plannedPath.csv is empty or unreadable");
+      return;
+    }
+
+    const auto &q_end = q_list.back();
+    m_ctr_pinn.getPosDistal(q_end, force, m_plan_endpoint_tip);
+    m_plan_endpoint_err = blaze::norm(target - m_plan_endpoint_tip);
+
+    RCLCPP_INFO(get_logger(),
+                "Plan endpoint: q = [%.4f, %.4f, %.4f, %.4f], FK tip = [%.4f, %.4f, %.4f], "
+                "target = [%.4f, %.4f, %.4f], |FK(endpoint) - target| = %.3f mm",
+                q_end[0UL], q_end[1UL], q_end[2UL], q_end[3UL],
+                m_plan_endpoint_tip[0UL], m_plan_endpoint_tip[1UL], m_plan_endpoint_tip[2UL],
+                target[0UL], target[1UL], target[2UL], m_plan_endpoint_err * 1.00E3);
+
+    // The path is supposed to terminate exactly at the IK goal, so this should
+    // equal the IK residual. A larger value means the written path does not end
+    // where the plan was solved for -- a Phase 1/Phase 2 stitching gap, an
+    // approximate OMPL solution accepted as exact, or a truncated export.
+    if (m_plan_endpoint_err > k_endpoint_warn_m)
+    {
+      RCLCPP_WARN(get_logger(),
+                  "Plan endpoint is %.3f mm from the target (warn above %.3f mm). The manager's "
+                  "acceptance gate only sees the IK residual, so this discrepancy would otherwise "
+                  "be invisible: the written path does not end where IK solved.",
+                  m_plan_endpoint_err * 1.00E3, k_endpoint_warn_m * 1.00E3);
+    }
   }
 
   /// Load generated path in joint space, run it through FK to generate task-space path, and publish.
@@ -889,7 +968,12 @@ private:
   // Context of the last successfully exported plan; "replanDeployment" resumes from it.
   // Only mutated on the service thread (mutually exclusive group) — no locking needed.
   bool m_has_active_plan = false;
-  blaze::StaticVector<double, 4UL> m_q_goal_last;   // joint goal of the active plan
+  blaze::StaticVector<double, 4UL> m_q_goal_last;   // joint goal of the active plan, as PLANNED
+                                                    // (the 2πk representative, not the raw IK output)
+  // Endpoint check, written by checkPlanEndpoint() and read by the diag row.
+  static constexpr double k_endpoint_warn_m = 3.00E-3; // the manager's acceptance gate
+  blaze::StaticVector<double, 3UL> m_plan_endpoint_tip = blaze::StaticVector<double, 3UL>(std::numeric_limits<double>::quiet_NaN());
+  double m_plan_endpoint_err = std::numeric_limits<double>::quiet_NaN();
   blaze::StaticVector<double, 3UL> m_target_last;   // task-space target of the active plan
   blaze::StaticVector<double, 3UL> m_force_at_plan; // force the active plan was computed with
 };

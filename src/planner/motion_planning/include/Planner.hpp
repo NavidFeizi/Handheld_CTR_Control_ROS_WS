@@ -302,6 +302,20 @@ public:
 	const std::string &lastDeploymentScheduleName() const { return m_lastScheduleName; }
 	double lastDeploymentCost() const { return m_lastScheduleCost; }
 
+	// Shift a goal's α pair by a joint 2πk onto the representative nearest the
+	// CURRENT start state (4-DoF only; other layouts pass through unchanged).
+	// posCTRL returns its solution on the principal branch (α₂ ∈ [-π, π)); when
+	// the robot sits near the far end of its rotary travel the equivalent
+	// representative one turn over -- the same tube shape -- can be up to 2π
+	// closer in real motor travel. Requires a start state to already be set;
+	// with none, the goal passes through unchanged.
+	//
+	// PUBLIC because setGoalState() applies it internally, so this is the only
+	// way a caller can learn which goal was actually planned toward. Storing the
+	// raw IK output instead is what made every mid-deployment replan abort with
+	// a spurious ~2π alpha error (see planner_node's plan()).
+	JointVector selectGoalRepresentative(const JointVector &q_f) const;
+
 	bool replan(double runTime);
 	ompl::base::PlannerStatus getPlannerStatus() const { return m_solved; }
 	void writeSolutionToFile(const std::string &outputFile);
@@ -347,15 +361,6 @@ private:
 	// "Start State is invalid!" cannot tell which term failed, and the β₁ bounds have
 	// silently regressed once already (see ctr_kinematics_pinn/dataset_bounds.hpp).
 	std::string describeRejectedState(const char *label, const JointVector &q) const;
-
-	// Shift a goal's α pair by a joint 2πk onto the representative nearest the
-	// CURRENT start state (4-DoF only; other layouts pass through unchanged).
-	// posCTRL returns its solution on the principal branch (α₂ ∈ [-π, π)); when
-	// the robot sits near the far end of its rotary travel the equivalent
-	// representative one turn over -- the same tube shape -- can be up to 2π
-	// closer in real motor travel. Requires a start state to already be set;
-	// with none, the goal passes through unchanged.
-	JointVector selectGoalRepresentative(const JointVector &q_f) const;
 
 	// The START state is MEASURED, not sampled: it comes from live encoder feedback. The
 	// dataset's prismatic range and the stage's mechanical travel are the same interval
@@ -657,7 +662,7 @@ typename Planner<controlInputs>::JointVector Planner<controlInputs>::selectGoalR
 			{st->values[0UL], st->values[1UL], st->values[2UL], st->values[3UL]},
 			m_CTR_model.getJointLimits4());
 
-		if (rep[2UL] != q_f[2UL])
+		if (std::fabs(rep[2UL] - q_f[2UL]) > 1.0e-9)
 		{
 			std::cout << std::fixed << std::setprecision(4)
 			          << "[Planner] goal alpha shifted to the representative nearest the start: ["
@@ -1369,9 +1374,11 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 	this->plan(runTime * 0.5, plannerType, phase1Objective);
 
 	ompl::geometric::PathGeometric phase1path(this->m_si);
+	bool phase1Approximate = false;
 	if (this->m_solved == ompl::base::PlannerStatus::EXACT_SOLUTION ||
 	    this->m_solved == ompl::base::PlannerStatus::APPROXIMATE_SOLUTION)
 	{
+		phase1Approximate = (this->m_solved == ompl::base::PlannerStatus::APPROXIMATE_SOLUTION);
 		auto rawPath = std::static_pointer_cast<ompl::geometric::PathGeometric>(
 		    this->m_pdef->getSolutionPath());
 		if (rawPath)
@@ -1476,6 +1483,24 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 		this->m_pdef->clearSolutionPaths();
 		this->m_pdef->addSolutionPath(
 		    std::make_shared<ompl::geometric::PathGeometric>(phase1path));
+		// The combined status is forced to EXACT. That is safe only while Phase 1
+		// is EXACT: an approximate Phase 1 path does not end at q_wp, so Phase 2
+		// (which starts from q_wp) is appended across a joint-space gap that no
+		// validity or motion check ever sees, and the result is exported as a
+		// finished plan. RRTConnect returns EXACT or TIMEOUT and never
+		// APPROXIMATE, so this is dormant in production -- but BITstar is
+		// explicitly configured with find_approximate_solutions = true, and every
+		// other optimizing planner can return one. Make it loud rather than
+		// silently changing acceptance behaviour that has never been validated on
+		// hardware.
+		if (phase1Approximate)
+		{
+			std::cerr << "[planTwoPhase] WARNING: Phase 1 returned an APPROXIMATE solution. Its last "
+			          << "state is not the rotation waypoint Phase 2 starts from, so the concatenated "
+			          << "path contains an unchecked joint-space discontinuity -- and it is about to be "
+			          << "reported as an EXACT solution and written out. Do not trust this plan."
+			          << std::endl;
+		}
 		this->m_solved = ompl::base::PlannerStatus::EXACT_SOLUTION;
 		std::cout << "[planTwoPhase] Combined path: "
 		          << phase1path.getStateCount() << " states." << std::endl;

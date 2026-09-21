@@ -151,7 +151,7 @@ public:
         }
     };
 
-    CTRobot(bool position_limit, blaze::StaticVector<double, 4UL> maxVel, blaze::StaticVector<double, 4UL> maxAcc);
+    CTRobot(blaze::StaticVector<double, 4UL> maxVel, blaze::StaticVector<double, 4UL> maxAcc);
     CTRobot();
 
     // not copyable: owns threads and the CANopen master lifetime
@@ -203,6 +203,8 @@ public:
     blaze::StaticVector<bool, 4> getReachedStatus() const;
     void setPosLimit(const blaze::StaticVector<double, 4> &min, const blaze::StaticVector<double, 4> &max) const;
 
+    std::shared_ptr<spdlog::logger> logger() const override { return m_logger; }
+
     void getTemperature(blaze::StaticVector<int32_t, 4> &cpu, blaze::StaticVector<int32_t, 4> &driver) const;
     void getDigitalIn(blaze::StaticVector<std::bitset<32>, 4> &in) const;
 
@@ -232,9 +234,6 @@ protected:
 private:
     void startCANopenNodes();
     void monitorLoop();
-    void convPosToRobotFrame(const blaze::StaticVector<double, 4UL> &posCurrent,
-                             blaze::StaticVector<double, 4UL> &posInCTRFrame) const;
-    int checkPosLimits(const blaze::StaticVector<double, 4UL> &posTarget) const;
     void initLogger();
 
     std::shared_ptr<Interface> m_input = std::make_shared<Interface>();
@@ -264,12 +263,6 @@ private:
 
     blaze::StaticVector<double, 4UL> m_maxAcc; 
     blaze::StaticVector<double, 4UL> m_maxVel;
-    blaze::StaticVector<double, 4UL> m_lowerBounds;
-    blaze::StaticVector<double, 4UL> m_upperBounds;
-    blaze::StaticVector<double, 4UL> m_posOffsets;
-    double m_minClearance;
-    double m_maxClearance;
-    bool m_flagPositionLimit;
 
     // std::ofstream logFile;
 

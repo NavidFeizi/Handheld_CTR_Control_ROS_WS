@@ -3,6 +3,7 @@
 #include "manager/csv_path_io.hpp"
 
 #include "ctr_common/csv_io.hpp"
+#include "ctr_kinematics_pinn/dataset_bounds.hpp"
 
 #include <sstream>
 
@@ -142,6 +143,170 @@ TEST(AdjustStepSize, DownsamplesOnRevolute)
   ASSERT_GT(out.size(), 2u);
   for (size_t i = 1; i + 1 < out.size(); ++i)
     EXPECT_GE(std::abs(out[i][4] - out[i - 1][4]), 0.10 - 1e-12);
+}
+
+// ---------------------------------------------------------------------------
+// buildHomeLeg -- the leg that turns "retract" into "retract to home".
+// ---------------------------------------------------------------------------
+
+namespace
+{
+// The manager's own view of the feasible set: alpha box from the dataset
+// defaults, beta box reconstructed from the hardware geometry. Mirrors
+// MasterNode::k_joint_limits.
+const ctr_kinematics_pinn::JointLimits4 kLimits{
+    {ctr_common::kHomePose[3], ctr_common::kPreEngagePose[3]},
+    {-ctr_common::kLinearStageMaxClearance, -ctr_common::kLinearStageMinClearance}};
+
+constexpr double kStep = 2e-3;
+
+// physics order [β1, β2, β3, α1, α2, α3]
+blaze::StaticVector<double, 6> q6(double b1, double b2, double a1, double a2)
+{
+  return {b1, b2, 0.0, a1, a2, 0.0};
+}
+}  // namespace
+
+TEST(BuildHomeLeg, EndsExactlyAtCommandedHome)
+{
+  const auto home = ctr_common::homePoseCommanded();
+  const auto leg = manager_csv::buildHomeLeg(q6(-0.0900, -0.0500, 0.8, 0.4), kStep);
+  ASSERT_FALSE(leg.empty());
+  EXPECT_DOUBLE_EQ(leg.back()[0], home[1]);  // β1
+  EXPECT_DOUBLE_EQ(leg.back()[1], home[3]);  // β2
+  EXPECT_DOUBLE_EQ(leg.back()[3], home[0]);  // α1
+  EXPECT_DOUBLE_EQ(leg.back()[4], home[2]);  // α2
+}
+
+TEST(BuildHomeLeg, EmptyWhenAlreadyHome)
+{
+  const auto home = ctr_common::homePoseCommanded();
+  const auto leg = manager_csv::buildHomeLeg(q6(home[1], home[3], home[0], home[2]), kStep);
+  EXPECT_TRUE(leg.empty());
+}
+
+// The ordering guarantee: tubes are withdrawn BEFORE they are unwound. If the
+// two sub-legs were interpolated together, the tubes would rotate while still
+// inside the anatomy -- the thing the follow-the-leader plan exists to avoid.
+TEST(BuildHomeLeg, RetractsBeforeUnwinding)
+{
+  const auto home = ctr_common::homePoseCommanded();
+  const double a1 = 0.8, a2 = 0.4;
+  const auto leg = manager_csv::buildHomeLeg(q6(-0.0900, -0.0500, a1, a2), kStep);
+  ASSERT_FALSE(leg.empty());
+
+  bool beta_home_reached = false;
+  for (const auto &q : leg)
+  {
+    if (!beta_home_reached)
+    {
+      // Still retracting: alphas must not have moved yet.
+      EXPECT_DOUBLE_EQ(q[3], a1);
+      EXPECT_DOUBLE_EQ(q[4], a2);
+      if (std::abs(q[0] - home[1]) < 1e-12 && std::abs(q[1] - home[3]) < 1e-12)
+        beta_home_reached = true;
+    }
+    else
+    {
+      // Unwinding: betas are pinned at home.
+      EXPECT_DOUBLE_EQ(q[0], home[1]);
+      EXPECT_DOUBLE_EQ(q[1], home[3]);
+    }
+  }
+  EXPECT_TRUE(beta_home_reached) << "the beta sub-leg never reached home";
+}
+
+TEST(BuildHomeLeg, EveryWaypointIsFeasible)
+{
+  const blaze::StaticVector<double, 6> starts[] = {
+      q6(-0.0900, -0.0500, 0.8, 0.4),
+      q6(ctr_common::kPreEngagePose[1], ctr_common::kPreEngagePose[3], -2.0, -1.4),
+      q6(-0.1200, -0.0600, 0.0, 0.0),
+      q6(-0.1490, -0.0680, 3.0, 2.2),
+  };
+  for (const auto &start : starts)
+  {
+    const auto leg = manager_csv::buildHomeLeg(start, kStep);
+    for (const auto &q : leg)
+    {
+      EXPECT_TRUE(ctr_kinematics_pinn::isFeasible4({q[0], q[1], q[3], q[4]}, kLimits, 1e-9))
+          << "b1=" << q[0] << " b2=" << q[1] << " a1=" << q[3] << " a2=" << q[4];
+    }
+  }
+}
+
+// The invariant the whole sequenced design exists for: the drive checks beta1
+// against the LIVE beta2, i.e. the PREVIOUS waypoint's value, and beta2 against
+// the previous beta1. Every step of the home leg must satisfy BOTH lagged
+// bounds, not just the coupling at its own waypoint.
+TEST(BuildHomeLeg, EveryStepIsLegalAgainstTheLaggingLiveCompanion)
+{
+  const blaze::StaticVector<double, 6> starts[] = {
+      q6(-0.0900, -0.0500, 0.8, 0.4),
+      q6(ctr_common::kPreEngagePose[1], ctr_common::kPreEngagePose[3], -2.0, -1.4),
+      q6(-0.1200, -0.0600, 0.0, 0.0),
+      q6(-0.1490, -0.0680, 3.0, 2.2),
+      q6(-0.1400, -0.0560, -1.0, -0.5),
+  };
+
+  // Same tolerance rationale as isFeasible4's: the last start below sits
+  // EXACTLY on the coupling floor, where the two sides of the comparison differ
+  // by one ULP. This is about floating point, not about margin -- the guard
+  // gives the generated waypoints a full millimetre.
+  constexpr double kTol = 1e-9;
+
+  for (const auto &start : starts)
+  {
+    blaze::StaticVector<double, 6> prev = start;
+    for (const auto &q : manager_csv::buildHomeLeg(start, kStep))
+    {
+      // beta1 >= beta2_live - maxClearance
+      EXPECT_GE(q[0], prev[1] - ctr_common::kLinearStageMaxClearance - kTol)
+          << "beta1 " << q[0] << " vs live beta2 " << prev[1];
+      // beta1 <= beta2_live - minClearance
+      EXPECT_LE(q[0], prev[1] - ctr_common::kLinearStageMinClearance + kTol)
+          << "beta1 " << q[0] << " vs live beta2 " << prev[1];
+      // beta2 >= beta1_live + minClearance, beta2 <= beta1_live + maxClearance
+      EXPECT_GE(q[1], prev[0] + ctr_common::kLinearStageMinClearance - kTol)
+          << "beta2 " << q[1] << " vs live beta1 " << prev[0];
+      EXPECT_LE(q[1], prev[0] + ctr_common::kLinearStageMaxClearance + kTol)
+          << "beta2 " << q[1] << " vs live beta1 " << prev[0];
+      prev = q;
+    }
+  }
+}
+
+// One carriage at a time is what makes the lagged bounds satisfiable at all.
+TEST(BuildHomeLeg, BetaCarriagesNeverMoveTogether)
+{
+  const auto start = q6(-0.0900, -0.0500, 0.8, 0.4);
+  blaze::StaticVector<double, 6> prev = start;
+  for (const auto &q : manager_csv::buildHomeLeg(start, kStep))
+  {
+    const bool b1_moved = std::abs(q[0] - prev[0]) > 1e-12;
+    const bool b2_moved = std::abs(q[1] - prev[1]) > 1e-12;
+    EXPECT_FALSE(b1_moved && b2_moved)
+        << "both carriages moved in one step: db1=" << (q[0] - prev[0])
+        << " db2=" << (q[1] - prev[1]);
+    prev = q;
+  }
+}
+
+TEST(BuildHomeLeg, NoStepExceedsTheInsertionStep)
+{
+  const auto start = q6(ctr_common::kPreEngagePose[1], ctr_common::kPreEngagePose[3], 2.5, 1.9);
+  const auto leg = manager_csv::buildHomeLeg(start, kStep);
+  ASSERT_FALSE(leg.empty());
+
+  blaze::StaticVector<double, 6> prev = start;
+  for (const auto &q : leg)
+  {
+    EXPECT_LE(std::abs(q[0] - prev[0]), kStep + 1e-12);
+    EXPECT_LE(std::abs(q[1] - prev[1]), kStep + 1e-12);
+    EXPECT_LE(std::abs(q[3] - prev[3]), manager_csv::kAlphaStepDefault + 1e-12);
+    EXPECT_LE(std::abs(q[4] - prev[4]), manager_csv::kAlphaStepDefault + 1e-12);
+    prev = q;
+  }
 }
 
 int main(int argc, char **argv)

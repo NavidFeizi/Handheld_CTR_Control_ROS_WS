@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "ctr_kinematics_pinn/dataset_bounds.hpp"
+#include "ctr_common/home_pose.hpp"
 
 #include <algorithm>
 #include <array>
@@ -119,6 +120,37 @@ TEST(FeasibleSet, Beta1WindowEncodesClearanceAndProtrusionTogether)
   EXPECT_NEAR(kBeta1Relative[1], -kStageClearance, 1e-12);
   // Lower edge IS tube protrusion: beta1 + L1 >= beta2 + L2.
   EXPECT_NEAR(kBeta1Relative[0], kL2 - kL1, 1e-12);
+}
+
+// The cross-package identity. ctr_common/home_pose.hpp is now the single
+// definition of the two homing poses (robot's static limits and the manager's
+// retract-to-home leg both read it); the dataset's boxes are derived from the
+// same physical geometry. If the two ever drift apart, plans become valid in
+// one package and rejected in another -- which is the failure mode that made
+// every setStartState() throw at the retracted pose before 69adddc.
+TEST(DatasetBounds, CtrCommonHomePoseMatchesTheDatasetCorners)
+{
+  const auto beta1 = ctr_kinematics_pinn::absoluteBeta1Range(kBeta1Relative, kBeta2Absolute);
+
+  // Wire order [α1, β1, α2, β2].
+  EXPECT_NEAR(ctr_common::kHomePose[1], beta1[0], 1e-12);
+  EXPECT_NEAR(ctr_common::kHomePose[3], kBeta2Absolute[0], 1e-12);
+  EXPECT_NEAR(ctr_common::kPreEngagePose[1], beta1[1], 1e-12);
+  EXPECT_NEAR(ctr_common::kPreEngagePose[3], kBeta2Absolute[1], 1e-12);
+
+  // ...and so does the clearance window the manager rebuilds the box from.
+  EXPECT_NEAR(-ctr_common::kLinearStageMaxClearance, kBeta1Relative[0], 1e-12);
+  EXPECT_NEAR(-ctr_common::kLinearStageMinClearance, kBeta1Relative[1], 1e-12);
+}
+
+// The commanded home (home + margin) must be STRICTLY feasible at zero
+// tolerance: it is what goHome() and the manager's home leg actually send, and
+// a pose on the bound is one encoder count from rejection.
+TEST(FeasibleSet, CommandedHomePoseIsStrictlyFeasible)
+{
+  const auto lim = shippedLimits();
+  const auto cmd = ctr_common::homePoseCommanded();
+  EXPECT_TRUE(ctr_kinematics_pinn::isFeasible4({cmd[1], cmd[3], cmd[0], cmd[2]}, lim, 0.0));
 }
 
 // Both poses the hardware actually homes to sit exactly on the feasible set's

@@ -111,6 +111,8 @@ if(BUILD_TESTING)
   get_target_property(_pinn_include_dirs ctr_kinematics_pinn::ctr_kinematics_pinn
                       INTERFACE_INCLUDE_DIRECTORIES)
   target_include_directories(test_dataset_bounds PRIVATE ${_pinn_include_dirs})
+  # ctr_common is header-only for home_pose.hpp; link it for the include path.
+  target_link_libraries(test_dataset_bounds ctr_common::ctr_common)
 endif()
 
 ament_package()
