@@ -63,19 +63,18 @@ CTR_StateSampler<controlInputs>::CTR_StateSampler(const ompl::base::StateSpace *
 {
     m_Clr = this->m_ctr.getStageThickness();
 
-    // Use getInputPosBounds() which properly handles the 4-DoF layout:
-    //   lb/ub[0] = beta1,  lb/ub[1] = beta2,
-    //   lb/ub[2] = alpha1, lb/ub[3] = alpha2
-    const auto [lb, ub] = this->m_ctr.getInputPosBounds();
+    // Absolute joint ranges of the training domain
+    const auto pr = this->m_ctr.getPrismaticJointRanges();
+    const auto rr = this->m_ctr.getRevoluteJointRanges();
 
-    m_beta1_Min = lb[0UL];
-    m_beta2_Min = lb[1UL];
+    m_beta1_Min = pr[0UL];
+    m_beta2_Min = pr[2UL];
 
-    m_alpha1_Min = lb[2UL];
-    m_alpha1_max = ub[2UL];
+    m_alpha1_Min = rr[0UL];
+    m_alpha1_max = rr[1UL];
 
-    m_alpha2_Min = lb[3UL];
-    m_alpha2_max = ub[3UL];
+    m_alpha2_Min = rr[2UL];
+    m_alpha2_max = rr[3UL];
 }
 
 template <size_t controlInputs>

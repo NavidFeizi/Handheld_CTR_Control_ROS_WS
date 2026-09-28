@@ -1284,7 +1284,7 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     const blaze::StaticVector<double, 3UL> Ls = this->getStraightLen();
     const double stageThickness               = this->getStageThickness();
 
-    // Absolute prismatic-joint bounds from the training dataset
+    // Dataset joint bounds: index 0 (β₁) is an offset relative to β₂, index 1 (β₂) is absolute
     const auto [lb, ub] = this->getInputPosBounds();
 
     // Prismatic joint limit vectors (controlInputs-sized; revolute slots stay 0)
@@ -1319,11 +1319,11 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             blaze::StaticVector<double, 2UL> beta{tau[0UL], tau[1UL]};
             blaze::StaticVector<double, 2UL> bMin, bMax;
 
-            bMin[0UL] = std::max({lb[0UL], L[1UL] + beta[1UL] - L[0UL], L[2UL] - L[0UL]});
+            bMin[0UL] = std::max({beta[1UL] + lb[0UL], L[1UL] + beta[1UL] - L[0UL], L[2UL] - L[0UL]});
             bMin[1UL] = std::max({lb[1UL], beta[0UL] + stageThickness, L[2UL] - L[1UL]});
 
-            bMax[0UL] = std::min(ub[0UL], beta[1UL] - stageThickness);            
-            bMax[1UL] = std::min( -stageThickness, L[0UL] + beta[0UL] - L[1UL]); // β₃ = 0 ⟹ upper = 0 - stageThickness
+            bMax[0UL] = std::min(beta[1UL] + ub[0UL], beta[1UL] - stageThickness);
+            bMax[1UL] = std::min({ub[1UL], -stageThickness, L[0UL] + beta[0UL] - L[1UL]}); // β₃ = 0 ⟹ clearance bound 0 - stageThickness
 
             betaMin[0UL] = bMin[0UL]; betaMin[1UL] = bMin[1UL];
             betaMax[0UL] = bMax[0UL]; betaMax[1UL] = bMax[1UL];

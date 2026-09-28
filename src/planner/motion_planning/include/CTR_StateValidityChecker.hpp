@@ -35,7 +35,8 @@ public:
 
 private:
     double m_Clr;                    // minimum clearance between adjacent linear actuators
-    double m_beta1_min, m_beta1_max; // joint limits for Tube 1 prismatic
+    double m_beta1_min, m_beta1_max; // absolute joint limits for Tube 1 prismatic
+    double m_beta1_rel_min;          // dataset lower bound of β₁ − β₂
     double m_beta2_min, m_beta2_max; // joint limits for Tube 2 prismatic
     double m_beta1_goal, m_beta2_goal;
 };
@@ -46,13 +47,14 @@ template<size_t controlInputs>
 CTR_StateValidityChecker<controlInputs>::CTR_StateValidityChecker(const ompl::base::SpaceInformationPtr &si, PINNs<controlInputs>& _ctr)
     : ompl::base::StateValidityChecker(si)
 {
-    // Use getInputPosBounds() which correctly handles the 4-DoF layout
-    // [beta1, beta2, alpha1, alpha2]
-    const auto [lb, ub] = _ctr.getInputPosBounds();
-    m_beta1_min = lb[0UL];
-    m_beta1_max = ub[0UL];
-    m_beta2_min = lb[1UL];
-    m_beta2_max = ub[1UL];
+    // Absolute prismatic ranges of the training domain [β₁min, β₁max, β₂min, β₂max]
+    const auto pr = _ctr.getPrismaticJointRanges();
+    m_beta1_min = pr[0UL];
+    m_beta1_max = pr[1UL];
+    m_beta2_min = pr[2UL];
+    m_beta2_max = pr[3UL];
+    // getInputPosBounds() stores β₁ as an offset relative to β₂
+    m_beta1_rel_min = std::get<0>(_ctr.getInputPosBounds())[0UL];
     m_Clr = _ctr.getStageThickness();
 
     // Initialise goal betas to the global joint maxima so that samplers
@@ -74,8 +76,8 @@ bool CTR_StateValidityChecker<controlInputs>::isValid(const ompl::base::State *s
     const double alpha1 = candidate_State->values[2UL];
     const double alpha2 = candidate_State->values[3UL];
 
-    // β₁ ordering: β₁_min ≤ β₁ ≤ min(β₁_max, β₂ − clr)
-    const bool conditionTb1 = (beta_1 >= m_beta1_min) &&
+    // β₁ ordering: max(β₁_min, β₂ + rel_min) ≤ β₁ ≤ min(β₁_max, β₂ − clr)
+    const bool conditionTb1 = (beta_1 >= std::max(m_beta1_min, beta_2 + m_beta1_rel_min)) &&
                                (beta_1 <= std::min(m_beta1_max, beta_2 - m_Clr));
 
     // β₂ ordering: max(β₁ + clr, β₂_min) ≤ β₂ ≤ β₂_max

@@ -245,8 +245,8 @@ public:
 		OBJECTIVE_WEIGHTED_COMBO,
 		OBJECTIVE_BACKBONE_LENGTH,
 		OBJECTIVE_REVJOINTS_ONLY,  // pure revolute-error objective; used in Phase 1 of planTwoPhase()
-		OBJECTIVE_FOLLOW_THE_LEADER,   // swept-volume (FTL) edge cost only, evaluated on the loaded robot
-		OBJECTIVE_REVJOINTS_AND_FTL    // revolute error + FTL swept volume; force-aware Phase 1 objective
+		OBJECTIVE_FOLLOW_THE_LEADER,   // lateral swept-area (FTL) edge cost only, evaluated on the loaded robot
+		OBJECTIVE_REVJOINTS_AND_FTL    // revolute error + FTL lateral swept area; force-aware Phase 1 objective
 	};
 
 	explicit Planner(PINNs<controlInputs> &CTR_model);
@@ -375,24 +375,23 @@ Planner<controlInputs>::Planner(PINNs<controlInputs> &CTR_model)
 
 	m_coordBound = std::make_shared<ompl::base::RealVectorBounds>(controlInputs);
 
-	// Use getInputPosBounds() which properly handles the 4-DoF layout:
-	//   lb/ub[0] = beta1, lb/ub[1] = beta2, lb/ub[2] = alpha1, lb/ub[3] = alpha2
-	// Do NOT use getPrismaticJointRanges() / getRevoluteJointRanges() —
-	// both are broken for controlInputs=4 (hardcoded 6-element initializer lists).
-	const auto [lb, ub] = CTR_model.getInputPosBounds();
+	// Absolute joint ranges of the training domain. getInputPosBounds() is NOT
+	// usable here: its β₁ entry is an offset relative to β₂.
+	const auto pr = CTR_model.getPrismaticJointRanges();
+	const auto rr = CTR_model.getRevoluteJointRanges();
 
 	// beta_1
-	m_coordBound->setLow(0, lb[0UL]);
-	m_coordBound->setHigh(0, ub[0UL]);
+	m_coordBound->setLow(0, pr[0UL]);
+	m_coordBound->setHigh(0, pr[1UL]);
 	// beta_2
-	m_coordBound->setLow(1, lb[1UL]);
-	m_coordBound->setHigh(1, ub[1UL]);
+	m_coordBound->setLow(1, pr[2UL]);
+	m_coordBound->setHigh(1, pr[3UL]);
 	// alpha_1
-	m_coordBound->setLow(2, lb[2UL]);
-	m_coordBound->setHigh(2, ub[2UL]);
+	m_coordBound->setLow(2, rr[0UL]);
+	m_coordBound->setHigh(2, rr[1UL]);
 	// alpha_2
-	m_coordBound->setLow(3, lb[3UL]);
-	m_coordBound->setHigh(3, ub[3UL]);
+	m_coordBound->setLow(3, rr[2UL]);
+	m_coordBound->setHigh(3, rr[3UL]);
 
 	// setting the space bounds for the linear (prismatic) CTR joints
 	m_space->as<ompl::base::RealVectorStateSpace>()->setBounds(*m_coordBound);
@@ -430,7 +429,7 @@ Planner<controlInputs>::Planner(PINNs<controlInputs> &CTR_model)
 	// create an instance of a planning problem
 	this->m_pdef = std::make_shared<ompl::base::ProblemDefinition>(this->m_si);
 
-	// Follow-the-leader swept-volume objective. Created once and shared by all
+	// Follow-the-leader lateral swept-area objective. Created once and shared by all
 	// planning objectives so the external force is registered in one place.
 	this->m_ftlObjective = std::make_shared<CTR_FollowTheLeaderObjective<controlInputs>>(this->m_si, m_CTR_model, m_externalForce);
 
@@ -1202,12 +1201,12 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 	// retracted), and an unclamped window [β_start − w, β_start + w] would make
 	// almost every prismatic sample invalid, starving the Phase 1 tree and
 	// making RRTConnect time out.
-	const auto [lb_ds, ub_ds] = m_CTR_model.getInputPosBounds();
+	const auto pr_ds = m_CTR_model.getPrismaticJointRanges();
 	const double betaWindow = 3.0 * (3.0e-4 * m_space->getMaximumExtent()); // 3× defaultRange
 	for (size_t i = 0; i < 2; ++i)
 	{
-		m_coordBound->setLow(i,  std::max(sst->values[i] - betaWindow, lb_ds[i]));
-		m_coordBound->setHigh(i, std::min(sst->values[i] + betaWindow, ub_ds[i]));
+		m_coordBound->setLow(i,  std::max(sst->values[i] - betaWindow, pr_ds[2 * i]));
+		m_coordBound->setHigh(i, std::min(sst->values[i] + betaWindow, pr_ds[2 * i + 1]));
 	}
 	m_space->as<ompl::base::RealVectorStateSpace>()->setBounds(*m_coordBound);
 
@@ -1215,7 +1214,7 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 
 	// Feasibility planners (RRTConnect & co.) ignore objectives, so keep the
 	// cheap pure-revolute objective there. Optimizing planners get the
-	// force-aware composite: revolute error + FTL swept volume, so the
+	// force-aware composite: revolute error + FTL lateral swept area, so the
 	// rotation path itself minimizes backbone sweep under f_ext.
 	const bool phase1Feasibility =
 		plannerType == optimalPlanner::PLANNER_RRT         ||
@@ -1245,11 +1244,11 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 		std::cerr << "[planTwoPhase] Phase 1 failed to find a solution. "
 		          << "Falling back to single-phase planning (warm-starting from Phase 1 tree).\n";
 		// Restore full prismatic bounds so the combined objective can explore the whole space.
-		const auto [lb_pr, ub_pr] = m_CTR_model.getInputPosBounds();
+		const auto pr = m_CTR_model.getPrismaticJointRanges();
 		for (size_t i = 0; i < 2; ++i)
 		{
-			m_coordBound->setLow(i,  lb_pr[i]);
-			m_coordBound->setHigh(i, ub_pr[i]);
+			m_coordBound->setLow(i,  pr[2 * i]);
+			m_coordBound->setHigh(i, pr[2 * i + 1]);
 		}
 		m_space->as<ompl::base::RealVectorStateSpace>()->setBounds(*m_coordBound);
 		m_si->setup();
@@ -1277,11 +1276,11 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 
 	// Restore full prismatic bounds (required for path interpolation and for any
 	// subsequent plan() / replan() calls after planTwoPhase() returns).
-	const auto [lb_full, ub_full] = m_CTR_model.getInputPosBounds();
+	const auto pr = m_CTR_model.getPrismaticJointRanges();
 	for (size_t i = 0; i < 2; ++i)
 	{
-		m_coordBound->setLow(i,  lb_full[i]);
-		m_coordBound->setHigh(i, ub_full[i]);
+		m_coordBound->setLow(i,  pr[2 * i]);
+		m_coordBound->setHigh(i, pr[2 * i + 1]);
 	}
 	m_space->as<ompl::base::RealVectorStateSpace>()->setBounds(*m_coordBound);
 
@@ -1292,7 +1291,7 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 
 	// ----- Phase 2 as an optimization over deployment schedules -----
 	// Each candidate is a monotone prismatic profile from the waypoint to the
-	// goal. The winner minimizes the follow-the-leader swept-volume cost
+	// goal. The winner minimizes the follow-the-leader lateral swept-area cost
 	// evaluated by the PINN on the LOADED robot (external tip force f_ext
 	// applied), so tip loads / tissue contact shape the chosen deployment
 	// rather than only the forward simulation.
@@ -1354,15 +1353,12 @@ bool Planner<controlInputs>::planTwoPhase(const double runTime, optimalPlanner p
 			stState->values[i] = sst->values[i];
 	}
 	// Ensure the prismatic bounds are in their original state for any subsequent calls.
+	for (size_t i = 0; i < 2; ++i)
 	{
-		const auto [lb_r, ub_r] = m_CTR_model.getInputPosBounds();
-		for (size_t i = 0; i < 2; ++i)
-		{
-			m_coordBound->setLow(i,  lb_r[i]);
-			m_coordBound->setHigh(i, ub_r[i]);
-		}
-		m_space->as<ompl::base::RealVectorStateSpace>()->setBounds(*m_coordBound);
+		m_coordBound->setLow(i,  pr[2 * i]);
+		m_coordBound->setHigh(i, pr[2 * i + 1]);
 	}
+	m_space->as<ompl::base::RealVectorStateSpace>()->setBounds(*m_coordBound);
 
 	return this->m_solved == ompl::base::PlannerStatus::EXACT_SOLUTION;
 }
@@ -1407,7 +1403,7 @@ bool Planner<controlInputs>::scheduleIsValid(const Waypoints &wps) const
 	return ok;
 }
 
-// FTL swept-volume cost of a schedule, evaluated with f_ext. All
+// FTL lateral swept-area cost of a schedule, evaluated with f_ext. All
 // candidates are compared at the same coarse discretization (~40 segments)
 // so PINN inference stays cheap and the comparison is fair.
 template <size_t controlInputs>
@@ -1821,7 +1817,7 @@ void Planner<controlInputs>::analyzeSolution(bool dumpCSV, const std::string &cs
 		const double orderingStatePenalty = w_os * p * normAngleErr * normAngleErr;
 		const double composite = backbone_coupled + revoluteWeighted + mismatch + orderingStatePenalty;
 
-		// FTL swept-volume of the incoming edge, evaluated on the loaded robot
+		// FTL lateral swept area of the incoming edge, evaluated on the loaded robot
 		// (f_ext applied). Zero for the first state.
 		double ftl_swept = 0.0;
 		if (i > 0 && this->m_ftlObjective)
@@ -2120,9 +2116,9 @@ ompl::base::OptimizationObjectivePtr Planner<controlInputs>::RevoluteJointsAndBa
 				r1->values[2], r1->values[3], m_goalAngles);
 			const double normAngleErr1 = std::clamp(maxErrDeg1 / m_initialMaxAngleErrDeg, 0.0, 1.0);
 
-			// Follow-the-leader swept-volume term: penalizes edges whose backbone
-			// (evaluated on the loaded robot, i.e. with f_ext applied) sweeps a
-			// large volume. This is what makes the optimizer prefer near-FTL
+			// Follow-the-leader lateral swept-area term: penalizes edges whose backbone
+			// (evaluated on the loaded robot, i.e. with f_ext applied) moves normal to
+			// itself. This is what makes the optimizer prefer near-FTL
 			// deployments and makes the external force part of the optimization.
 			const double ftlCost = (m_ftl) ? m_ftl->motionCost(s1, s2).value() : 0.0;
 
@@ -2247,7 +2243,7 @@ ompl::base::OptimizationObjectivePtr Planner<controlInputs>::RevoluteJointsAndBa
 	revoluteJointObj->setPrismaticStartGoal(prismStart, prismGoal);
 
 	// Create and return the composite objective (weighted sum with coupling + rear-loaded mismatch
-	// + gating + force-aware follow-the-leader swept volume)
+	// + gating + force-aware follow-the-leader lateral swept area)
 	auto composite = std::make_shared<CompositeStateCostIntegral>(this->m_si, backboneLengthObj, revoluteJointObj, this->getFollowTheLeaderObjective(), CompositeParams::w_backbone, CompositeParams::w_revolute, goalAngles, prismStart, prismGoal);
 
 	// Provide the same conservative combined cost-to-go heuristic as before
@@ -2517,7 +2513,7 @@ ompl::base::OptimizationObjectivePtr Planner<controlInputs>::getFollowTheLeaderO
 template <size_t controlInputs>
 ompl::base::OptimizationObjectivePtr Planner<controlInputs>::getRevoluteJointsAndFTLObjective(const std::array<double, 2UL> &goal)
 {
-	// Revolute-error state cost + follow-the-leader swept-volume edge cost.
+	// Revolute-error state cost + follow-the-leader lateral swept-area edge cost.
 	// Used in Phase 1 of planTwoPhase() with optimizing planners: rotating the
 	// pre-curved tubes sweeps the backbone laterally, and the magnitude of
 	// that sweep depends on the external tip force, so the FTL term makes the
@@ -2530,7 +2526,7 @@ ompl::base::OptimizationObjectivePtr Planner<controlInputs>::getRevoluteJointsAn
 							 const ompl::base::OptimizationObjectivePtr &ftl)
 			: ompl::base::OptimizationObjective(si), m_revolute(revolute), m_ftl(ftl)
 		{
-			description_ = "revolute error + follow-the-leader swept volume";
+			description_ = "revolute error + follow-the-leader lateral swept area";
 			if (m_revolute && m_revolute->hasCostToGoHeuristic())
 				this->setCostToGoHeuristic([rev = m_revolute](const ompl::base::State *s, const ompl::base::Goal *g) -> ompl::base::Cost
 										   { return rev->costToGo(s, g); });
@@ -2725,7 +2721,7 @@ void Planner<controlInputs>::setCTR_externalForce(const blaze::StaticVector<doub
 {
 	this->m_externalForce = force;
 
-	// Propagate to the FTL objective: its swept-volume costs are evaluated on
+	// Propagate to the FTL objective: its swept-area costs are evaluated on
 	// the loaded robot, so a stale force would silently mis-cost every edge.
 	if (this->m_ftlObjective)
 		this->m_ftlObjective->setExternalForce(force);

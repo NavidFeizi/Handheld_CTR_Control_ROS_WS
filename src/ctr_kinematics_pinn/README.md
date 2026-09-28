@@ -54,7 +54,9 @@ cap of 750 iterations, so it can return without reaching `posTol` — check the
 resulting tip position if convergence matters.
 
 Note that `getPrismaticJointRanges` accounts for `beta1_range` storing offsets
-**relative to β2**, not absolute values.
+**relative to β2**, not absolute values; `getInputPosBounds()` returns the raw
+dataset ranges, so its β1 entry is that relative offset. `posCTRL` clamps β1 to
+`[β2 + lb[0], β2 + ub[0]]` and β2 to `[lb[1], ub[1]]`, i.e. the trained domain.
 
 ## LibTorch pin
 
@@ -93,6 +95,11 @@ by setting the owning node's `model_name` parameter.
 
 ## Tests
 
-None. Exercising this package requires LibTorch and a loaded TorchScript model, which
-the workspace's hardware- and Torch-free test suites deliberately avoid. `mpc`'s
-`test_mpc_qp` covers the QP layer by substituting a linear plant for the PINN.
+`test/test_pos_ctrl_bounds.cpp` (gtest; loads the `ctr_8x91_0.18_tanh_9K_9K_50K_FP64`
+model from the source `models/` directory, ~20 s) checks that `posCTRL` from the fully
+retracted home converges for targets that need a retracted inner tube, solves
+x-mirrored targets alike, and keeps every solution inside the dataset joint domain.
+
+```bash
+colcon test --packages-select ctr_kinematics_pinn
+```

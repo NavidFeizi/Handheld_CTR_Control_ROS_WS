@@ -90,8 +90,10 @@ without revisiting that ordering will corrupt the handoff.
 
 Two-phase: a revolute rotation phase, then a prismatic deployment phase evaluated
 over candidate deployment schedules under a follow-the-leader objective that
-penalizes swept volume. `motion_planning/include/DeploymentSchedule.hpp` holds the
-schedule geometry, split out so it can be tested without OMPL or Torch.
+penalizes backbone motion normal to itself (lateral swept area). `motion_planning/include/DeploymentSchedule.hpp` holds the
+schedule geometry, split out so it can be tested without OMPL or Torch;
+`motion_planning/include/FtlSweptArea.hpp` holds the FTL metric. Joint bounds and
+the FTL formulation are analysed in [docs/ik_ftl_forensic_report.md](docs/ik_ftl_forensic_report.md).
 
 Mid-deployment replanning re-solves only the remaining tail; `manager` decides when
 to ask, based on EKF force drift.
@@ -109,12 +111,15 @@ OMPL headers must be reachable as `/usr/local/include/ompl`.
 ## Tests
 
 ```bash
-colcon test --packages-select planner --ctest-args -R test_deployment_schedule
+colcon test --packages-select planner
 ```
 
-`test/test_deployment_schedule.cpp` is pure geometry and links neither OMPL nor
-Torch: candidate start/end correctness, monotonicity and step bounds, the degenerate
-zero-displacement case, swept-cost segment summation, and empty/no-function edges.
+Both suites are pure geometry and link neither OMPL nor Torch.
+`test/test_deployment_schedule.cpp`: candidate start/end correctness, monotonicity and
+step bounds, the degenerate zero-displacement case, swept-cost segment summation, and
+empty/no-function edges. `test/test_ftl_swept_area.cpp`: zero cost for a perfect FTL
+extension and for tangential slip, area = shift × length for a lateral shift,
+additivity under path splitting, mirror invariance, degenerate inputs.
 
 ## Status notes
 

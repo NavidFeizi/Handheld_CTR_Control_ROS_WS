@@ -102,6 +102,10 @@ if(BUILD_TESTING)
   # Pure geometry — no OMPL/Torch link needed.
   ament_add_gtest(test_deployment_schedule test/test_deployment_schedule.cpp)
   target_include_directories(test_deployment_schedule PRIVATE motion_planning/include)
+  ament_add_gtest(test_ftl_swept_area test/test_ftl_swept_area.cpp)
+  target_include_directories(test_ftl_swept_area PRIVATE motion_planning/include)
+  # Global -fopenmp (above) turns blaze matrix assignments into OpenMP SMP kernels.
+  target_link_libraries(test_ftl_swept_area OpenMP::OpenMP_CXX)
 endif()
 
 ament_package()

@@ -38,6 +38,14 @@ ament_export_targets(export_ctr_kinematics_pinn HAS_LIBRARY_TARGET)
 # consumers must find_package them before the export file loads.
 ament_export_dependencies(Blaze nlohmann_json LAPACK)
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_pos_ctrl_bounds test/test_pos_ctrl_bounds.cpp TIMEOUT 900)
+  target_link_libraries(test_pos_ctrl_bounds ctr_kinematics_pinn)
+  target_compile_definitions(test_pos_ctrl_bounds PRIVATE
+    CTR_PINN_MODELS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models")
+endif()
+
 # Downstream find_package(ctr_kinematics_pinn) re-runs the Torch pin so
 # TORCH_LIBRARIES/imported torch targets resolve identically for consumers.
 ament_package(CONFIG_EXTRAS cmake/torch_pin.cmake)
