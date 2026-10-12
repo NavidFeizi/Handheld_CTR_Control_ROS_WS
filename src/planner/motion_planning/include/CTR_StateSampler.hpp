@@ -63,18 +63,20 @@ CTR_StateSampler<controlInputs>::CTR_StateSampler(const ompl::base::StateSpace *
 {
     m_Clr = this->m_ctr.getStageThickness();
 
-    // Absolute joint ranges of the training domain
+    // Absolute prismatic ranges of the training domain. Revolute bounds come from
+    // the state space, which Planner sets to the training domain intersected with
+    // the drive limits, so sampled angles stay inside the planner's box.
     const auto pr = this->m_ctr.getPrismaticJointRanges();
-    const auto rr = this->m_ctr.getRevoluteJointRanges();
+    const auto &bounds = space->as<ompl::base::RealVectorStateSpace>()->getBounds();
 
     m_beta1_Min = pr[0UL];
     m_beta2_Min = pr[2UL];
 
-    m_alpha1_Min = rr[0UL];
-    m_alpha1_max = rr[1UL];
+    m_alpha1_Min = bounds.low[2UL];
+    m_alpha1_max = bounds.high[2UL];
 
-    m_alpha2_Min = rr[2UL];
-    m_alpha2_max = rr[3UL];
+    m_alpha2_Min = bounds.low[3UL];
+    m_alpha2_max = bounds.high[3UL];
 }
 
 template <size_t controlInputs>
@@ -140,14 +142,11 @@ void CTR_StateSampler<controlInputs>::sampleUniform(ompl::base::State *state)
 
     if (revolveFirst || rotationFocus)
     {
-        auto wrapClamp = [](double v, double lo, double hi) -> double
-        {
-            while (v >  M_PI) v -= 2.0 * M_PI;
-            while (v < -M_PI) v += 2.0 * M_PI;
-            return std::min(std::max(v, lo), hi);
-        };
-        sampled_State->values[2UL] = wrapClamp(rng_.gaussian(m_alpha1_goal, rotStd), m_alpha1_Min, m_alpha1_max);
-        sampled_State->values[3UL] = wrapClamp(rng_.gaussian(m_alpha2_goal, rotStd), m_alpha2_Min, m_alpha2_max);
+        // Clamp only: the box is the absolute training/drive domain (|α₁| may
+        // exceed π), so wrapping to [−π, π] would move goal-biased samples 2π
+        // away from the goal and break |α₁ − α₂| ≤ π.
+        sampled_State->values[2UL] = std::clamp(rng_.gaussian(m_alpha1_goal, rotStd), m_alpha1_Min, m_alpha1_max);
+        sampled_State->values[3UL] = std::clamp(rng_.gaussian(m_alpha2_goal, rotStd), m_alpha2_Min, m_alpha2_max);
     }
     else
     {
@@ -183,17 +182,11 @@ void CTR_StateSampler<controlInputs>::sampleUniformNear(ompl::base::State *state
     q->values[0] = clampPerturb(b0n, lo0, hi0);
     q->values[1] = clampPerturb(b1n, lo1, hi1);
 
-    // Revolute joints (indices 2-3): shortest-arc perturbation, clamped to bounds.
+    // Revolute joints (indices 2-3): perturbation clamped to the absolute bounds.
     const double alphaMin[2] = {m_alpha1_Min, m_alpha2_Min};
     const double alphaMax[2] = {m_alpha1_max, m_alpha2_max};
     for (size_t i = 2; i < 4; ++i)
-    {
-        double val = qn->values[i] + rng_.uniformReal(-distance, distance);
-        while (val >  M_PI) val -= 2.0 * M_PI;
-        while (val < -M_PI) val += 2.0 * M_PI;
-        val = std::min(std::max(val, alphaMin[i - 2]), alphaMax[i - 2]);
-        q->values[i] = val;
-    }
+        q->values[i] = std::clamp(qn->values[i] + rng_.uniformReal(-distance, distance), alphaMin[i - 2], alphaMax[i - 2]);
 }
 
 template <size_t controlInputs>
@@ -220,17 +213,11 @@ void CTR_StateSampler<controlInputs>::sampleGaussian(ompl::base::State *state,
     q->values[0] = clampGauss(b0m, lo0, hi0);
     q->values[1] = clampGauss(b1m, lo1, hi1);
 
-    // Revolute joints (indices 2-3): Gaussian perturbation wrapped to [-π, π].
+    // Revolute joints (indices 2-3): Gaussian perturbation clamped to the absolute bounds.
     const double alphaMin[2] = {m_alpha1_Min, m_alpha2_Min};
     const double alphaMax[2] = {m_alpha1_max, m_alpha2_max};
     for (size_t i = 2; i < controlInputs; ++i)
-    {
-        double val = qm->values[i] + rng_.gaussian(0.0, stdDev);
-        while (val >  M_PI) val -= 2.0 * M_PI;
-        while (val < -M_PI) val += 2.0 * M_PI;
-        val = std::min(std::max(val, alphaMin[i - 2]), alphaMax[i - 2]);
-        q->values[i] = val;
-    }
+        q->values[i] = std::clamp(qm->values[i] + rng_.gaussian(0.0, stdDev), alphaMin[i - 2], alphaMax[i - 2]);
 }
 
 template <size_t controlInputs>

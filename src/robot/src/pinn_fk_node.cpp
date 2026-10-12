@@ -19,6 +19,7 @@
 
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "ctr_common/joint_conventions.hpp"
+#include "ctr_common/package_log.hpp"
 #include "ctr_common/runtime_paths.hpp"
 #include <iostream>
 #include <limits>
@@ -88,6 +89,7 @@ public:
   // default class constructor
   ForwardKinNode() : Node("forward_kinematics_node")
   {
+    ctr_common::installPackageFileLog(*this, "robot");
     ForwardKinNode::declare_parameters();
     ForwardKinNode::setup_ros_interfaces();
     ForwardKinNode::init_pinns_model();

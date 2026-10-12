@@ -134,6 +134,21 @@ TEST_F(PosCtrl, SolutionStaysInsideDatasetDomain)
     EXPECT_GE(q[1], -0.072 - 1e-9);
     EXPECT_LE(q[1], -0.034 + 1e-9);
     EXPECT_LE(std::fabs(q[3] - q[2]), M_PI + 1e-9);
+    // α₂ trained range (and middle-tube drive limit) is ±1.5π. Before the wrap
+    // fix α₂ was kept relative to a [−π, π) α₁ and reached 4.90 / 6.15 rad here.
+    EXPECT_LE(std::fabs(q[3]), 1.5 * M_PI + 1e-9);
   }
+}
+
+// alpha1_range is relative to α₂ (like beta1_range to β₂) and the trained α₂
+// range is ±1.5π (the model's input normaliser spans 1.1·1.5π; the middle-tube
+// drive limit is also ±1.5π). The absolute α₁ envelope is α₂range + α₁range.
+TEST_F(PosCtrl, RevoluteRangesAreAbsoluteAndMatchTrainedDomain)
+{
+  const auto rr = pinn_->getRevoluteJointRanges();
+  EXPECT_NEAR(rr[0], -2.5 * M_PI, 1e-9);
+  EXPECT_NEAR(rr[1], 2.5 * M_PI, 1e-9);
+  EXPECT_NEAR(rr[2], -1.5 * M_PI, 1e-9);
+  EXPECT_NEAR(rr[3], 1.5 * M_PI, 1e-9);
 }
 }  // namespace

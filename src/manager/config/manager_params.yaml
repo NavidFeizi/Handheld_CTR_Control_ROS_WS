@@ -6,6 +6,9 @@ master_node:
     replan_cooldown_s: 2.0         # s between replan requests
     min_remaining_waypoints: 5     # below this a replan is not worth the pause
     targets_csv: "random_interior_points.csv"  # target list in <data_root>/Input_Files/
+    planner_timeout_s: 30.0        # diagnostic-only watchdog: logs an ERROR if a planner/command
+                                    # request (generateTrajectory or replanDeployment) stays
+                                    # outstanding this long; never resets or retries anything
     data_root: ""                  # empty -> env CTR_DATA_ROOT -> legacy workspace climb
 
 recorder_node:

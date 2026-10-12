@@ -356,6 +356,33 @@ For manual joint control, set the **Control Mode** radio button to **Manual**. Y
    5. Once the path is satisfactory, change Mode to "Deployment" and click **Auto Insert** to insert all the way to the target, or use the insert/retract physical buttons on the robot for step-by-step insertion and retraction.
 
    If you want to read targets from a CSV file, use the `Toggle:xxx` button to switch from **Probe Mode** to **CSV Mode**. The system will then read targets from `Input_Files/random_interior_points.csv` one by one.
+
+### Diagnosing a procedure that does not start
+
+Each node also writes its log to a file for its package:
+`<log_root>/[<CTR_RUN_ID>/]<package>/<timestamp>_<node>_<pid>.log`. The default
+`log_root` is `<data_root>/log`. You can override it with `CTR_LOG_DIR`, or per node
+with the `log_dir` parameter. Export the same `CTR_RUN_ID` in every terminal so that one
+session's files share a single directory:
+
+```bash
+export CTR_RUN_ID=$(date +%F_%H-%M-%S)   # in every terminal before launching
+grep -h '\[procedure\]\|\[cmd\]\|\[comm\]' "$CTR_LOG_DIR/$CTR_RUN_ID"/{manager,robot}/*.log
+grep -h '\[ik\]\|\[pinn\]\|\[plan\]' "$CTR_LOG_DIR/$CTR_RUN_ID"/planner/*.log
+```
+
+Each failure has its own signature:
+
+| Symptom | Where it shows up |
+|---|---|
+| Robot drops the alignment or waypoint targets | `robot` `[cmd]` WARN `dropped target`, naming the gate (`m_flag_manual`, mode) |
+| Tubes never align, so the planner is never called | `manager` `[procedure]` WARN after 10 s of aligning |
+| Planner does not answer | `manager` `[comm]` ERROR `planner/command response timeout` (`planner_timeout_s`) |
+| IK does not converge, or the solution is outside the trained domain | `planner` `[ik]` / `[pinn]` WARN; the response line carries a reason code |
+| Planned path is rejected | `manager` `[plan]` WARN: ik_error ≥ 3 mm, or the planner failed |
+
+The CANopen driver keeps its own log, `log/Robot/<timestamp>.txt`, relative to the
+robot's working directory.
 ---  
 
 

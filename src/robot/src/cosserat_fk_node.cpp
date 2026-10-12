@@ -17,6 +17,7 @@
 #include <filesystem>
 
 #include "ctr_cosserat/CTR.hpp"
+#include "ctr_common/package_log.hpp"
 #include <limits>
 
 // #include <chrono>
@@ -43,6 +44,7 @@ public:
   // default class constructor
   ForwardKinNode() : Node("cosserat_fk_node"), count_(0)
   {
+    ctr_common::installPackageFileLog(*this, "robot");
     ForwardKinNode::declare_parameters();
     ForwardKinNode::setup_ros_interfaces();
     ForwardKinNode::init_robot();

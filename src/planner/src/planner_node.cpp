@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdint>
 #include <blaze/Blaze.h>
 #include <blaze/Math.h>
 #include <blaze/math/DenseMatrix.h>
@@ -28,10 +29,12 @@
 #include "ctr_common/csv_io.hpp"
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
+#include "ctr_common/package_log.hpp"
 
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "Planner.hpp"
 #include <limits>
+#include <cmath>
 
 #include <future> // needed in order to invoke async "execute functions asynchronously"
 #include <boost/tokenizer.hpp>
@@ -40,6 +43,8 @@
 
 #include <memory.h>
 #include <numeric>
+#include <algorithm>
+#include <cctype>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -56,6 +61,9 @@ class PathPlannerNode : public rclcpp::Node
   const static size_t kBackbonePoints = 150UL; // number of discretized backbone points for the planning CTR
   const static size_t kControlInputs = 4UL;    // number of control inputs (actuated tubes)
   const static size_t kBatch = 1UL;
+  // IK convergence tolerance used by inverseKin()/solveInverseKinematics(); distinct
+  // from the manager's 3 mm plan-acceptance threshold.
+  static constexpr double kIkPosTol = 5.00E-4;
 
   // Builds the PINN from parameters. Called from the member-initializer list,
   // which is safe: the rclcpp::Node base is fully constructed before members.
@@ -70,9 +78,35 @@ public:
   // default class constructor
   PathPlannerNode() : Node("path_planner"), m_ctr_pinn(makePinn(*this)), m_motionPlan(m_ctr_pinn)
   {
+    ctr_common::installPackageFileLog(*this, "planner");
+
     PathPlannerNode::declare_parameters();
     PathPlannerNode::setup_ros_interfaces();
-    RCLCPP_INFO(this->get_logger(), "Path Planner Node has been initialized.");
+
+    // [lifecycle] configuration + trained-domain summary, now that the log file is live.
+    const std::string model_name_param = this->get_parameter("model_name").as_string();
+    const std::string models_dir_param = this->get_parameter("models_dir").as_string();
+    const std::string data_root_param = this->get_parameter("data_root").as_string();
+    const auto prismaticRanges = m_ctr_pinn.getPrismaticJointRanges(); // [b1min,b1max,b2min,b2max]
+    const auto revoluteRanges = m_ctr_pinn.getRevoluteJointRanges();   // [a1min,a1max,a2min,a2max]
+    const double stageClearance = m_ctr_pinn.getStageThickness();
+
+    RCLCPP_INFO(this->get_logger(),
+                "[lifecycle] model='%s' models_dir='%s' data_root='%s' temp_dir='%s' solve_time=%.3f s",
+                model_name_param.c_str(), models_dir_param.c_str(), data_root_param.c_str(),
+                m_tempDir.c_str(), m_solve_time);
+    RCLCPP_INFO(this->get_logger(),
+                "[lifecycle] trained domain (physics order b1,b2,a1,a2): b1=[%.4f, %.4f] m, b2=[%.4f, %.4f] m, "
+                "a1=[%.4f, %.4f] rad, a2=[%.4f, %.4f] rad, stage_clearance=%.4f m",
+                prismaticRanges[0UL], prismaticRanges[1UL], prismaticRanges[2UL], prismaticRanges[3UL],
+                revoluteRanges[0UL], revoluteRanges[1UL], revoluteRanges[2UL], revoluteRanges[3UL],
+                stageClearance);
+    if (m_solve_time <= 0.0)
+    {
+      RCLCPP_WARN(this->get_logger(), "[lifecycle] solve_time=%.3f s is non-positive; OMPL will return with no plan", m_solve_time);
+    }
+
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] Path Planner Node has been initialized.");
   }
 
   // class destructor
@@ -145,6 +179,12 @@ public:
   {
     std::lock_guard<std::mutex> lock(m_feedback_mutex);
     m_current_q = ctr_common::wireToPhysics6(msg->position);
+    m_q_feedback_received = true;
+
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                           "[comm] q feedback (physics b1,b2,b3,a1,a2,a3) = [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+                           m_current_q[0UL], m_current_q[1UL], m_current_q[2UL],
+                           m_current_q[3UL], m_current_q[4UL], m_current_q[5UL]);
   }
 
   // Update current tool (tip) position in the base frame.
@@ -244,16 +284,42 @@ public:
   // Service callback to trigger commanding the robot
   void plannerService_callback(const std::shared_ptr<interfaces::srv::Planner::Request> request, std::shared_ptr<interfaces::srv::Planner::Response> response)
   {
+    const auto requestStart = std::chrono::high_resolution_clock::now();
+    const uint64_t seq = ++m_request_seq;
+    const double receiptTime = this->get_clock()->now().seconds();
+
+    RCLCPP_INFO(this->get_logger(),
+                "[comm] request #%lu command='%s' target=[%.6f, %.6f, %.6f] m received_at=%.3f s",
+                static_cast<unsigned long>(seq), request->command.c_str(),
+                request->value[0UL], request->value[1UL], request->value[2UL], receiptTime);
+
+    auto logResponse = [this, seq, requestStart](const std::shared_ptr<interfaces::srv::Planner::Response> &resp, const char *reason)
+    {
+      const double elapsed_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - requestStart).count();
+      RCLCPP_INFO(this->get_logger(),
+                  "[comm] response #%lu success=%s value=%.6f message=\"%s\" reason=%s elapsed=%.2f ms",
+                  static_cast<unsigned long>(seq), resp->success ? "true" : "false", resp->value,
+                  resp->message.c_str(), reason, elapsed_ms);
+    };
+
     if (request->command == "generateTrajectory")
     {
       blaze::StaticVector<double, 3UL> target = request->value;
-      // std::this_thread::sleep_for(std::chrono::milliseconds(50));
       double error = 0.0;
 
-      // target = {-0.00127, 0.00398, 0.13724};
-      // target = {-0.00056, 0.02588, 0.11926};
-      // target = {0.00801581, 0.0327939, 0.130476};
-      // target = {0.00395, 0.02749, 0.12326};
+      const bool targetFinite = std::isfinite(target[0UL]) && std::isfinite(target[1UL]) && std::isfinite(target[2UL]);
+      if (!targetFinite)
+      {
+        // Genuinely invalid input: an IK solve against a non-finite target
+        // produces garbage, so this is rejected here rather than fed through.
+        RCLCPP_WARN(this->get_logger(), "[comm] invalid target: non-finite value(s) target=[%f, %f, %f]",
+                    target[0UL], target[1UL], target[2UL]);
+        response->success = false;
+        response->value = 0.0;
+        response->message = "invalid target: non-finite value(s) in target";
+        logResponse(response, "INVALID_TARGET");
+        return;
+      }
 
       try
       {
@@ -264,6 +330,12 @@ public:
           std::lock_guard<std::mutex> lock(m_feedback_mutex);
           q_snapshot = m_current_q;
           force = m_force_est;
+          if (!m_q_feedback_received)
+          {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                                  "[comm] no joint_space/feedback received yet; using default q=0 snapshot for request #%lu",
+                                  static_cast<unsigned long>(seq));
+          }
         }
 
         // Map the 6-element current configuration [β₁, β₂, β₃, α₁, α₂, α₃] (tube-3
@@ -274,12 +346,19 @@ public:
         // Safe here: no solve is in flight (mutually exclusive service group).
         // Propagates to the FTL objective (cache cleared) and informed samplers.
         m_motionPlan.setCTR_externalForce(force);
-        RCLCPP_INFO(this->get_logger(), "Planning with force estimate: f = [%.4f, %.4f, %.4f] N", force[0UL], force[1UL], force[2UL]);
+        RCLCPP_INFO(this->get_logger(), "[plan] force estimate f = [%.4f, %.4f, %.4f] N", force[0UL], force[1UL], force[2UL]);
+
+        const std::string startViolation = m_ctr_pinn.domainViolation(q_initial);
+        if (!startViolation.empty())
+        {
+          RCLCPP_WARN(this->get_logger(), "[pinn] start state outside trained domain: %s", startViolation.c_str());
+        }
 
         error = inverseKin(target, q_final, force);
+        const bool ik_converged = error <= kIkPosTol;
 
-        RCLCPP_INFO(this->get_logger(), "Initial config: q = %.4f, %.4f, %.4f, %.4f", q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL]);
-        RCLCPP_INFO(this->get_logger(), "Final config: q = %.4f, %.4f, %.4f, %.4f", q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]);
+        RCLCPP_INFO(this->get_logger(), "[plan] initial q = [%.4f, %.4f, %.4f, %.4f]", q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL]);
+        RCLCPP_INFO(this->get_logger(), "[plan] final q = [%.4f, %.4f, %.4f, %.4f]", q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]);
 
         bool planning_status = plan(q_initial, q_final, force);
         if (planning_status)
@@ -288,21 +367,25 @@ public:
           response->success = true;
           response->value = error;
           response->message = "Path generated successfully.";
+          logResponse(response, ik_converged ? "OK" : "IK_NOT_CONVERGED");
         }
         else
         {
           response->success = false;
           response->value = error;
           response->message = "Planning failed to find a solution.";
+          logResponse(response, "PLAN_FAILED");
           return;
         }
       }
       catch (const std::exception &e)
       {
-        std::cout << "Planning error: " << e.what() << '\n';
+        const std::string reason = classifyPlannerException(e.what());
+        RCLCPP_ERROR(this->get_logger(), "[plan] generateTrajectory exception (%s): %s", reason.c_str(), e.what());
         response->success = false;
         response->value = error;
         response->message = e.what();
+        logResponse(response, reason.c_str());
       }
     }
     else if (request->command == "replanDeployment")
@@ -317,6 +400,12 @@ public:
         std::lock_guard<std::mutex> lock(m_feedback_mutex);
         q_snapshot = m_current_q;
         force = m_force_est;
+        if (!m_q_feedback_received)
+        {
+          RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                                "[comm] no joint_space/feedback received yet; using default q=0 snapshot for request #%lu",
+                                static_cast<unsigned long>(seq));
+        }
       }
 
       if (!m_has_active_plan)
@@ -324,6 +413,7 @@ public:
         response->success = false;
         response->value = 0.0;
         response->message = "replanDeployment: no active plan/goal - call generateTrajectory first.";
+        logResponse(response, "NO_ACTIVE_PLAN");
         return;
       }
 
@@ -331,7 +421,7 @@ public:
       {
         blaze::StaticVector<double, 4UL> q_now = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
 
-        RCLCPP_INFO(this->get_logger(), "Replan request: f = [%.4f, %.4f, %.4f] N (active plan used f = [%.4f, %.4f, %.4f] N), q_now = [%.4f, %.4f, %.4f, %.4f]",
+        RCLCPP_INFO(this->get_logger(), "[plan] replan request f = [%.4f, %.4f, %.4f] N (active plan used f = [%.4f, %.4f, %.4f] N), q_now = [%.4f, %.4f, %.4f, %.4f]",
                     force[0UL], force[1UL], force[2UL],
                     m_force_at_plan[0UL], m_force_at_plan[1UL], m_force_at_plan[2UL],
                     q_now[0UL], q_now[1UL], q_now[2UL], q_now[3UL]);
@@ -353,8 +443,9 @@ public:
           response->success = true;
           response->value = m_motionPlan.lastDeploymentCost();
           response->message = "Deployment replanned: " + m_motionPlan.lastDeploymentScheduleName();
-          RCLCPP_INFO(this->get_logger(), "Replanned deployment in %ld ms: %s (FTL cost %.6f)",
+          RCLCPP_INFO(this->get_logger(), "[plan] replanned deployment in %ld ms: %s (FTL cost %.6f)",
                       static_cast<long>(elapsed), m_motionPlan.lastDeploymentScheduleName().c_str(), m_motionPlan.lastDeploymentCost());
+          logResponse(response, "OK");
         }
         else
         {
@@ -364,15 +455,17 @@ public:
           response->success = false;
           response->value = 0.0;
           response->message = "replanDeployment failed (alpha mismatch, invalid start, or no valid schedule).";
-          RCLCPP_WARN(this->get_logger(), "Deployment replanning failed after %ld ms.", static_cast<long>(elapsed));
+          RCLCPP_WARN(this->get_logger(), "[plan] deployment replanning failed after %ld ms.", static_cast<long>(elapsed));
+          logResponse(response, "PLAN_FAILED");
         }
       }
       catch (const std::exception &e)
       {
-        std::cout << "Replanning error: " << e.what() << '\n';
+        RCLCPP_ERROR(this->get_logger(), "[plan] replanDeployment exception: %s", e.what());
         response->success = false;
         response->value = 0.0;
         response->message = e.what();
+        logResponse(response, "EXCEPTION");
       }
     }
     else
@@ -380,39 +473,85 @@ public:
       response->success = false;
       response->value = 0.0;
       response->message = "Invalid planner command";
+      RCLCPP_WARN(this->get_logger(), "[comm] invalid command '%s'", request->command.c_str());
+      logResponse(response, "INVALID_COMMAND");
     }
+  }
+
+  // Classifies a Planner.hpp exception message into a stable reason code for
+  // [comm]/[plan] log summaries. Case-insensitive substring match on the
+  // exception text; never alters response->message.
+  static std::string classifyPlannerException(const std::string &what)
+  {
+    std::string lower = what;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (lower.find("start state") != std::string::npos)
+    {
+      return "START_INVALID";
+    }
+    if (lower.find("goal state") != std::string::npos)
+    {
+      return "GOAL_INVALID";
+    }
+    return "EXCEPTION";
   }
 
   // Service callback to triget tasks, enable, and control mode section
   double inverseKin(const blaze::StaticVector<double, 3UL> &target, blaze::StaticVector<double, 4UL> &q, const blaze::StaticVector<double, 3UL> &force)
   {
-    // run IK to compute q_final
-    constexpr double posTolerance = 5.00E-4;
     blaze::StaticVector<double, 3UL> tipPosition;
+    PosCtrlReport report;
 
-    std::cout << "\nRunning IK..." << std::endl;
+    RCLCPP_DEBUG(this->get_logger(),
+                 "[ik] seed q=[%.4f, %.4f, %.4f, %.4f] target=[%.4f, %.4f, %.4f] m posTol=%.2e m f=[%.4f, %.4f, %.4f] N",
+                 q[0UL], q[1UL], q[2UL], q[3UL], target[0UL], target[1UL], target[2UL], kIkPosTol,
+                 force[0UL], force[1UL], force[2UL]);
+
+    // run IK to compute q_final; force-aware: uses the force registered via setCTR_externalForce()
     auto start = std::chrono::high_resolution_clock::now();
-    // force-aware IK: uses the force registered via setCTR_externalForce()
-    m_motionPlan.solveInverseKinematics(q, target, posTolerance);
+    const bool converged = m_motionPlan.solveInverseKinematics(q, target, kIkPosTol, &report);
     auto end = std::chrono::high_resolution_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    std::cout << "IK time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(end - start).count();
 
     m_ctr_pinn.getPosDistal(q, force, tipPosition);
-    std::cout << "CTR target joints are: q = " << blaze::trans(q)
-              << "target: " << blaze::trans(target)
-              << "tip position (after IK): " << blaze::trans(tipPosition)
-              << "error: " << blaze::norm(target - tipPosition) * 1.00E3 << " mm\n"
-              << std::endl;
+    const double error = blaze::norm(target - tipPosition);
 
-    return blaze::norm(target - tipPosition);
+    const char *terminationStr = "MaxIterations";
+    switch (report.termination)
+    {
+      case PosCtrlReport::Termination::AlreadyWithinTolerance: terminationStr = "AlreadyWithinTolerance"; break;
+      case PosCtrlReport::Termination::Converged: terminationStr = "Converged"; break;
+      case PosCtrlReport::Termination::Stalled: terminationStr = "Stalled"; break;
+      case PosCtrlReport::Termination::MaxIterations: terminationStr = "MaxIterations"; break;
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+                "[ik] q=[%.4f, %.4f, %.4f, %.4f] tip=[%.4f, %.4f, %.4f] error=%.4f mm iterations=%zu "
+                "termination=%s initial_error=%.4f mm final_error=%.4f mm limit_hits=%zu elapsed=%.2f ms",
+                q[0UL], q[1UL], q[2UL], q[3UL], tipPosition[0UL], tipPosition[1UL], tipPosition[2UL],
+                error * 1.00E3, report.iterations, terminationStr,
+                report.initialError * 1.00E3, report.finalError * 1.00E3, report.prismaticLimitHits, elapsed_ms);
+
+    if (!converged)
+    {
+      RCLCPP_WARN(this->get_logger(), "[ik] not converged: error=%.4f mm > posTol=%.4f mm (termination=%s)",
+                  error * 1.00E3, kIkPosTol * 1.00E3, terminationStr);
+    }
+
+    const std::string solutionViolation = m_ctr_pinn.domainViolation(q);
+    if (!solutionViolation.empty())
+    {
+      RCLCPP_WARN(this->get_logger(), "[pinn] IK solution outside trained domain: %s", solutionViolation.c_str());
+    }
+
+    return error;
   }
 
   // Service callback to triget tasks, enable, and control mode section
   bool plan(const blaze::StaticVector<double, 4UL> &q_initial, const blaze::StaticVector<double, 4UL> &q_final, const blaze::StaticVector<double, 3UL> &force)
   {
     bool planning_status = false;
-    // std::cout << "Target: x: " << m_manual_target[0] * 1.00E3 << " |  " << "y: " << m_manual_target[1] * 1.00E3 << " |  " << "z: " << m_manual_target[2] * 1.00E3 << std::endl;
 
     // setting the initial state: initial configuration of the robot
     m_motionPlan.setStartState(q_initial);
@@ -421,7 +560,9 @@ public:
     blaze::StaticVector<double, 4UL> scale = {1.00, 1.00, 20.0, 20.0};
     double norm_diff = blaze::norm((m_q_initial_prev - q_initial) / scale);
 
-    std::cout << "\nStart state: " << blaze::trans(q_initial) << "Goal state: " << blaze::trans(q_final) << std::endl;
+    RCLCPP_INFO(this->get_logger(), "[plan] start q=[%.4f, %.4f, %.4f, %.4f] goal q=[%.4f, %.4f, %.4f, %.4f]",
+                q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL],
+                q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]);
 
     // setting up the planning problem and its definitions
     const double runTime = m_solve_time; // Planning time in seconds
@@ -435,8 +576,7 @@ public:
     planning_status = m_motionPlan.planTwoPhase(runTime, Planner<kControlInputs>::optimalPlanner::PLANNER_RRT_CONNECT);
     m_first_plan = false;
     auto end = std::chrono::high_resolution_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    std::cout << "Planning time: " << elapsed * 1.00E-3 << " seconds" << std::endl;
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(end - start).count();
 
     m_q_initial_prev = q_initial;
 
@@ -445,12 +585,16 @@ public:
       // Export and publish only real solutions. On failure the previous CSV stays
       // on disk, so the master keeps executing the old plan (fallback contract).
       m_motionPlan.writeSolutionToFile(plannedPathFile);
-      std::cout << "Finished planning!! - Saved plan in: " << plannedPathFile << std::endl;
+      RCLCPP_INFO(this->get_logger(), "[plan] planTwoPhase succeeded in %.2f ms, wrote %s", elapsed_ms, plannedPathFile.c_str());
 
       m_has_active_plan = true;
       m_q_goal_last = q_final;
       m_force_at_plan = force;
       publishTaskSpacePath(); // FK below uses m_force_at_plan — keep after the update
+    }
+    else
+    {
+      RCLCPP_WARN(this->get_logger(), "[plan] planTwoPhase failed after %.2f ms", elapsed_ms);
     }
 
     return planning_status;
@@ -468,7 +612,7 @@ public:
 
     if (m_q_list.size() == 0)
     {
-      RCLCPP_ERROR(get_logger(), "Failed to read planned path or empty CSV");
+      RCLCPP_ERROR(get_logger(), "[traj] failed to read planned path or empty CSV");
       std::lock_guard<std::mutex> lock(m_feedback_mutex);
       m_q = {m_current_q[0UL], m_current_q[1UL], m_current_q[3UL], m_current_q[4UL]};
     }
@@ -500,7 +644,7 @@ public:
     // RCLCPP_INFO(get_logger(), "Checkpoint_3");
 
     m_publisher_path->publish(msg);
-    RCLCPP_INFO(get_logger(), "Published task-space path with %zu points.", pathSize);
+    RCLCPP_INFO(get_logger(), "[traj] published task-space path with %zu points.", pathSize);
 
     // // Actuate CTR to current config
     // bool convergence = m_ctr_pinn.actuate_CTR(m_initGuess, m_current_q);
@@ -559,7 +703,7 @@ public:
       const auto rows = ctr_common::csv::readNumericCsv(file_path);
       if (!rows)
       {
-          RCLCPP_ERROR(get_logger(), "Failed to open file: %s", file_path.c_str());
+          RCLCPP_ERROR(get_logger(), "[traj] failed to open file: %s", file_path.c_str());
           return;
       }
 
@@ -574,11 +718,11 @@ public:
           }
           else
           {
-              RCLCPP_WARN(get_logger(), "Row does not contain exactly %zu values (got %zu)", kControlInputs, row.size());
+              RCLCPP_WARN(get_logger(), "[traj] row does not contain exactly %zu values (got %zu)", kControlInputs, row.size());
           }
       }
 
-      RCLCPP_INFO(get_logger(), "Loaded %zu path points from CSV file.", init_q_list.size());
+      RCLCPP_INFO(get_logger(), "[traj] loaded %zu path points from CSV file.", init_q_list.size());
   }
 
   std::vector<blaze::StaticVector<double, kControlInputs>> adjustConfigurationListStepSize(const std::vector<blaze::StaticVector<double, kControlInputs>>& q_list_in, double step_size)
@@ -625,6 +769,7 @@ private:
   blaze::StaticVector<double, 6UL> m_current_q;
   blaze::StaticVector<double, 3UL> m_force_est; // latest EKF tip-force estimate [N]
   std::mutex m_feedback_mutex;                  // guards m_current_q and m_force_est (written on subscriber threads, read on the service thread)
+  bool m_q_feedback_received = false;           // true once joint_space/feedback has delivered at least one message
   blaze::StaticVector<double, 4UL> m_rot_phantom_base;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_sub_1, m_callback_group_sub_2, m_callback_group_sub_3; // Callback group for running subscriber callback function on separate thread
   rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subscription_q;
@@ -676,6 +821,7 @@ private:
   blaze::StaticVector<double, 4UL> m_q_goal_last;   // joint goal of the active plan
   blaze::StaticVector<double, 3UL> m_target_last;   // task-space target of the active plan
   blaze::StaticVector<double, 3UL> m_force_at_plan; // force the active plan was computed with
+  uint64_t m_request_seq = 0UL;                     // monotonically increasing planner/command request counter, for [comm] log correlation
 };
 
 int main(int argc, char *argv[])

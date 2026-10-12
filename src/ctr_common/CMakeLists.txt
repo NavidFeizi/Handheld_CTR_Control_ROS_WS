@@ -9,7 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 
-add_library(ctr_common src/runtime_paths.cpp)
+add_library(ctr_common src/runtime_paths.cpp src/package_log.cpp)
 add_library(ctr_common::ctr_common ALIAS ctr_common)
 target_include_directories(ctr_common PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -32,6 +32,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_joint_conventions ctr_common)
   ament_add_gtest(test_csv_io test/test_csv_io.cpp)
   target_link_libraries(test_csv_io ctr_common)
+  # Own main(): the tee must be installed after rclcpp::init().
+  ament_add_gtest(test_package_log test/test_package_log.cpp SKIP_LINKING_MAIN_LIBRARIES)
+  target_link_libraries(test_package_log ctr_common)
 endif()
 
 ament_package()

@@ -91,6 +91,22 @@ Timestamped output directories, laid out as `<output_base>/<session>/<YYYY-MM-DD
 
 Unlike `csv_io`, this one **does** create directories — that is its purpose.
 
+## `package_log.hpp`
+
+Writes each package's diagnostic records to its own file:
+`<log_root>/[<CTR_RUN_ID>/]<package>/<YYYY-MM-DD_HH-MM-SS>_<node>_<pid>.log`, plus a
+`<node>_latest.log` symlink that points at the newest file.
+
+| Function | Behavior |
+|---|---|
+| `installPackageFileLog(node, package)` | Wraps the process' rcutils output handler. The previous handler (console, `~/.ros/log`) still runs first, then the record is appended to the file and flushed on every line. Only the first call per process takes effect; later calls return the same path. Call it after `rclcpp::init()`. If the file cannot be opened, it logs a WARN and returns an empty path. |
+| `writePackageLog(severity, logger, msg)` | Appends one record for loggers that do not go through rcutils, such as spdlog. |
+
+`log_root` is taken from the first of these that is set: the `log_dir` parameter, the
+`CTR_LOG_DIR` environment variable, then `<data_root>/log`. Records below a logger's
+severity threshold are not written. To raise one node to debug, pass
+`--ros-args --log-level <node>:=debug`.
+
 ## Tests
 
 ```bash
@@ -102,3 +118,6 @@ colcon test --packages-select ctr_common --ctest-args -R test_joint_conventions
   rotation coupling).
 - `test/test_csv_io.cpp` — numeric parsing, header and blank-line skipping, ragged
   rows preserved, scientific notation, missing file → `nullopt`.
+- `test/test_package_log.cpp` covers three things: the previous handler still runs,
+  records longer than the 1 KiB stack buffer are kept whole, and both the
+  `<log_dir>/<package>/` placement and the `latest` symlink are correct.

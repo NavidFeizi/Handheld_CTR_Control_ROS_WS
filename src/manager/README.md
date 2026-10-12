@@ -61,6 +61,7 @@ the nodes actually receive; the launch file does not shadow them.
 | `replan_cooldown_s` | 2.0 | s between replan requests |
 | `min_remaining_waypoints` | 5 | Below this, a replan is not worth the pause |
 | `targets_csv` | `random_interior_points.csv` | Target list in `<data_root>/Input_Files/` |
+| `planner_timeout_s` | 30.0 | s — diagnostic-only: logs an ERROR if a `planner/command` request stays outstanding this long; never resets or retries |
 | `data_root` | `""` | Empty → env `CTR_DATA_ROOT` → legacy workspace climb |
 
 ### `recorder_node`
@@ -131,6 +132,42 @@ ROS callbacks go through `QMetaObject::invokeMethod(..., Qt::QueuedConnection)`,
 cross-thread state is atomic or mutex-snapshotted. The GUI uses 500 ms readiness
 timers to gate its controls rather than blocking in the constructor waiting for
 services.
+
+## Diagnostic logs
+
+`master` and `record` each tee their rcutils log stream (via
+`ctr_common::installPackageFileLog`) into a package-separated file, on top of the
+normal console/`~/.ros/log` output:
+
+```
+<log_root>/[<CTR_RUN_ID>/]manager/<YYYY-MM-DD_HH-MM-SS>_master_node_<pid>.log
+<log_root>/[<CTR_RUN_ID>/]manager/<YYYY-MM-DD_HH-MM-SS>_recorder_<pid>.log
+<log_root>/[<CTR_RUN_ID>/]manager/master_node_latest.log   (symlink)
+<log_root>/[<CTR_RUN_ID>/]manager/recorder_latest.log      (symlink)
+```
+
+`log_root` resolves from the `log_dir` parameter → env `CTR_LOG_DIR` →
+`<data_root>/log`. Since `master` and `record` are separate processes, each gets
+its own file even though both belong to the `manager` package.
+
+Every message starts with a grep-able stage tag:
+
+| Tag | Node(s) | Meaning |
+|---|---|---|
+| `[lifecycle]` | both | Startup params/data root, service readiness, recording session open/close |
+| `[comm]` | both | Service requests/responses (`robot_config`, `robot_enable`, `recording`), `robot_status` edge-triggers, tf2 lookup health |
+| `[procedure]` | `master` | Why the Planner-mode branch is/isn't calling `planner/command`: procedure inactive, tube-rotation alignment progress/convergence, waiting for reached/response, target unchanged |
+| `[plan]` | `master` | `planner/command` responses: success, message, IK error (mm), round-trip time |
+| `[traj]` | `master` | `plannedPath.csv` load: row counts, first/last waypoint, per-joint range, out-of-limits warnings |
+| `[cmd]` | `master` | Deployment insertion/retraction start/stop/complete, per-waypoint dispatch, stalled-at-waypoint warnings |
+
+Only records that pass the logger's own severity threshold reach the file. Most
+per-cycle detail is `DEBUG`; raise it for one node at a time with:
+
+```bash
+ros2 launch manager launch.py --ros-args --log-level master_node:=debug
+ros2 launch manager launch.py --ros-args --log-level recorder:=debug
+```
 
 ## Tests
 

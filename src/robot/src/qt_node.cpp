@@ -30,6 +30,7 @@
 #include <iostream> // Required for std::cout
 #include <string>
 #include <rclcpp/rclcpp.hpp>
+#include "ctr_common/package_log.hpp"
 #include "interfaces/msg/status.hpp"
 #include "interfaces/msg/interface.hpp"
 #include "interfaces/msg/jointspace.hpp"
@@ -65,6 +66,7 @@ Q_OBJECT // Needed for Qt signals/slots
 
     public : explicit GuiNode(QWidget *parent = nullptr) : QWidget(parent), rclcpp::Node("qt_gui_node")
     {
+        ctr_common::installPackageFileLog(*this, "robot");
         m_xdot_command = {2.0, 0.012, 2.0, 0.012};
         initGui();
         initRosInterfaces();

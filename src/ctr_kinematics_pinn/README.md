@@ -45,7 +45,7 @@ zero-force overload that omits `wf`.
 | Forward kinematics | `getPosDistal(tau[, wf], pos)` — `pos` is 3-element (position) or 7-element (position + quaternion); `getPosDistalBatched`; `getPosTubes(tau[, wf], pos_t3, pos_t2, pos_t1)` |
 | Shape | `getShape(tau[, wf], shape)` (`num_nodes × 3`); `getAllTubesShape(tau, wf)` → tuple of three matrices; `getEntireState(tau[, wf], states)` (`num_nodes × 15`) |
 | Jacobians | `jacobian(tau[, wf], J)` (3×N, autograd); `jacobianBatched(tau_batch, J)`; `jacobianFinDif(tau, J)` (central differences); `jacobian_wrt_force(tau, wf, J)` |
-| Inverse kinematics | `posCTRL(tau, target, posTol[, wf])` — resolved-rate IK, mutates `tau` in place |
+| Inverse kinematics | `posCTRL(tau, target, posTol[, wf][, PosCtrlReport*])` — resolved-rate IK, mutates `tau` in place; the optional report pointer overload fills diagnostics without changing numerics |
 | Geometry / limits | `getArclengthEnd`, `getStraightLen`, `getOverallLen`, `getInputPosBounds()` → `(lb, ub)`, `getPrismaticJointRanges`, `getRevoluteJointRanges`, `getNumNodes`, `getStageThickness` |
 | Pseudoinverse | `pInv` (fixed 3×6) and `static pInvN<N>` (damped, λ = 1e-12) |
 
@@ -57,6 +57,44 @@ Note that `getPrismaticJointRanges` accounts for `beta1_range` storing offsets
 **relative to β2**, not absolute values; `getInputPosBounds()` returns the raw
 dataset ranges, so its β1 entry is that relative offset. `posCTRL` clamps β1 to
 `[β2 + lb[0], β2 + ub[0]]` and β2 to `[lb[1], ub[1]]`, i.e. the trained domain.
+
+### IK diagnostics
+
+`posCTRL`'s 5-argument overload takes an extra `PosCtrlReport *report` (may be
+`nullptr`); when non-null it is filled with:
+
+```cpp
+struct PosCtrlReport
+{
+    enum class Termination { AlreadyWithinTolerance, Converged, Stalled, MaxIterations };
+    std::size_t iterations;         // resolved-rate iterations run
+    double initialError;            // ||target - x_CTR|| at the tau passed in [m]
+    double finalError;              // ||target - x_CTR|| at the returned tau (tau_min) [m]
+    Termination termination;
+    std::size_t prismaticLimitHits; // iterations where a prismatic step was clamped
+};
+```
+
+`Stalled` is the `linfNorm(dtau_dt) <= 1e-6` early exit; `MaxIterations` is the
+750-iteration cap; `Converged` means the loop exited because `dist2Tgt <= posTol`.
+The 3- and 4-argument overloads are unaffected — they call the report overload
+with `nullptr` and behave exactly as before.
+
+`[[nodiscard]] std::string domainViolation(tau, tol = 1e-9) const` checks a
+4-DoF `tau` (physics order `[β1, β2, α1, α2]`) against the trained domain and
+returns an empty string when inside it, otherwise a `"; "`-separated list of
+violated bounds (e.g. `"b1-b2=-0.0861 < -0.0840; |a2|=4.9000 > 4.7124"`).
+6-DoF layouts are not domain-checked (always returns empty). Trained 4-DoF
+domain (absolute, physics order):
+
+| Joint | Range |
+|---|---|
+| β2 | `[-0.072, -0.034]` m |
+| β1 − β2 | `[-0.084, -0.030]` m (⇒ absolute β1 `[-0.156, -0.064]` m) |
+| α2 | `[-1.5π, 1.5π]` rad |
+| α1 − α2 | `[-π, π]` rad (⇒ absolute α1 `[-2.5π, 2.5π]` rad) |
+
+Stage clearance (`getStageThickness()`) is `0.030` m, enforced as `β1 ≤ β2 - 0.030`.
 
 ## LibTorch pin
 

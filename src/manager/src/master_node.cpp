@@ -4,6 +4,9 @@
 #include "manager/csv_path_io.hpp"
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
+#include "ctr_common/package_log.hpp"
+
+#include <algorithm>
 
 using namespace std::chrono_literals;
 
@@ -14,6 +17,8 @@ using namespace std::chrono_literals;
 MasterNode::MasterNode(QWidget *parent)
     : QWidget(parent), rclcpp::Node("master_node"), m_gui_manager(std::make_unique<QtGuiManager>(this))
 {
+    ctr_common::installPackageFileLog(*this, "manager");
+
     std::cout << "Initializing MasterNode..." << std::endl;
 
     // Replanning tunables and target-list source (defaults preserve the old constexprs)
@@ -22,6 +27,14 @@ MasterNode::MasterNode(QWidget *parent)
     m_min_remaining_waypoints =
         static_cast<size_t>(declare_parameter<int>("min_remaining_waypoints", static_cast<int>(m_min_remaining_waypoints)));
     m_targets_csv = declare_parameter<std::string>("targets_csv", m_targets_csv);
+    m_planner_timeout_s = declare_parameter<double>("planner_timeout_s", m_planner_timeout_s);
+
+    const auto data_root = ctr_common::resolveDataRoot(*this, "manager");
+    RCLCPP_INFO(get_logger(),
+                "[lifecycle] master_node starting: force_replan_threshold=%.3f N replan_cooldown_s=%.2f s "
+                "min_remaining_waypoints=%zu targets_csv=%s planner_timeout_s=%.1f s data_root=%s",
+                m_force_replan_threshold, m_replan_cooldown_s, m_min_remaining_waypoints,
+                m_targets_csv.c_str(), m_planner_timeout_s, data_root.c_str());
 
     m_gui_manager->initializeGui();
     initRosInterfaces();
@@ -43,10 +56,12 @@ void MasterNode::sendConfigCommand(const std::string &command, bool use_enable_s
     auto request = std::make_shared<interfaces::srv::Config::Request>();
     request->command = command;
 
-    using ServiceResponseFuture = rclcpp::Client<interfaces::srv::Config>::SharedFuture;
     auto client = use_enable_service ? m_robot_enable_client : m_robot_config_client;
-    auto response_received_callback = std::bind(&MasterNode::handle_service_response, this, std::placeholders::_1);
-    (void)client->async_send_request(request, response_received_callback);
+    RCLCPP_INFO(get_logger(), "[comm] sending %s command '%s'",
+                use_enable_service ? "robot_enable" : "robot_config", command.c_str());
+    (void)client->async_send_request(
+        request, [this, command](rclcpp::Client<interfaces::srv::Config>::SharedFuture future)
+        { handle_service_response(command, future); });
 }
 
 void MasterNode::handleFreezeButtonClicked(QPushButton *freeze_button)
@@ -428,15 +443,30 @@ void MasterNode::initRosInterfaces()
     // gated on m_services_ready / service_is_ready().
     m_readiness_timer = create_wall_timer(500ms, [this]()
                                           {
-        const bool ready = m_robot_config_client->service_is_ready() &&
-                           m_robot_enable_client->service_is_ready() &&
-                           m_planner_client->service_is_ready() &&
-                           m_freeze_robot_client->service_is_ready() &&
-                           m_recording_client->service_is_ready();
+        const bool config_ready = m_robot_config_client->service_is_ready();
+        const bool enable_ready = m_robot_enable_client->service_is_ready();
+        const bool planner_ready = m_planner_client->service_is_ready();
+        const bool freeze_ready = m_freeze_robot_client->service_is_ready();
+        const bool recording_ready = m_recording_client->service_is_ready();
+        const bool ready = config_ready && enable_ready && planner_ready && freeze_ready && recording_ready;
         if (ready && !m_services_ready.exchange(true))
-            RCLCPP_INFO(get_logger(), "All robot/planner/recorder services are ready");
+            RCLCPP_INFO(get_logger(), "[lifecycle] All robot/planner/recorder services are ready");
         else if (!ready && m_services_ready.exchange(false))
-            RCLCPP_WARN(get_logger(), "A required service went away - controls gated until it returns"); });
+            RCLCPP_WARN(get_logger(), "[lifecycle] A required service went away - controls gated until it returns");
+
+        if (!ready)
+        {
+            std::string missing;
+            if (!config_ready) missing += "robot_config,";
+            if (!enable_ready) missing += "robot_enable,";
+            if (!planner_ready) missing += "planner/command,";
+            if (!freeze_ready) missing += "freeze_robot,";
+            if (!recording_ready) missing += "recording,";
+            if (!missing.empty())
+                missing.pop_back();
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                                 "[lifecycle] waiting for services: %s", missing.c_str());
+        } });
 
     //------ EMtracker node interfaces ------//
     m_callback_group_tf2 = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -489,6 +519,35 @@ void MasterNode::robotStatus_callback(const interfaces::msg::Status::SharedPtr m
             RCLCPP_ERROR(get_logger(),
                          "Joint %d reports a drive enable fault - it is NOT under control", i);
         m_enableFaultPrev[i] = msg->enable_fault[i];
+    }
+
+    if (m_procedure != m_procedure_log_prev)
+    {
+        RCLCPP_INFO(get_logger(), "[comm] procedure %s", m_procedure ? "ACTIVE" : "inactive");
+        m_procedure_log_prev = m_procedure;
+    }
+    if (m_enabled != m_enabled_log_prev)
+    {
+        RCLCPP_INFO(get_logger(), "[comm] robot enable: %s", m_enabled ? "ENABLED" : "disabled");
+        m_enabled_log_prev = m_enabled;
+    }
+    if (m_reached != m_reached_log_prev)
+    {
+        RCLCPP_INFO(get_logger(), "[comm] all-joints reached: %s", m_reached ? "true" : "false");
+        m_reached_log_prev = m_reached;
+    }
+    {
+        const int ctrl_mode_int = static_cast<int>(m_ctrl_mode);
+        if (ctrl_mode_int != m_control_mode_log_prev)
+        {
+            RCLCPP_INFO(get_logger(), "[comm] control_mode changed: %d", ctrl_mode_int);
+            m_control_mode_log_prev = ctrl_mode_int;
+        }
+    }
+    if (m_trans_limit != m_trans_limit_prev)
+    {
+        RCLCPP_INFO(get_logger(), "[comm] trans_limit_en: %s", m_trans_limit ? "true" : "false");
+        m_trans_limit_prev = m_trans_limit;
     }
 
     emit robotStatusUpdated(m_enabled, m_procedure, m_head_attached, m_engaged, m_locked);
@@ -545,8 +604,9 @@ void MasterNode::tf2_receive_timer_callback()
     }
     catch (const tf2::TransformException &ex)
     {
-        RCLCPP_INFO(this->get_logger(), "Could not transform %s to %s: %s",
-                    targetFrame.c_str(), sourceFrame.c_str(), ex.what());
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "[comm] Could not transform %s to %s: %s",
+                              targetFrame.c_str(), sourceFrame.c_str(), ex.what());
+        m_tf2_unavailable_prev = true;
         return;
     }
     m_trans_tip = tf2::transformToEigen(tf2_tran).matrix();
@@ -558,11 +618,18 @@ void MasterNode::tf2_receive_timer_callback()
     }
     catch (const tf2::TransformException &ex)
     {
-        RCLCPP_INFO(this->get_logger(), "Could not transform %s to %s: %s",
-                    targetFrame.c_str(), sourceFrame.c_str(), ex.what());
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "[comm] Could not transform %s to %s: %s",
+                              targetFrame.c_str(), sourceFrame.c_str(), ex.what());
+        m_tf2_unavailable_prev = true;
         return;
     }
     m_trans_probe = tf2::transformToEigen(tf2_tran).matrix();
+
+    if (m_tf2_unavailable_prev)
+    {
+        RCLCPP_INFO(this->get_logger(), "[comm] tip/probe transforms available again");
+        m_tf2_unavailable_prev = false;
+    }
 
     // Update positions
     if (!m_test_running && !m_use_csv_target)
@@ -598,21 +665,28 @@ void MasterNode::tf2_receive_timer_callback()
                     m_Xsim(0), m_Xsim(1), m_Xsim(2));
 }
 
-void MasterNode::handle_service_response(const rclcpp::Client<interfaces::srv::Config>::SharedFuture future)
+void MasterNode::handle_service_response(const std::string &command, const rclcpp::Client<interfaces::srv::Config>::SharedFuture future)
 {
     auto response = future.get();
-    if (!response->success)
+    if (response->success)
     {
-        // Log errors if needed
+        RCLCPP_DEBUG(this->get_logger(), "[comm] '%s' succeeded: %s", command.c_str(), response->message.c_str());
+    }
+    else
+    {
+        RCLCPP_ERROR(this->get_logger(), "[comm] '%s' failed: %s", command.c_str(), response->message.c_str());
     }
 }
 
 void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future)
 {
     auto response = future.get();
-    RCLCPP_INFO(this->get_logger(), "Planner response - Success: %s", response->success ? "true" : "false");
-    RCLCPP_INFO(this->get_logger(), "                 - Message: %s", response->message.c_str());
-    RCLCPP_INFO(this->get_logger(), "                 - IK error: %.4f", response->value);
+    const double round_trip_ms = (this->now().nanoseconds() - m_planning_started_ns.load()) / 1.0e6;
+
+    RCLCPP_INFO(this->get_logger(),
+                "[plan] generateTrajectory response #%d: success=%s message=\"%s\" ik_error=%.3f mm round_trip=%.1f ms",
+                m_planner_request_seq.load(), response->success ? "true" : "false", response->message.c_str(),
+                response->value * 1000.0, round_trip_ms);
 
     m_planner_success = response->success;
     m_planner_ik_error = response->value;
@@ -621,8 +695,8 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
     // bool bypass_error_check = m_closed_loop_enabled && m_q_list_actuated.empty();
     bool bypass_error_check = false;
 
-    RCLCPP_INFO(this->get_logger(), "Planner bypass_error_check=%s", bypass_error_check ? "true" : "false");
-    
+    RCLCPP_DEBUG(this->get_logger(), "[plan] bypass_error_check=%s", bypass_error_check ? "true" : "false");
+
     if ((m_planner_success || bypass_error_check) && m_planner_ik_error < k_ik_error_threshold)
     {
         if (loadPlannedPath())
@@ -635,9 +709,18 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
         }
         else
         {
-            RCLCPP_ERROR(this->get_logger(), "Failed to load plannedPath.csv - path will be empty");
+            RCLCPP_ERROR(this->get_logger(), "[plan] Failed to load plannedPath.csv - path will be empty");
             m_planner_success = false;
         }
+    }
+    else if (!response->success)
+    {
+        RCLCPP_WARN(this->get_logger(), "[plan] plan rejected: planner reported failure: %s", response->message.c_str());
+    }
+    else if (response->value >= k_ik_error_threshold)
+    {
+        RCLCPP_WARN(this->get_logger(), "[plan] plan rejected: ik_error=%.3f mm >= threshold=%.3f mm",
+                    response->value * 1000.0, k_ik_error_threshold * 1000.0);
     }
 
     std::this_thread::sleep_for(10ms);
@@ -653,6 +736,7 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
 void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future)
 {
     auto response = future.get();
+    const double round_trip_ms = (this->now().nanoseconds() - m_planning_started_ns.load()) / 1.0e6;
 
     if (response->success && loadPlannedPath())
     {
@@ -661,8 +745,9 @@ void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Pl
         m_f_at_plan_valid = true;
         m_replan_attempts = 0;
         m_replan_backoff_s = m_replan_cooldown_s;
-        RCLCPP_INFO(this->get_logger(), "Replan accepted: %s (FTL cost %.6f) - resuming deployment on the new schedule",
-                    response->message.c_str(), response->value);
+        RCLCPP_INFO(this->get_logger(),
+                    "[plan] replanDeployment response #%d: accepted: %s (FTL cost %.6f, round_trip=%.1f ms) - resuming deployment on the new schedule",
+                    m_planner_request_seq.load(), response->message.c_str(), response->value, round_trip_ms);
     }
     else
     {
@@ -673,8 +758,8 @@ void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Pl
         m_replan_attempts++;
         m_replan_backoff_s = std::min(m_replan_backoff_s * 2.0, k_replan_backoff_cap_s);
         RCLCPP_WARN(this->get_logger(),
-                    "Replan rejected (%s) - continuing previous plan (attempt %d/%d, next in >= %.1f s)",
-                    response->message.c_str(), m_replan_attempts, k_max_replan_attempts, m_replan_backoff_s);
+                    "[plan] replanDeployment response #%d: rejected (%s, round_trip=%.1f ms) - continuing previous plan (attempt %d/%d, next in >= %.1f s)",
+                    m_planner_request_seq.load(), response->message.c_str(), round_trip_ms, m_replan_attempts, k_max_replan_attempts, m_replan_backoff_s);
     }
 
     m_flag_planning = false;
@@ -729,7 +814,7 @@ void MasterNode::maybeRequestDeploymentReplan()
         {
             m_replan_attempts = 0;
             m_replan_backoff_s = m_replan_cooldown_s;
-            RCLCPP_INFO(this->get_logger(), "Force drift recovered (%.3f N) - replanning re-armed", df);
+            RCLCPP_INFO(this->get_logger(), "[comm] Force drift recovered (%.3f N) - replanning re-armed", df);
         }
     }
     if (df <= m_force_replan_threshold)
@@ -746,6 +831,10 @@ void MasterNode::maybeRequestDeploymentReplan()
     m_flag_planning = true; // pauses every deployment branch until the response arrives
     m_last_replan_request_time = this->now();
     m_replan_count++;
+    const int seq = m_planner_request_seq.fetch_add(1) + 1;
+    const int64_t send_ns = m_last_replan_request_time.nanoseconds();
+    m_planning_started_ns.store(send_ns);
+    m_planning_timeout_logged = false;
 
     auto request = std::make_shared<interfaces::srv::Planner::Request>();
     request->command = "replanDeployment";
@@ -754,8 +843,9 @@ void MasterNode::maybeRequestDeploymentReplan()
     (void)m_planner_client->async_send_request(request, response_callback);
 
     emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
-    RCLCPP_INFO(this->get_logger(), "Force drift |df| = %.3f N at waypoint %d (%zu remaining) - pausing deployment to replan (#%d)",
-                df, index, remaining, m_replan_count);
+    RCLCPP_INFO(this->get_logger(),
+                "[comm] planner/command replanDeployment request #%d sent: |df|=%.3f N at waypoint %d (%zu remaining) - pausing deployment to replan (#%d)",
+                seq, df, index, remaining, m_replan_count);
 
     if (m_test_running)
     {
@@ -768,19 +858,53 @@ void MasterNode::control_loop()
     if (!m_services_ready)
         return; // robot/planner/recorder services not up yet
 
+    // Diagnostic-only watchdog: a stuck planner/command request (generateTrajectory
+    // or replanDeployment) never resets or retries anything here, it only makes a
+    // silently-hung request visible in the log.
+    if (m_flag_planning && !m_planning_timeout_logged)
+    {
+        const double elapsed = (this->now().nanoseconds() - m_planning_started_ns.load()) / 1.0e9;
+        if (elapsed > m_planner_timeout_s)
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "[comm] planner/command response timeout: request #%d outstanding for %.1f s (timeout=%.1f s)",
+                         m_planner_request_seq.load(), elapsed, m_planner_timeout_s);
+            m_planning_timeout_logged = true;
+        }
+    }
+
     // Update automated test state machine
     updateTestStateMachine();
 
     // Snapshot the cross-thread feedback state once per cycle
     Eigen::Vector3d X, Xd, Xsim;
+    blaze::StaticVector<double, 4UL> q_snapshot;
     {
         std::lock_guard<std::mutex> lock(m_feedback_mutex);
         X = m_X;
         Xd = m_Xd;
         Xsim = m_Xsim;
+        q_snapshot = m_q;
     }
 
-    if (m_procedure && m_high_level_mode == HighLvlCtrMode::Planner)
+    // Diagnostic-only: a tube-rotation-alignment episode only spans a single
+    // continuous run of the Planner branch below; leaving it (Deployment, None,
+    // or procedure dropping out) must start a fresh episode next time around.
+    if (m_high_level_mode != HighLvlCtrMode::Planner && !m_planner_branch_reason_prev.empty())
+    {
+        m_planner_branch_reason_prev.clear();
+        m_alignment_start_diff = 0.0;
+    }
+
+    if (m_high_level_mode == HighLvlCtrMode::Planner && !m_procedure)
+    {
+        if (m_planner_branch_reason_prev != "procedure inactive")
+        {
+            RCLCPP_INFO(get_logger(), "[procedure] not calling planner: procedure inactive");
+            m_planner_branch_reason_prev = "procedure inactive";
+        }
+    }
+    else if (m_procedure && m_high_level_mode == HighLvlCtrMode::Planner)
     {
         // Compute target angle in x-y plane
         double target_theta = atan2(Xd[1], Xd[0]) + M_PI / 2.0;
@@ -808,6 +932,30 @@ void MasterNode::control_loop()
             blaze::StaticVector<double, 6> q = blaze::StaticVector<double, 6>({m_q[1], m_q[3], 0.0, target_theta, target_theta, 0.0});
             publish_position(q);
             // std::cout << "tube_1_theta_diff: " << tube_1_theta_diff << ", tube_2_theta_diff: " << tube_2_theta_diff << std::endl;
+
+            // Diagnostics: rotation-alignment is the step that silently stalled in
+            // the field (m_flag_manual gating joint_space/target) - make its
+            // progress and convergence visible.
+            const double max_diff = std::max(tube_1_theta_diff, tube_2_theta_diff);
+            if (m_planner_branch_reason_prev != "aligning tubes")
+            {
+                m_alignment_start_time = this->now();
+                m_alignment_start_diff = max_diff;
+                RCLCPP_INFO(get_logger(),
+                            "[procedure] not calling planner: aligning tubes: theta_target=%.4f alpha1=%.4f alpha2=%.4f threshold=%.4f",
+                            target_theta, q_snapshot[0], q_snapshot[2], k_theta_threshold);
+                m_planner_branch_reason_prev = "aligning tubes";
+            }
+            const double elapsed = (this->now() - m_alignment_start_time).seconds();
+            RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 2000,
+                                 "[procedure] aligning tubes: elapsed=%.1f s theta_target=%.4f alpha1=%.4f alpha2=%.4f diff1=%.4f diff2=%.4f threshold=%.4f",
+                                 elapsed, target_theta, q_snapshot[0], q_snapshot[2], tube_1_theta_diff, tube_2_theta_diff, k_theta_threshold);
+            if (elapsed > 10.0 && max_diff >= 0.9 * m_alignment_start_diff)
+            {
+                RCLCPP_WARN_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                     "[procedure] tube alignment not converging after %.1f s: diff1=%.4f diff2=%.4f (started at %.4f) threshold=%.4f - robot may not be rotating",
+                                     elapsed, tube_1_theta_diff, tube_2_theta_diff, m_alignment_start_diff, k_theta_threshold);
+            }
         }
         // If target position changed significantly, call planner to generate new path
         else
@@ -819,6 +967,14 @@ void MasterNode::control_loop()
                     std::lock_guard<std::mutex> lock(m_force_mutex);
                     m_f_pending = m_f_est; // baseline promoted to m_f_at_plan when the plan is accepted
                 }
+
+                // Capture the request's identity/send-time BEFORE async_send_request:
+                // the response can arrive on another executor thread before this
+                // function returns.
+                const int seq = m_planner_request_seq.fetch_add(1) + 1;
+                const int64_t send_ns = this->now().nanoseconds();
+                m_planning_started_ns.store(send_ns);
+                m_planning_timeout_logged = false;
 
                 auto request = std::make_shared<interfaces::srv::Planner::Request>();
                 request->command = "generateTrajectory";
@@ -834,7 +990,28 @@ void MasterNode::control_loop()
                 m_flag_planning = true;
                 m_flag_planner_updated = true;
                 emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
-                RCLCPP_INFO(this->get_logger(), "Planner called.");
+                RCLCPP_INFO(this->get_logger(),
+                            "[comm] planner/command generateTrajectory request #%d sent at %.3f: target=[%.4f, %.4f, %.4f] "
+                            "q(wire) alpha1=%.4f beta1=%.4f alpha2=%.4f beta2=%.4f alpha_diff1=%.4f alpha_diff2=%.4f",
+                            seq, send_ns / 1.0e9, Xd[0], Xd[1], Xd[2],
+                            q_snapshot[0], q_snapshot[1], q_snapshot[2], q_snapshot[3], tube_1_theta_diff, tube_2_theta_diff);
+                m_planner_branch_reason_prev.clear();
+            }
+            else
+            {
+                std::string reason;
+                if (!m_reached)
+                    reason = "waiting for reached";
+                else if (m_flag_planning)
+                    reason = "waiting for planner response";
+                else
+                    reason = "target/q unchanged";
+
+                if (reason != m_planner_branch_reason_prev)
+                {
+                    RCLCPP_INFO(get_logger(), "[procedure] not calling planner: %s", reason.c_str());
+                    m_planner_branch_reason_prev = reason;
+                }
             }
         }
     }
@@ -842,17 +1019,38 @@ void MasterNode::control_loop()
     {
         maybeRequestDeploymentReplan();
 
+        const bool inserting_now = !m_flag_planning && (m_interface_key[k_forward_button_idx] || m_auto_insert);
+        const bool retracting_now = !m_flag_planning && (m_interface_key[k_backward_button_idx] || m_auto_retract);
+        int snapshot_index;
+        size_t snapshot_adjusted_size;
+        {
+            std::lock_guard<std::mutex> lock(m_deploy_mutex);
+            snapshot_index = m_current_config_index;
+            snapshot_adjusted_size = m_q_list_adjusted.size();
+        }
+        if (inserting_now && !m_insert_active_prev)
+            RCLCPP_INFO(get_logger(), "[cmd] insertion started at waypoint %d/%zu", snapshot_index + 1, snapshot_adjusted_size);
+        else if (!inserting_now && m_insert_active_prev)
+            RCLCPP_INFO(get_logger(), "[cmd] insertion stopped at waypoint %d/%zu", snapshot_index + 1, snapshot_adjusted_size);
+        m_insert_active_prev = inserting_now;
+        if (retracting_now && !m_retract_active_prev)
+            RCLCPP_INFO(get_logger(), "[cmd] retraction started at waypoint %d/%zu", snapshot_index + 1, snapshot_adjusted_size);
+        else if (!retracting_now && m_retract_active_prev)
+            RCLCPP_INFO(get_logger(), "[cmd] retraction stopped at waypoint %d/%zu", snapshot_index + 1, snapshot_adjusted_size);
+        m_retract_active_prev = retracting_now;
+
         if (!m_flag_planning && (m_interface_key[k_forward_button_idx] || m_auto_insert))
         {
             m_retracting = false;
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
-                RCLCPP_WARN(this->get_logger(), "Adjusted deployment list is empty; cannot send positions.");
+                RCLCPP_WARN(this->get_logger(), "[cmd] Adjusted deployment list is empty; cannot send positions.");
             }
 
             if (getReachStatus())
             {
+                m_waypoint_wait_index = -1;
                 m_current_config_index += 1;
                 if (m_current_config_index < m_q_list_adjusted.size())
                 {
@@ -864,19 +1062,33 @@ void MasterNode::control_loop()
                     
                     publish_position(m_q_list_adjusted[m_current_config_index]);
 
-                    RCLCPP_DEBUG(this->get_logger(), "Sent q [%d/%zu]: β1=%.3f, β2=%.3f, α1=%.3f, α2=%.3f",
+                    const auto wire = ctr_common::physicsToWire(m_q_list_adjusted[m_current_config_index]);
+                    RCLCPP_DEBUG(this->get_logger(),
+                                 "[cmd] Sent q [%d/%zu]: physics beta1=%.3f beta2=%.3f alpha1=%.3f alpha2=%.3f, "
+                                 "wire alpha1=%.3f beta1=%.3f alpha2=%.3f beta2=%.3f",
                                  m_current_config_index + 1, m_q_list_adjusted.size(),
                                  m_q_list_adjusted[m_current_config_index][0],
                                  m_q_list_adjusted[m_current_config_index][1],
                                  m_q_list_adjusted[m_current_config_index][3],
-                                 m_q_list_adjusted[m_current_config_index][4]);
+                                 m_q_list_adjusted[m_current_config_index][4],
+                                 wire[0], wire[1], wire[2], wire[3]);
+                    m_insert_complete_logged = false;
                 }
                 else
                 {
                     m_auto_insert = false;
                     m_current_config_index = m_q_list_adjusted.size() - 1;
-                    RCLCPP_DEBUG(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
+                    if (!m_insert_complete_logged)
+                    {
+                        RCLCPP_INFO(this->get_logger(), "[cmd] insertion complete: max waypoint %d/%zu reached",
+                                    m_current_config_index + 1, m_q_list_adjusted.size());
+                        m_insert_complete_logged = true;
+                    }
                 }
+            }
+            else if (!m_q_list_adjusted.empty())
+            {
+                logWaypointWaitWarn(m_current_config_index, m_q_list_adjusted[m_current_config_index], q_snapshot);
             }
         }
         else if (!m_flag_planning && (m_interface_key[k_backward_button_idx] || m_auto_retract))
@@ -885,22 +1097,28 @@ void MasterNode::control_loop()
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
-                RCLCPP_WARN(this->get_logger(), "Adjusted deployment list is empty; cannot send positions.");
+                RCLCPP_WARN(this->get_logger(), "[cmd] Adjusted deployment list is empty; cannot send positions.");
             }
 
             if (getReachStatus())
             {
+                m_waypoint_wait_index = -1;
                 m_current_config_index--;
                 if (m_current_config_index >= 0)
                 {
                     publish_position(m_q_list_adjusted[m_current_config_index]);
 
-                    RCLCPP_DEBUG(this->get_logger(), "Sent q [%d/%zu]:  β1=%.3f, β2=%.3f, α1=%.3f, α2=%.3f",
+                    const auto wire = ctr_common::physicsToWire(m_q_list_adjusted[m_current_config_index]);
+                    RCLCPP_DEBUG(this->get_logger(),
+                                 "[cmd] Sent q [%d/%zu]: physics beta1=%.3f beta2=%.3f alpha1=%.3f alpha2=%.3f, "
+                                 "wire alpha1=%.3f beta1=%.3f alpha2=%.3f beta2=%.3f",
                                  m_current_config_index + 1, m_q_list_adjusted.size(),
                                  m_q_list_adjusted[m_current_config_index][0],
                                  m_q_list_adjusted[m_current_config_index][1],
                                  m_q_list_adjusted[m_current_config_index][3],
-                                 m_q_list_adjusted[m_current_config_index][4]);
+                                 m_q_list_adjusted[m_current_config_index][4],
+                                 wire[0], wire[1], wire[2], wire[3]);
+                    m_retract_complete_logged = false;
                 }
                 else
                 {
@@ -908,8 +1126,16 @@ void MasterNode::control_loop()
                     m_current_config_index = 0;
                     m_q_list_adjusted.clear();
                     invalidateForceBaseline();
-                    RCLCPP_DEBUG(this->get_logger(), "Min deployment index reached: %d", m_current_config_index);
+                    if (!m_retract_complete_logged)
+                    {
+                        RCLCPP_INFO(this->get_logger(), "[cmd] retraction complete: min waypoint %d reached", m_current_config_index);
+                        m_retract_complete_logged = true;
+                    }
                 }
+            }
+            else if (m_current_config_index >= 0 && static_cast<size_t>(m_current_config_index) < m_q_list_adjusted.size())
+            {
+                logWaypointWaitWarn(m_current_config_index, m_q_list_adjusted[m_current_config_index], q_snapshot);
             }
         }
     }
@@ -933,6 +1159,14 @@ void MasterNode::control_loop()
                 m_f_pending = m_f_est; // baseline promoted to m_f_at_plan when the plan is accepted
             }
 
+            // Capture the request's identity/send-time BEFORE async_send_request:
+            // the response can arrive on another executor thread before this
+            // function returns.
+            const int seq = m_planner_request_seq.fetch_add(1) + 1;
+            const int64_t send_ns = this->now().nanoseconds();
+            m_planning_started_ns.store(send_ns);
+            m_planning_timeout_logged = false;
+
             auto request = std::make_shared<interfaces::srv::Planner::Request>();
             request->command = "generateTrajectory";
             request->value[0] = Xd_adj[0];
@@ -941,13 +1175,38 @@ void MasterNode::control_loop()
 
             auto response_callback = std::bind(&MasterNode::handle_planner_response, this, std::placeholders::_1);
             auto future_result = m_planner_client->async_send_request(request, response_callback);
-            RCLCPP_INFO(this->get_logger(), "Planner called.");
+            RCLCPP_INFO(this->get_logger(),
+                        "[comm] planner/command generateTrajectory (closed-loop) request #%d sent at %.3f: "
+                        "target_adj=[%.4f, %.4f, %.4f] q(wire) alpha1=%.4f beta1=%.4f alpha2=%.4f beta2=%.4f",
+                        seq, send_ns / 1.0e9, Xd_adj[0], Xd_adj[1], Xd_adj[2],
+                        q_snapshot[0], q_snapshot[1], q_snapshot[2], q_snapshot[3]);
 
             m_Xd_adj_prev = Xd_adj;
             m_q_prev = m_q;
 
             std::this_thread::sleep_for(10ms);
         }
+
+        const bool inserting_now = !m_flag_planning && (m_interface_key[k_forward_button_idx] || m_auto_insert);
+        const bool retracting_now = !m_flag_planning && (m_interface_key[k_backward_button_idx] || m_auto_retract);
+        int snapshot_index;
+        size_t snapshot_adjusted_size, snapshot_actuated_size;
+        {
+            std::lock_guard<std::mutex> lock(m_deploy_mutex);
+            snapshot_index = m_current_config_index;
+            snapshot_adjusted_size = m_q_list_adjusted.size();
+            snapshot_actuated_size = m_q_list_actuated.size();
+        }
+        if (inserting_now && !m_insert_active_prev)
+            RCLCPP_INFO(get_logger(), "[cmd] insertion started at waypoint %d/%zu", snapshot_index + 1, snapshot_adjusted_size);
+        else if (!inserting_now && m_insert_active_prev)
+            RCLCPP_INFO(get_logger(), "[cmd] insertion stopped at waypoint %d/%zu", snapshot_index + 1, snapshot_adjusted_size);
+        m_insert_active_prev = inserting_now;
+        if (retracting_now && !m_retract_active_prev)
+            RCLCPP_INFO(get_logger(), "[cmd] retraction started at waypoint %zu actuated", snapshot_actuated_size);
+        else if (!retracting_now && m_retract_active_prev)
+            RCLCPP_INFO(get_logger(), "[cmd] retraction stopped at waypoint %zu actuated", snapshot_actuated_size);
+        m_retract_active_prev = retracting_now;
 
         // Handle manual and auto insertion
         if (!m_flag_planning && (m_interface_key[k_forward_button_idx] || m_auto_insert))
@@ -956,11 +1215,12 @@ void MasterNode::control_loop()
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
-                RCLCPP_WARN(this->get_logger(), "Adjusted deployment list is empty; cannot send positions.");
+                RCLCPP_WARN(this->get_logger(), "[cmd] Adjusted deployment list is empty; cannot send positions.");
             }
 
             if (getReachStatus())
             {
+                m_waypoint_wait_index = -1;
                 if (m_q_list_actuated.empty())
                 {
                     blaze::StaticVector<double, 6> q = blaze::StaticVector<double, 6>({m_q[1], m_q[3], 0.0, m_q[0], m_q[2], 0.0});
@@ -978,14 +1238,19 @@ void MasterNode::control_loop()
 
                     publish_position(m_q_list_adjusted[m_current_config_index]);
 
-                    RCLCPP_INFO(this->get_logger(), "Sent q [%d/%zu]:  β1=%.3f, β2=%.3f, α1=%.3f, α2=%.3f",
-                                m_current_config_index + 1, m_q_list_adjusted.size(),
-                                m_q_list_adjusted[m_current_config_index][0],
-                                m_q_list_adjusted[m_current_config_index][1],
-                                m_q_list_adjusted[m_current_config_index][3],
-                                m_q_list_adjusted[m_current_config_index][4]);
+                    const auto wire = ctr_common::physicsToWire(m_q_list_adjusted[m_current_config_index]);
+                    RCLCPP_DEBUG(this->get_logger(),
+                                 "[cmd] Sent q [%d/%zu]: physics beta1=%.3f beta2=%.3f alpha1=%.3f alpha2=%.3f, "
+                                 "wire alpha1=%.3f beta1=%.3f alpha2=%.3f beta2=%.3f",
+                                 m_current_config_index + 1, m_q_list_adjusted.size(),
+                                 m_q_list_adjusted[m_current_config_index][0],
+                                 m_q_list_adjusted[m_current_config_index][1],
+                                 m_q_list_adjusted[m_current_config_index][3],
+                                 m_q_list_adjusted[m_current_config_index][4],
+                                 wire[0], wire[1], wire[2], wire[3]);
 
                     m_q_list_actuated.push_back(m_q_list_adjusted[m_current_config_index]);
+                    m_insert_complete_logged = false;
                 }
                 else
                 {
@@ -993,8 +1258,17 @@ void MasterNode::control_loop()
                     m_q_list_adjusted.clear();
                     invalidateForceBaseline();
                     m_current_config_index = 0;
-                    RCLCPP_DEBUG(this->get_logger(), "Max deployment index reached: %d", m_current_config_index);
+                    if (!m_insert_complete_logged)
+                    {
+                        RCLCPP_INFO(this->get_logger(), "[cmd] insertion complete: max deployment index reached");
+                        m_insert_complete_logged = true;
+                    }
                 }
+            }
+            else if (!m_q_list_adjusted.empty() && m_current_config_index >= 0 &&
+                     static_cast<size_t>(m_current_config_index) < m_q_list_adjusted.size())
+            {
+                logWaypointWaitWarn(m_current_config_index, m_q_list_adjusted[m_current_config_index], q_snapshot);
             }
         }
         // Handle manual and auto retraction
@@ -1006,14 +1280,20 @@ void MasterNode::control_loop()
 
             if (getReachStatus())
             {
+                m_waypoint_wait_index = -1;
                 if (m_q_list_actuated.size() > 1)
                 {
                     m_q_list_actuated.pop_back();
                     publish_position(m_q_list_actuated.back());
-                    RCLCPP_INFO(this->get_logger(), "Sent q [%zu/%zu]:  β1=%.3f, β2=%.3f, α1=%.3f, α2=%.3f",
-                                m_q_list_actuated.size() + 1, m_q_list_actuated.size() + 2,
-                                m_q_list_actuated.back()[0], m_q_list_actuated.back()[1],
-                                m_q_list_actuated.back()[3], m_q_list_actuated.back()[4]);
+                    const auto wire = ctr_common::physicsToWire(m_q_list_actuated.back());
+                    RCLCPP_DEBUG(this->get_logger(),
+                                 "[cmd] Sent q [%zu/%zu]: physics beta1=%.3f beta2=%.3f alpha1=%.3f alpha2=%.3f, "
+                                 "wire alpha1=%.3f beta1=%.3f alpha2=%.3f beta2=%.3f",
+                                 m_q_list_actuated.size() + 1, m_q_list_actuated.size() + 2,
+                                 m_q_list_actuated.back()[0], m_q_list_actuated.back()[1],
+                                 m_q_list_actuated.back()[3], m_q_list_actuated.back()[4],
+                                 wire[0], wire[1], wire[2], wire[3]);
+                    m_retract_complete_logged = false;
                 }
                 else
                 {
@@ -1029,11 +1309,19 @@ void MasterNode::control_loop()
                     if (std::filesystem::exists(file_path))
                     {
                         std::filesystem::remove(file_path);
-                        RCLCPP_INFO(this->get_logger(), "Deleted plannedPath.csv");
+                        RCLCPP_INFO(this->get_logger(), "[cmd] Deleted plannedPath.csv");
                     }
                     
-                    RCLCPP_INFO(this->get_logger(), "Min deployment index reached: %zu", m_q_list_actuated.size());
+                    if (!m_retract_complete_logged)
+                    {
+                        RCLCPP_INFO(this->get_logger(), "[cmd] retraction complete: min deployment index reached (%zu actuated)", m_q_list_actuated.size());
+                        m_retract_complete_logged = true;
+                    }
                 }
+            }
+            else if (!m_q_list_actuated.empty())
+            {
+                logWaypointWaitWarn(static_cast<int>(m_q_list_actuated.size()), m_q_list_actuated.back(), q_snapshot);
             }
         }
     }
@@ -1043,7 +1331,32 @@ void MasterNode::publish_position(const blaze::StaticVector<double, 6> &q)
 {
     interfaces::msg::Jointspace msg;
     msg.position = ctr_common::physicsToWire(q);
+    RCLCPP_DEBUG(this->get_logger(), "[cmd] publish_position wire: alpha1=%.4f beta1=%.4f alpha2=%.4f beta2=%.4f",
+                 msg.position[0], msg.position[1], msg.position[2], msg.position[3]);
     m_pub_joint_targ->publish(msg);
+}
+
+// Diagnostic-only: WARN (throttled) when the deployment loop has been waiting
+// on "reached" at the same waypoint for more than 5 s. Tracks the wait start
+// time keyed by `index` so it resets whenever the commanded waypoint changes.
+void MasterNode::logWaypointWaitWarn(int index, const blaze::StaticVector<double, 6> &target,
+                                      const blaze::StaticVector<double, 4UL> &q_feedback)
+{
+    if (index != m_waypoint_wait_index)
+    {
+        m_waypoint_wait_index = index;
+        m_waypoint_wait_start_time = this->now();
+        return;
+    }
+    const double elapsed = (this->now() - m_waypoint_wait_start_time).seconds();
+    if (elapsed > 5.0)
+    {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                             "[cmd] waiting for 'reached' at waypoint %d for %.1f s: target(physics) beta1=%.4f beta2=%.4f "
+                             "alpha1=%.4f alpha2=%.4f, feedback(wire) alpha1=%.4f beta1=%.4f alpha2=%.4f beta2=%.4f",
+                             index, elapsed, target[0], target[1], target[3], target[4],
+                             q_feedback[0], q_feedback[1], q_feedback[2], q_feedback[3]);
+    }
 }
 
 // ============================================================================
@@ -1066,11 +1379,62 @@ bool MasterNode::loadPlannedPath()
             const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::filesystem::file_time_type::clock::now() - mtime)
                                  .count();
-            RCLCPP_INFO(this->get_logger(), "plannedPath.csv loaded (written %.1f s ago)", age / 1000.0);
+            RCLCPP_INFO(this->get_logger(), "[traj] plannedPath.csv loaded (written %.1f s ago)", age / 1000.0);
         }
 
         m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
         m_current_config_index = 0;
+        m_waypoint_wait_index = -1;
+        m_insert_complete_logged = false;
+        m_retract_complete_logged = false;
+
+        RCLCPP_INFO(get_logger(), "[traj] %zu rows loaded, %zu rows after step-size adjustment (step=%.4f m)",
+                    m_q_list.size(), m_q_list_adjusted.size(), m_insertion_step);
+
+        if (!m_q_list_adjusted.empty())
+        {
+            const auto &first = m_q_list_adjusted.front();
+            const auto &last = m_q_list_adjusted.back();
+            RCLCPP_INFO(get_logger(),
+                        "[traj] first waypoint (physics): beta1=%.4f beta2=%.4f beta3=%.4f alpha1=%.4f alpha2=%.4f alpha3=%.4f",
+                        first[0], first[1], first[2], first[3], first[4], first[5]);
+            RCLCPP_INFO(get_logger(),
+                        "[traj] last waypoint (physics): beta1=%.4f beta2=%.4f beta3=%.4f alpha1=%.4f alpha2=%.4f alpha3=%.4f",
+                        last[0], last[1], last[2], last[3], last[4], last[5]);
+
+            blaze::StaticVector<double, 6> q_min = m_q_list_adjusted.front();
+            blaze::StaticVector<double, 6> q_max = m_q_list_adjusted.front();
+            bool any_out_of_limits = false;
+            for (const auto &q : m_q_list_adjusted)
+            {
+                for (size_t i = 0; i < 6; ++i)
+                {
+                    q_min[i] = std::min(q_min[i], q[i]);
+                    q_max[i] = std::max(q_max[i], q[i]);
+                }
+                const auto wire = ctr_common::physicsToWire(q);
+                for (size_t i = 0; i < 4; ++i)
+                {
+                    if (wire[i] < m_minCurrentPosLimit[i] || wire[i] > m_maxCurrentPosLimit[i])
+                    {
+                        any_out_of_limits = true;
+                    }
+                }
+            }
+            RCLCPP_INFO(get_logger(),
+                        "[traj] per-joint range (physics): beta1=[%.4f,%.4f] beta2=[%.4f,%.4f] alpha1=[%.4f,%.4f] alpha2=[%.4f,%.4f]",
+                        q_min[0], q_max[0], q_min[1], q_max[1], q_min[3], q_max[3], q_min[4], q_max[4]);
+            if (any_out_of_limits)
+            {
+                RCLCPP_WARN(get_logger(),
+                            "[traj] one or more waypoints fall outside the current limits snapshot (wire order "
+                            "alpha1,beta1,alpha2,beta2) min=[%.4f,%.4f,%.4f,%.4f] max=[%.4f,%.4f,%.4f,%.4f]; "
+                            "translation limits are dynamic/coupled, this is only a snapshot",
+                            m_minCurrentPosLimit[0], m_minCurrentPosLimit[1], m_minCurrentPosLimit[2], m_minCurrentPosLimit[3],
+                            m_maxCurrentPosLimit[0], m_maxCurrentPosLimit[1], m_maxCurrentPosLimit[2], m_maxCurrentPosLimit[3]);
+            }
+        }
+
         return true;
     }
     return false;
@@ -1084,7 +1448,7 @@ bool MasterNode::read_path_from_csv(std::vector<blaze::StaticVector<double, 6>> 
     const auto rows = ctr_common::csv::readNumericCsv(file_path);
     if (!rows)
     {
-        RCLCPP_ERROR(get_logger(), "Failed to open file: %s", file_path.c_str());
+        RCLCPP_ERROR(get_logger(), "[traj] Failed to open file: %s", file_path.c_str());
         return false;
     }
 
@@ -1094,10 +1458,10 @@ bool MasterNode::read_path_from_csv(std::vector<blaze::StaticVector<double, 6>> 
     init_q_list = manager_csv::parsePathRows(*rows, &bad_rows);
     if (bad_rows > 0)
     {
-        RCLCPP_WARN(get_logger(), "%zu rows did not contain 4 or 6 values and were skipped", bad_rows);
+        RCLCPP_WARN(get_logger(), "[traj] %zu rows did not contain 4 or 6 values and were skipped", bad_rows);
     }
 
-    RCLCPP_INFO(get_logger(), "Loaded %zu path points from CSV file.", init_q_list.size());
+    RCLCPP_INFO(get_logger(), "[traj] Loaded %zu path points from CSV file.", init_q_list.size());
     return true;
 }
 

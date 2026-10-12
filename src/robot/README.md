@@ -194,6 +194,44 @@ the hardware is connected — check `robot_status`.
 `qt_gui`, `pinn_fk`, `ekf_node`, and `cosserat_fk` need no hardware. Use `sim.py` to
 run the model nodes alone.
 
+## Diagnostic logs
+
+Every node in this package (`ctr_robot`, `qt_gui`, `pinn_fk`, `ekf_node`, `cosserat_fk`)
+calls `ctr_common::installPackageFileLog(*this, "robot")` as the first statement of its
+constructor. This tees the process' rcutils log stream (`RCLCPP_*` records) into:
+
+```
+<log_root>/[<CTR_RUN_ID>/]robot/<YYYY-MM-DD_HH-MM-SS>_<node>_<pid>.log
+<log_root>/[<CTR_RUN_ID>/]robot/<node>_latest.log   (symlink to the newest file)
+```
+
+`log_root` resolves from the `log_dir` parameter, then `CTR_LOG_DIR`, then
+`<data_root>/log`. Console output and `~/.ros/log` are unaffected.
+
+`ctr_robot` additionally logs through spdlog (`m_logger`, prefixed `[RobotNode]` —
+pre-dates the ROS 2 port). A small sink installed on that logger in `robot_node.cpp`
+forwards every spdlog record into the same `robot/<...>_ctr_robot_<pid>.log` file under
+logger name `robot_node.spdlog`, so a single file has both.
+
+This is **separate** from the CANopen driver's own log,
+`log/Robot/<YYYY-MM-DD_HH-MM-SS>.txt` (CWD-relative, written directly by
+`ctr_robot_driver`'s `CTRobot` — see [`ctr_robot_driver`](../ctr_robot_driver/README.md)).
+That file only covers the hardware seam; the package log above covers everything the
+node itself does (service calls, mode transitions, target handling, task dispatch).
+
+Messages are grep-able by stage tag: `[lifecycle]` (parameters, limits, CAN bring-up),
+`[comm]` (`robot_config`/`robot_enable` requests and responses), `[procedure]` (control
+mode, start/end procedure, enable/disable, homing and collet task dispatch, reached
+status), `[cmd]` (`joint_space/target` handling, including the dropped-target and
+out-of-limit warnings and the periodic control-loop summary).
+
+Default level is INFO; per-cycle/per-message detail is DEBUG. Raise it for one node at
+launch time or via `ros2 param`:
+
+```bash
+ros2 run robot ctr_robot --ros-args --log-level ctr_robot:=debug
+```
+
 ## Threading
 
 `qt_gui` runs a `MultiThreadedExecutor` beside the Qt thread. Widget mutations from

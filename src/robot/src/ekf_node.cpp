@@ -14,6 +14,7 @@
 
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "ctr_common/joint_conventions.hpp"
+#include "ctr_common/package_log.hpp"
 #include "robot/quat_utils.hpp"
 using namespace robot_quat;
 #include "ctr_common/runtime_paths.hpp"
@@ -71,6 +72,7 @@ private:
 public:
   KalmanFilterNode() : Node("kalman_filter_node")
   {
+    ctr_common::installPackageFileLog(*this, "robot");
     KalmanFilterNode::initNodeParameters();
     KalmanFilterNode::setupDynamicParameterUpdates();
     KalmanFilterNode::setupRosInterfaces();

@@ -16,6 +16,12 @@
 #include "interfaces/srv/config.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include "ctr_robot_driver/Robot.hpp"
+#include <mutex>
+#include <rcutils/logging.h>
+#include <spdlog/sinks/base_sink.h>
+#include "ctr_common/package_log.hpp"
+#include <sstream>
+#include <iomanip>
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
@@ -28,6 +34,61 @@ enum class CtrlMode : int
   Position = 0x02,
   Velocity = 0x03,
 };
+// Human-readable control-mode name for diagnostic messages.
+static const char *ctrlModeName(CtrlMode mode)
+{
+  switch (mode)
+  {
+  case CtrlMode::Config:
+    return "Config";
+  case CtrlMode::Manual:
+    return "Manual";
+  case CtrlMode::Position:
+    return "Position";
+  case CtrlMode::Velocity:
+    return "Velocity";
+  }
+  return "Unknown";
+}
+
+namespace
+{
+// Tees every record written through m_logger (spdlog) into the same package
+// log file installPackageFileLog() sets up for rcutils/RCLCPP_* records, so a
+// single <log_root>/robot/<...>_ctr_robot_<pid>.log has both.
+class PackageLogSink : public spdlog::sinks::base_sink<std::mutex>
+{
+protected:
+  void sink_it_(const spdlog::details::log_msg &msg) override
+  {
+    int severity = RCUTILS_LOG_SEVERITY_INFO;
+    switch (msg.level)
+    {
+    case spdlog::level::trace:
+    case spdlog::level::debug:
+      severity = RCUTILS_LOG_SEVERITY_DEBUG;
+      break;
+    case spdlog::level::info:
+      severity = RCUTILS_LOG_SEVERITY_INFO;
+      break;
+    case spdlog::level::warn:
+      severity = RCUTILS_LOG_SEVERITY_WARN;
+      break;
+    case spdlog::level::err:
+      severity = RCUTILS_LOG_SEVERITY_ERROR;
+      break;
+    case spdlog::level::critical:
+      severity = RCUTILS_LOG_SEVERITY_FATAL;
+      break;
+    default:
+      break;
+    }
+    ctr_common::writePackageLog(severity, "robot_node.spdlog",
+                                std::string(msg.payload.data(), msg.payload.size()));
+  }
+  void flush_() override {}
+};
+} // namespace
 
 class RobotNode : public rclcpp::Node
 {
@@ -35,10 +96,23 @@ class RobotNode : public rclcpp::Node
 public:
   RobotNode() : rclcpp::Node("ctr_robot")
   {
+    ctr_common::installPackageFileLog(*this, "robot");
+    m_logger->sinks().push_back(std::make_shared<PackageLogSink>());
+
     m_flag_use_target_action = false;
     m_trans_limit = true;
     m_encoders_set = {1, 1, 1, 1}; /// temoporarly for development
     declare_parameters();
+
+    RCLCPP_INFO(get_logger(),
+                "[lifecycle] static position limits (wire [a1,b1,a2,b2]): min=[%.4f, %.4f, %.4f, %.4f] "
+                "max=[%.4f, %.4f, %.4f, %.4f] rad/m",
+                k_minStaticLimitAll[0], k_minStaticLimitAll[1], k_minStaticLimitAll[2], k_minStaticLimitAll[3],
+                k_maxStaticLimitAll[0], k_maxStaticLimitAll[1], k_maxStaticLimitAll[2], k_maxStaticLimitAll[3]);
+    RCLCPP_INFO(get_logger(),
+                "[lifecycle] stage clearances: rotary=[%.4f, %.4f] rad, linear=[%.4f, %.4f] m",
+                k_rotary_stage_min_clearance, k_rotary_stage_max_clearance,
+                k_linear_stage_min_clearance, k_linear_stage_max_clearance);
 
     // Runtime paths for the CANopen driver (formerly compile-time macros).
     CTRobot::RuntimePaths paths;
@@ -52,6 +126,12 @@ public:
     paths.encoder_memory_dir = declare_parameter<std::string>("encoder_memory_dir", "");
     paths.boot_max_attempts = static_cast<int>(declare_parameter<int64_t>("boot_max_attempts", 10));
     paths.boot_timeout_s = declare_parameter<double>("boot_timeout_s", 5.0);
+
+    RCLCPP_INFO(get_logger(),
+                "[lifecycle] CANopen runtime paths: can_interface='%s' canopen_dir='%s' "
+                "encoder_memory_dir='%s' boot_max_attempts=%d boot_timeout_s=%.2f",
+                paths.can_interface.c_str(), paths.canopen_dir.c_str(),
+                paths.encoder_memory_dir.c_str(), paths.boot_max_attempts, paths.boot_timeout_s);
 
     auto robot = std::make_unique<CTRobot>();
     robot->setRuntimePaths(paths);
@@ -91,9 +171,10 @@ public:
   {
     if (!m_robot->connect(k_sample_time))
     {
-      RCLCPP_FATAL(get_logger(), "CANopen bring-up failed after retries - node stays up, hardware unavailable");
+      RCLCPP_FATAL(get_logger(), "[lifecycle] CANopen bring-up failed after retries - node stays up, hardware unavailable");
       return false;
     }
+    RCLCPP_INFO(get_logger(), "[lifecycle] CANopen bring-up succeeded - hardware connected");
     return true;
   }
 
@@ -122,14 +203,14 @@ private:
     {
       if (maxVelVec[i] > k_velocityPhysicalLimit[i])
       {
-        m_logger->warn("[RobotNode] maxVel[{}] = {:.4f} exceeds physical limit {:.4f}, clamping to limit",
+        m_logger->warn("[lifecycle] [RobotNode] maxVel[{}] = {:.4f} exceeds physical limit {:.4f}, clamping to limit",
                        i, maxVelVec[i], k_velocityPhysicalLimit[i]);
         maxVelVec[i] = k_velocityPhysicalLimit[i];
       }
 
       if (maxAccVec[i] > k_accelerationPhysicalLimit[i])
       {
-        m_logger->warn("[RobotNode] maxAcc[{}] = {:.4f} exceeds physical limit {:.4f}, clamping to limit",
+        m_logger->warn("[lifecycle] [RobotNode] maxAcc[{}] = {:.4f} exceeds physical limit {:.4f}, clamping to limit",
                        i, maxAccVec[i], k_accelerationPhysicalLimit[i]);
         maxAccVec[i] = k_accelerationPhysicalLimit[i];
       }
@@ -142,12 +223,18 @@ private:
       m_maxAcc[i] = maxAccVec[i];
     }
 
-    m_logger->info("[RobotNode] Max Velocities set to: [{}, {}, {}, {}]",
+    m_logger->info("[lifecycle] [RobotNode] Max Velocities set to: [{}, {}, {}, {}]",
                    m_maxVel[0], m_maxVel[1], m_maxVel[2], m_maxVel[3]);
     declare_parameter<double>("Kp", 30.0);
     declare_parameter<double>("Ki", 5.0);
     m_kp = get_parameter("Kp").as_double();
     m_ki = get_parameter("Ki").as_double();
+
+    RCLCPP_INFO(get_logger(),
+                "[lifecycle] max accel/vel (wire [a1,b1,a2,b2]): maxVel=[%.4f, %.4f, %.4f, %.4f] "
+                "maxAcc=[%.4f, %.4f, %.4f, %.4f] Kp=%.3f Ki=%.3f",
+                m_maxVel[0], m_maxVel[1], m_maxVel[2], m_maxVel[3],
+                m_maxAcc[0], m_maxAcc[1], m_maxAcc[2], m_maxAcc[3], m_kp, m_ki);
   }
 
   // Setup ROS interfaces including publishers, subscribers, services, and timers
@@ -261,6 +348,45 @@ private:
                      "Joint %d (%s) failed the CiA-402 enable transition - that joint is NOT under control",
                      i, k_joint_names[i]);
       m_enable_fault_prev[i] = en_fault_status[i];
+    }
+
+    if (m_mode == CtrlMode::Position)
+    {
+      blaze::StaticVector<double, 4UL> x_des_snapshot;
+      {
+        std::lock_guard<std::mutex> lock(m_x_des_log_mutex);
+        x_des_snapshot = m_x_des_log_snapshot;
+      }
+      const bool all_reached = reached_status[0] && reached_status[1] && reached_status[2] && reached_status[3];
+      if (all_reached != m_reached_prev)
+      {
+        RCLCPP_INFO(get_logger(),
+                    "[procedure] reached status changed to %s (wire [a1,b1,a2,b2]): x_des=[%.5f, %.5f, %.5f, %.5f] x=[%.5f, %.5f, %.5f, %.5f]",
+                    all_reached ? "REACHED" : "NOT REACHED",
+                    x_des_snapshot[0], x_des_snapshot[1], x_des_snapshot[2], x_des_snapshot[3],
+                    m_x[0], m_x[1], m_x[2], m_x[3]);
+        m_reached_prev = all_reached;
+        m_not_reached_since = all_reached ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
+        m_not_reached_target = x_des_snapshot;
+      }
+      else if (!all_reached && x_des_snapshot == m_not_reached_target)
+      {
+        const auto stuck_for = std::chrono::steady_clock::now() - m_not_reached_since;
+        if (stuck_for > std::chrono::seconds(10))
+        {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                               "[procedure] target not reached for %.1f s (wire [a1,b1,a2,b2]): x_des=[%.5f, %.5f, %.5f, %.5f] x=[%.5f, %.5f, %.5f, %.5f]",
+                               std::chrono::duration<double>(stuck_for).count(),
+                               x_des_snapshot[0], x_des_snapshot[1], x_des_snapshot[2], x_des_snapshot[3],
+                               m_x[0], m_x[1], m_x[2], m_x[3]);
+        }
+      }
+      else if (!all_reached)
+      {
+        // target changed while still not reached - restart the not-reached timer against the new target
+        m_not_reached_since = std::chrono::steady_clock::now();
+        m_not_reached_target = x_des_snapshot;
+      }
     }
 
     if ((abs(m_x[1] - k_pos_preEngage[1]) < 0.001) && (abs(m_x[3] - k_pos_preEngage[3]) < 0.001))
@@ -378,6 +504,13 @@ private:
   {
     if (!m_robot->isConnected())
       return; // hardware not (yet) up
+    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 1000,
+                          "[cmd] control loop: mode=%s x_des=[%.5f, %.5f, %.5f, %.5f] "
+                          "limits=[%.5f, %.5f, %.5f, %.5f]..[%.5f, %.5f, %.5f, %.5f] trans_limit=%d",
+                          ctrlModeName(m_mode), m_x_des[0], m_x_des[1], m_x_des[2], m_x_des[3],
+                          minDynamicPosLimit[0], minDynamicPosLimit[1], minDynamicPosLimit[2], minDynamicPosLimit[3],
+                          maxDynamicPosLimit[0], maxDynamicPosLimit[1], maxDynamicPosLimit[2], maxDynamicPosLimit[3],
+                          m_trans_limit);
     switch (m_mode)
     {
     case CtrlMode::Manual:
@@ -404,6 +537,18 @@ private:
   // Subscription callback function to updates the target joint positions and velocities
   void jointSpaceTarget_callback(const interfaces::msg::Jointspace::ConstSharedPtr msg)
   {
+    const auto now = std::chrono::steady_clock::now();
+    if (m_last_target_rx.time_since_epoch().count() != 0 && now - m_last_target_rx > std::chrono::seconds(1))
+    {
+      RCLCPP_INFO(get_logger(), "[cmd] joint_space/target resumed after %.3f s of silence",
+                  std::chrono::duration<double>(now - m_last_target_rx).count());
+    }
+    m_last_target_rx = now;
+
+    RCLCPP_DEBUG(get_logger(),
+                 "[cmd] target received (wire [a1,b1,a2,b2]): pos=[%.5f, %.5f, %.5f, %.5f] vel=[%.5f, %.5f, %.5f, %.5f]",
+                 msg->position[0UL], msg->position[1UL], msg->position[2UL], msg->position[3UL],
+                 msg->velocity[0UL], msg->velocity[1UL], msg->velocity[2UL], msg->velocity[3UL]);
 
     if (!m_flag_manual && !m_flag_use_target_action)
     {
@@ -418,21 +563,51 @@ private:
         m_xdot_des[1UL] = msg->velocity[1UL];
         m_xdot_des[2UL] = msg->velocity[2UL];
         m_xdot_des[3UL] = msg->velocity[3UL];
-        // m_logger->info("[RobotNode] Vel target received: [{:.4f}, {:.4f}, {:.4f}, {:.4f}]",
-        //                m_xdot_des[0], m_xdot_des[1], m_xdot_des[2], m_xdot_des[3]);
         break;
       case CtrlMode::Position:
         m_x_des[0UL] = msg->position[0UL];
         m_x_des[1UL] = msg->position[1UL];
         m_x_des[2UL] = msg->position[2UL];
         m_x_des[3UL] = msg->position[3UL];
-        // m_logger->info("[RobotNode] Pos target received: [{:.4f}, {:.4f}, {:.4f}, {:.4f}]",
-        //                m_x_des[0], m_x_des[1], m_x_des[2], m_x_des[3]);
+        if (m_trans_limit)
+        {
+          std::ostringstream violations;
+          violations << std::fixed << std::setprecision(5);
+          for (int i = 0; i < 4; ++i)
+          {
+            if (m_x_des[i] < minDynamicPosLimit[i] || m_x_des[i] > maxDynamicPosLimit[i])
+            {
+              if (violations.tellp() > 0)
+                violations << "; ";
+              violations << k_joint_names[i] << "=" << m_x_des[i]
+                         << " [" << minDynamicPosLimit[i] << ", " << maxDynamicPosLimit[i] << "]";
+            }
+          }
+          if (violations.tellp() > 0)
+          {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                                 "[cmd] target outside dynamic limits - drive will clamp: %s",
+                                 violations.str().c_str());
+          }
+        }
+        break;
+      default:
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                             "[cmd] target dropped: control mode is %s (not Position/Velocity)",
+                             ctrlModeName(m_mode));
         break;
       }
+      {
+        std::lock_guard<std::mutex> lock(m_x_des_log_mutex);
+        m_x_des_log_snapshot = m_x_des;
+      }
     }
-
-    // std::cout << "CtrlMode:" << m_mode << std::endl;
+    else
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "[cmd] target dropped: m_flag_manual=%d m_flag_use_target_action=%d",
+                           m_flag_manual, m_flag_use_target_action);
+    }
   }
 
   // Subscription callback function updates the current catheter tip status using EMTracker topic
@@ -456,6 +631,7 @@ private:
   // Service callback to triger tasks, enable, and control mode section
   void enableService_callback(const std::shared_ptr<interfaces::srv::Config::Request> request, std::shared_ptr<interfaces::srv::Config::Response> response)
   {
+    RCLCPP_INFO(get_logger(), "[comm] robot_enable request: command='%s' value=%lld", request->command.c_str(), static_cast<long long>(request->value));
     if (request->command == "toggleEnable")
     {
       m_cancel_flag = true; // Signal cancellation to any running task
@@ -478,7 +654,9 @@ private:
     {
       response->success = false;
       response->message = "Invalid command";
+      RCLCPP_WARN(get_logger(), "[comm] robot_enable rejected: command='%s' is not recognised", request->command.c_str());
     }
+    RCLCPP_INFO(get_logger(), "[comm] robot_enable response: success=%d message='%s'", response->success, response->message.c_str());
   }
 
   // Service callback to triger tasks, enable, and control mode section
@@ -486,6 +664,7 @@ private:
   {
     std::future<std::string> result_future;
 
+    RCLCPP_INFO(get_logger(), "[comm] robot_config request: command='%s' value=%lld", request->command.c_str(), static_cast<long long>(request->value));
     if (request->command == "toggleEnable")
     {
       m_cancel_flag = true; // Signal cancellation to any running task
@@ -502,51 +681,53 @@ private:
     else if (request->command == "setCtrlMode")
     {
       setCtrlMode(static_cast<CtrlMode>(request->value));
+      RCLCPP_INFO(get_logger(), "[comm] robot_config '%s' applied synchronously (no response payload)", request->command.c_str());
       return;
     }
     else if (request->command == "setTransLimMode")
     {
       setTranLim(request->value);
+      RCLCPP_INFO(get_logger(), "[comm] robot_config '%s' applied synchronously (no response payload)", request->command.c_str());
       return;
     }
     else if (request->command == "findLinearHome")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return findLinearHome(); });
     }
     else if (request->command == "engageCollets")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return engageCollets(); });
     }
     else if (request->command == "disengageCollets")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return disengageCollets(); });
     }
     else if (request->command == "lockCollets")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return lockCollets(); });
     }
     else if (request->command == "unlockCollets")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return unlockCollets(); });
     }
     else if (request->command == "findRotaryHome")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return findRotaryHome(); });
     }
     else if (request->command == "goHome")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return goHome(); });
     }
     else if (request->command == "findRotaryHomeAndGoHome")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return findRotaryHomeAndGoHome(); });
     }
     else if (request->command == "startProcedure")
@@ -559,22 +740,24 @@ private:
     }
     else if (request->command == "engageAndUnlock")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return engageUnlock(); });
     }
     else if (request->command == "lockAndDisengage")
     {
-      result_future = dispatchTask([this]()
+      result_future = dispatchTask(request->command, [this]()
                                    { return lockDisengage(); });
     }
     else
     {
       response->success = false;
       response->message = "Invalid command";
+      RCLCPP_WARN(get_logger(), "[comm] robot_config rejected: command='%s' is not recognised", request->command.c_str());
       return;
     }
     response->success = true;
     response->message = "Task received";
+    RCLCPP_INFO(get_logger(), "[comm] robot_config response: success=%d message='%s'", response->success, response->message.c_str());
   }
 
   // Handle the service response future
@@ -648,7 +831,7 @@ private:
   }
 
   // dispatch robot config tasks on a dedicated thread
-  std::future<std::string> dispatchTask(std::function<std::string()> task)
+  std::future<std::string> dispatchTask(const std::string &name, std::function<std::string()> task)
   {
     std::lock_guard<std::mutex> lock(m_task_mutex);
     m_cancel_flag = true; // Signal cancellation to any running task
@@ -658,10 +841,18 @@ private:
     auto promise = std::make_shared<std::promise<std::string>>();
     std::future<std::string> results_future = promise->get_future();
 
-    m_current_task = [task, promise]()
+    RCLCPP_INFO(get_logger(), "[procedure] task '%s' dispatched", name.c_str());
+    const auto dispatch_time = std::chrono::steady_clock::now();
+
+    m_current_task = [this, task, promise, name, dispatch_time]()
     {
       std::string result = task(); // Execuse the task
-      promise->set_value(result);  // return result
+      const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - dispatch_time)
+                                    .count();
+      RCLCPP_INFO(get_logger(), "[procedure] task '%s' completed: result='%s' (%ld ms)",
+                  name.c_str(), result.c_str(), duration_ms);
+      promise->set_value(result); // return result
     };
 
     m_flag_task_ready = true;
@@ -690,6 +881,8 @@ private:
   // set robot control mode
   void setCtrlMode(const CtrlMode mode)
   {
+    const CtrlMode prev_mode = m_mode;
+
     if (mode == CtrlMode::Config)
     {
       switchToConfigMode();
@@ -728,6 +921,8 @@ private:
       m_procedure = true;
       m_logger->info("[RobotNode] Procedure Started");
     }
+    RCLCPP_INFO(get_logger(), "[procedure] control mode: %s -> %s (procedure=%d)",
+                ctrlModeName(prev_mode), ctrlModeName(m_mode), m_procedure);
   }
 
   // enable/disable hardcoded translation limits for stages
@@ -756,7 +951,8 @@ private:
   void toggleEnable()
   {
     blaze::StaticVector<bool, 4UL> en_status = m_robot->getEnableStatus();
-    if (en_status[0] || en_status[1] || en_status[2] || en_status[3])
+    const bool was_enabled = en_status[0] || en_status[1] || en_status[2] || en_status[3];
+    if (was_enabled)
     {
       m_robot->enableOperation(false);
       endProcedure();
@@ -765,6 +961,8 @@ private:
     {
       m_robot->enableOperation(true);
     }
+    RCLCPP_INFO(get_logger(), "[procedure] toggleEnable: enabled %d -> %d (mode=%s, procedure=%d)",
+                was_enabled, !was_enabled, ctrlModeName(m_mode), m_procedure);
   }
 
   // enable or distable the robot
@@ -772,6 +970,8 @@ private:
   {
     m_robot->enableOperation(false);
     endProcedure();
+    RCLCPP_INFO(get_logger(), "[procedure] disable: operation disabled (mode=%s, procedure=%d)",
+                ctrlModeName(m_mode), m_procedure);
   }
 
   // lock the couplings and move the the linear statges to the proximal mechanical limit of the robot to home the linear encoders
@@ -1489,7 +1689,7 @@ private:
   // set the m_procedure flag to false
   std::string startProcedure()
   {
-    m_logger->info("[RobotNode] Setting control mode to Position Control");
+    m_logger->info("[procedure] [RobotNode] Setting control mode to Position Control");
     setCtrlMode(static_cast<CtrlMode>(CtrlMode::Position));
     std::string res;
     res = "OK";
@@ -1499,8 +1699,10 @@ private:
   // set the m_procedure flag to false
   void endProcedure()
   {
+    const bool was_running = m_procedure;
     m_procedure = false;
-    m_logger->info("[RobotNode] Procedure Ended");
+    m_logger->info("[procedure] [RobotNode] Procedure Ended (procedure {} -> false, mode={})",
+                   was_running, ctrlModeName(m_mode));
   }
 
   // Wait in milliseconds
@@ -1553,15 +1755,25 @@ private:
   // member variables
   std::atomic<bool> m_stop_worker{false};
   std::array<bool, 4> m_enable_fault_prev = {0, 0, 0, 0}; // for edge-triggered fault logging
-  bool m_flag_manual, m_flag_use_target_action, m_trans_limit = false;
-  bool m_emtracker_alive, m_targpublisher_alive, m_targpublisher_alive_tmep = false;
-  bool m_flag_readyToEngage, m_flagEngaged, m_head_attached = false;
+  // Every flag is initialised explicitly: `bool a, b, c = false;` only
+  // initialises c. m_flag_manual gates every joint_space/target message in
+  // jointSpaceTarget_callback, so an indeterminate (non-zero) value silently
+  // dropped all manager position targets ("Start Procedure does nothing").
+  bool m_flag_manual = false, m_flag_use_target_action = false, m_trans_limit = false;
+  bool m_emtracker_alive = false, m_targpublisher_alive = false, m_targpublisher_alive_tmep = false;
+  bool m_flag_readyToEngage = false, m_flagEngaged = false, m_head_attached = false;
   int m_locked = 0;
   double m_kp = 0.00, m_ki = 0.00;
   bool m_procedure = false;
   std::array<bool, 7> m_interface_key = {0, 0, 0, 0, 0, 0, 0};
   std::array<bool, 4> m_encoders_set = {0, 0, 0, 0};
-  CtrlMode m_mode; // controller mode (manual, velocity, position)
+  CtrlMode m_mode = CtrlMode::Config; // controller mode (manual, velocity, position); Config issues no targets
+  bool m_reached_prev = true;                                 // for edge-triggered reached-status logging in Position mode
+  std::chrono::steady_clock::time_point m_not_reached_since{}; // start of current not-reached streak
+  blaze::StaticVector<double, 4UL> m_not_reached_target;       // target in effect when the not-reached streak started
+  std::chrono::steady_clock::time_point m_last_target_rx{};    // last time jointSpaceTarget_callback saw a message
+  std::mutex m_x_des_log_mutex;                                  // guards m_x_des_log_snapshot (written in m_cbGroup2, read in m_cbGroup3)
+  blaze::StaticVector<double, 4UL> m_x_des_log_snapshot;          // diagnostics-only copy of m_x_des for the status timer
   size_t publisher_count;
   blaze::StaticVector<double, 4UL> m_x, m_x_des, m_x_error;           // in SI units
   blaze::StaticVector<double, 4UL> m_xdot, m_xdot_manual, m_xdot_des; // in SI units

@@ -128,13 +128,15 @@ private:
     void updateSimout(const interfaces::msg::Taskspace::SharedPtr msg);
     void updateForceEstimate(const interfaces::msg::Force::SharedPtr msg);
     void tf2_receive_timer_callback();
-    void handle_service_response(const rclcpp::Client<interfaces::srv::Config>::SharedFuture future);
+    void handle_service_response(const std::string &command, const rclcpp::Client<interfaces::srv::Config>::SharedFuture future);
     void handle_planner_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future);
     void handle_replan_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future);
 
     // Control functions
     void control_loop();
     void maybeRequestDeploymentReplan();
+    void logWaypointWaitWarn(int index, const blaze::StaticVector<double, 6> &target,
+                              const blaze::StaticVector<double, 4UL> &q_feedback);
     void invalidateForceBaseline();
     void publish_position(const blaze::StaticVector<double, 6>& q);
 
@@ -173,7 +175,7 @@ private:
     std::string m_targets_csv = "random_interior_points.csv"; // target list in Input_Files/
 
     // Member variables
-    CtrlMode m_ctrl_mode, m_ctrl_mode_prev;
+    CtrlMode m_ctrl_mode = CtrlMode::Config, m_ctrl_mode_prev = CtrlMode::Config;
     HighLvlCtrMode m_high_level_mode;
     
     bool m_closed_loop_enabled = false;
@@ -221,23 +223,26 @@ private:
     std::vector<Eigen::Vector3d> m_csv_targets;
     size_t m_csv_target_index = 0;
     
-    bool m_enabled, m_procedure, m_reached, m_encoder = false;
-    bool m_engaged, m_ready_to_engage, m_head_attached = false;
-    int m_locked;
+    // Explicit per-member initialisers: `bool a, b = false;` only initialises b,
+    // and control_loop() reads these before the first robot_status message.
+    bool m_enabled = false, m_procedure = false, m_reached = false, m_encoder = false;
+    bool m_engaged = false, m_ready_to_engage = false, m_head_attached = false;
+    int m_locked = 0;
     std::atomic<bool> m_robot_frozen{false};
-    bool m_flag_manual, m_flag_use_target_action, m_flag_enabled, m_trans_limit, m_trans_limit_prev = false;
+    bool m_flag_manual = false, m_flag_use_target_action = false, m_flag_enabled = false, m_trans_limit = false, m_trans_limit_prev = false;
     
     blaze::StaticVector<bool, 4UL> m_enabledJoints, m_encoderJoints, m_reachedJoints;
     // Previous enable-fault latches, for edge-triggered logging (the Status
     // topic republishes on a timer, so level-triggered would flood the log).
     std::array<bool, 4> m_enableFaultPrev = {0, 0, 0, 0};
     
-    Eigen::Matrix4d m_trans_tip;
-    Eigen::Matrix4d m_trans_probe;
-    Eigen::Vector3d m_Xd, m_Xd_prev, m_Xd_adj_prev;
-    Eigen::Vector3d m_X, m_Xsim;
+    Eigen::Matrix4d m_trans_tip = Eigen::Matrix4d::Identity();
+    Eigen::Matrix4d m_trans_probe = Eigen::Matrix4d::Identity();
+    // Eigen does not zero-initialise; m_Xd_prev feeds the "target changed" test.
+    Eigen::Vector3d m_Xd = Eigen::Vector3d::Zero(), m_Xd_prev = Eigen::Vector3d::Zero(), m_Xd_adj_prev = Eigen::Vector3d::Zero();
+    Eigen::Vector3d m_X = Eigen::Vector3d::Zero(), m_Xsim = Eigen::Vector3d::Zero();
     std::mutex m_feedback_mutex; // guards m_X, m_Xsim, m_Xd, m_tip_position, m_q, m_qdot, m_current
-    Eigen::Vector3d m_tip_position;  // For CSV target error calculation
+    Eigen::Vector3d m_tip_position = Eigen::Vector3d::Zero();  // For CSV target error calculation
 
     // Force-triggered deployment replanning
     std::mutex m_force_mutex; // guards m_f_est (force subscription) AND the plan
@@ -274,6 +279,27 @@ private:
     rclcpp::CallbackGroup::SharedPtr m_callback_group_tf2;
     rclcpp::CallbackGroup::SharedPtr m_callback_group_pub1;
     rclcpp::TimerBase::SharedPtr m_control_timer;
+
+    // --- Diagnostic-only state for package logging (manager/<node>_<pid>.log) ---
+    // None of the following members influence control behaviour; they exist
+    // solely to support edge-triggered / throttled diagnostic logging.
+    double m_planner_timeout_s = 30.0; // s; ERROR-once watchdog for a stuck planner/command request (no retry/reset)
+    // Set BEFORE async_send_request on the control-loop thread, read from the
+    // service-response executor thread (handle_planner_response /
+    // handle_replan_response) and from the control-loop watchdog: atomic.
+    std::atomic<int64_t> m_planning_started_ns{0}; // this->now().nanoseconds() at request send time
+    std::atomic<int> m_planner_request_seq{0};     // increments per planner/command request, for log correlation
+    bool m_planning_timeout_logged = false;        // one-shot guard for the timeout ERROR (control-loop thread only)
+    std::string m_planner_branch_reason_prev;      // edge-trigger: last "why not calling planner" reason logged
+    rclcpp::Time m_alignment_start_time{0, 0, RCL_ROS_TIME}; // start of the current tube-rotation-alignment episode
+    double m_alignment_start_diff = 0.0;           // max tube angle error (rad) when that episode began
+    bool m_tf2_unavailable_prev = false;           // tip/probe transform lookup failed last cycle
+    bool m_procedure_log_prev = false, m_enabled_log_prev = false, m_reached_log_prev = false;
+    int m_control_mode_log_prev = -1;
+    bool m_insert_active_prev = false, m_retract_active_prev = false; // deployment insertion/retraction start/stop edges
+    bool m_insert_complete_logged = false, m_retract_complete_logged = false; // edge-trigger for the "complete" INFO
+    rclcpp::Time m_waypoint_wait_start_time{0, 0, RCL_ROS_TIME};
+    int m_waypoint_wait_index = -1; // "waiting for reached" stall timer, keyed by waypoint index
 };
 
 #endif // MASTER_NODE_HPP

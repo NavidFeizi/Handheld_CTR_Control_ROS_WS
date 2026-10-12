@@ -287,3 +287,78 @@ All runs used the `ctr-jazzy-build` container.
   low-z target, which previously failed. Also compare the
   `[planTwoPhase] Phase 2 (FTL-optimal deployment: …)` schedule choice against earlier
   logs; a ranking change is expected under the new metric.
+
+## 8 Addendum (2026-10-12): revolute domain and the stalled "Start Procedure"
+
+### Field failure (2026-09-29)
+
+Pressing **Start Procedure** in Planner mode did nothing. Robot driver log
+(`log/Robot/2026-09-29_20-33-57.txt`): `Procedure Started` and `Selected Mode: Position`
+were logged repeatedly, but no motion followed. The manager never logged
+`Planner called.`, so `generateTrajectory` was never sent. Before calling the planner,
+the manager first publishes a tube-alignment target on `joint_space/target`
+(α1 = α2 = θ) and waits for both angles to come within 10°. That target was
+dropped by `robot_node::jointSpaceTarget_callback`. The callback gates on `m_flag_manual`,
+which was declared `bool m_flag_manual, m_flag_use_target_action, m_trans_limit = false;`.
+In that declaration only `m_trans_limit` is initialised. `make_shared<RobotNode>()` runs
+the user-provided constructor without zero-initialisation, so the flag held whatever
+bytes the heap returned. With a non-zero value, every manager target was dropped
+without a log line. The tubes never aligned, so the planner was never called.
+`[INFERENCE]`: we could not reproduce this off-robot. Without CAN the node aborts in
+`initHardware()`, which happens before a target can be delivered under valgrind. The
+evidence is the declaration, the gate, and the missing `Planner called.` line.
+
+Fix: initialise every flag explicitly in `robot_node.cpp` (`m_mode` now starts in
+`CtrlMode::Config`). `master_node.hpp` got the same treatment: `bool`s plus `Eigen`
+vectors, which Eigen never zero-initialises.
+
+### Revolute domain mismatch
+
+| Quantity | Trained model (normaliser `x_half_range`, v3 metadata) | FP64 `parameters.json` before | Middle-tube drive limit (`robot_node`) |
+|---|---|---|---|
+| α2 | ±1.5π | **±2π** | ±1.5π |
+| α1 − α2 | ±π | ±π (but `getRevoluteJointRanges()` returned it as absolute) | — |
+
+The FP64 TorchScript weights match v3 bit-for-bit (`maxabsdiff = 0`). Only the
+`parameters.json` α2 range was wrong. `posCTRL` wrapped α1 into [−π, π) and kept α2
+relative to it, so solutions could reach |α2| up to 2π. That is outside the trained
+domain, and the drive clamps it.
+
+Changes:
+
+- FP64 `alpha2_range` set to ±1.5π.
+- `getRevoluteJointRanges()` now returns absolute α1 = α2range + α1range, mirroring β1.
+- The 4-DoF `posCTRL` wrap shifts the body by 2π so that α2 ∈ [−π, π), then wraps α1 into
+  [α2 − π, α2 + π).
+- The planner's α1 box is the training envelope intersected with the inner-tube drive
+  limit ±2π. `CTR_StateSampler` takes its revolute bounds from the state space and
+  clamps samples instead of wrapping them to [−π, π]. Wrapping would put goal-biased
+  samples 2π away when |α1| > π.
+- Still open: `CTRStateSpace::interpolate`/`distance` and the revolute objectives
+  remain periodic (shortest-arc), and the validity checker does not test angle bounds.
+  An edge with |Δα| > π can therefore leave the box and the drive limits. This predates
+  the change and needs a design decision: either make the revolute dimensions bounded,
+  or canonicalise angles before PINN evaluation.
+
+Experiment: 300 random in-domain targets, solved from the manager seed
+(α1 = α2 = θ at the retracted home).
+
+| | Converged ≤ 0.5 mm | Converged with \|α2\| > 1.5π |
+|---|---|---|
+| Before | 260/300 | 8 |
+| After | 259/300 | **0** |
+
+Convergence is unchanged within noise. Out-of-range solutions are eliminated.
+`test_pos_ctrl_bounds` gained `RevoluteRangesAreAbsoluteAndMatchTrainedDomain` and an
+|α2| ≤ 1.5π assertion. Against the pre-fix header and metadata, both fail
+(|α2| = 4.90 and 6.15 rad). Against the fixed code, both pass.
+
+### Diagnostic logs
+
+Each process tees its rcutils log into
+`<log_root>/[<CTR_RUN_ID>/]<package>/<ts>_<node>_<pid>.log` (see
+`ctr_common/package_log.hpp`). Stage tags: `[lifecycle] [comm] [procedure] [pinn] [ik]
+[plan] [traj] [cmd]`. The two failure classes above now show up as follows:
+
+- a dropped target: `robot` `[cmd]` WARN naming the gate;
+- tubes that never align: `manager` `[procedure]` WARN after 10 s.

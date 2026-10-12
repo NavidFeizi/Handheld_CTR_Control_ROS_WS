@@ -49,15 +49,15 @@ find_package(ctr_common REQUIRED)
 set(CMAKE_AUTOMOC ON)   # Enable automatic MOC processing
 
 add_executable(ctr_robot src/robot_node.cpp)
-target_link_libraries(ctr_robot ctr_robot_driver::ctr_robot_driver Qt5::Widgets Qt5::Core Qt5::Concurrent)
+target_link_libraries(ctr_robot ctr_robot_driver::ctr_robot_driver ctr_common::ctr_common Qt5::Widgets Qt5::Core Qt5::Concurrent)
 ament_target_dependencies(ctr_robot rclcpp std_msgs std_srvs rclcpp_action interfaces ament_index_cpp)
 
 add_executable(qt_gui src/qt_node.cpp)
-target_link_libraries(qt_gui Qt5::Widgets Qt5::Core Qt5::Concurrent)
+target_link_libraries(qt_gui ctr_common::ctr_common Qt5::Widgets Qt5::Core Qt5::Concurrent)
 ament_target_dependencies(qt_gui rclcpp std_msgs std_srvs rclcpp_action interfaces)
 
 add_executable(cosserat_fk src/cosserat_fk_node.cpp)
-target_link_libraries(cosserat_fk ctr_cosserat::ctr_cosserat)
+target_link_libraries(cosserat_fk ctr_cosserat::ctr_cosserat ctr_common::ctr_common)
 ament_target_dependencies(cosserat_fk rclcpp std_msgs std_srvs interfaces)
 ament_target_dependencies(cosserat_fk OpenMP Boost BLAS LAPACK Blaze TBB NLopt)
 

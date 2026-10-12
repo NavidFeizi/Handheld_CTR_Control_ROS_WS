@@ -20,6 +20,7 @@
 #include "interfaces/srv/recording.hpp"
 #include "ctr_common/output_session.hpp"
 #include "ctr_common/runtime_paths.hpp"
+#include "ctr_common/package_log.hpp"
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include "tf2/exceptions.h"
@@ -50,12 +51,14 @@ class RecorderNode : public rclcpp::Node
 public:
   RecorderNode() : Node("recorder"), m_count(0)
   {
+    ctr_common::installPackageFileLog(*this, "manager");
+
     m_clock = this->get_clock();
     m_t0 = m_clock->now();
 
     RecorderNode::declare_parameters();
     RecorderNode::setup_ros_interfaces();
-    RCLCPP_INFO(this->get_logger(), "Recorder node initialized");
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] Recorder node initialized: sample_time=%.4f s", m_sample_time);
   }
 
 private:
@@ -264,7 +267,7 @@ private:
     const std::filesystem::path output_base =
         ctr_common::resolveDataRoot(*this, "manager") / "Output_Files";
     const std::string folder_address = ctr_common::makeSessionDir(output_base, session_name).string();
-    RCLCPP_INFO(this->get_logger(), "[%s] Recording session directory: %s", session_name.c_str(), folder_address.c_str());
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] [%s] Recording session directory: %s", session_name.c_str(), folder_address.c_str());
 
     // Create new session
     RecordingSession& session = m_sessions[session_name];
@@ -306,7 +309,7 @@ private:
     session.computed_file << ",f_x,f_y,f_z,f_mag,ctrl_time";
     session.computed_file << "\n";
 
-    RCLCPP_INFO(this->get_logger(), "[%s] Dump files opened - folder: %s", session_name.c_str(), folder_address.c_str());
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] [%s] Dump files opened - folder: %s", session_name.c_str(), folder_address.c_str());
     return true;
   }
 
@@ -329,7 +332,7 @@ private:
         if (!session.is_recording)
         {
           session.is_recording = true;
-          RCLCPP_INFO(this->get_logger(), "[%s] Recording started - Sampling time: %0.1f [ms]", 
+          RCLCPP_INFO(this->get_logger(), "[lifecycle] [%s] Recording started - Sampling time: %0.1f [ms]", 
                      name.c_str(), m_sample_time * 1e3);
         }
         capture_frame(session);
@@ -339,12 +342,12 @@ private:
         if (session.is_recording)
         {
           session.is_recording = false;
-          RCLCPP_INFO(this->get_logger(), "[%s] Recording stopped - Time: %.2f [s]", name.c_str(), time);
+          RCLCPP_INFO(this->get_logger(), "[lifecycle] [%s] Recording stopped - Time: %.2f [s]", name.c_str(), time);
 
           session.robot_file.close();
           session.taskspace_file.close();
           session.computed_file.close();
-          RCLCPP_INFO(this->get_logger(), "[%s] Dump files closed", name.c_str());
+          RCLCPP_INFO(this->get_logger(), "[lifecycle] [%s] Dump files closed", name.c_str());
         }
       }
     }
@@ -355,6 +358,8 @@ private:
                        std::shared_ptr<interfaces::srv::Recording::Response> response)
   {
     std::string session_name = request->name.empty() ? "default" : request->name;
+    RCLCPP_INFO(this->get_logger(), "[comm] recording command '%s' session='%s' duration=%.1f s",
+                request->command.c_str(), session_name.c_str(), request->duration);
     
     if (request->command == "start")
     {
@@ -449,6 +454,15 @@ private:
     {
       response->success = false;
       response->message = "Unknown command: " + request->command + ". Use 'start', 'stop', 'init', 'capture', or 'close'.";
+    }
+
+    if (response->success)
+    {
+      RCLCPP_INFO(this->get_logger(), "[comm] recording command '%s' result: %s", request->command.c_str(), response->message.c_str());
+    }
+    else
+    {
+      RCLCPP_WARN(this->get_logger(), "[comm] recording command '%s' failed: %s", request->command.c_str(), response->message.c_str());
     }
 
     return;

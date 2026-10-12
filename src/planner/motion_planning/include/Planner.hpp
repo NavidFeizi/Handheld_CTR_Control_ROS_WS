@@ -260,7 +260,7 @@ public:
 	// the kinematics solver with the planner's registered external force so the
 	// resulting goal configuration is consistent with the loaded (deflected)
 	// robot. Returns true if the tip error is within posTol.
-	bool solveInverseKinematics(JointVector &q, const blaze::StaticVector<double, 3UL> &targetTip, double posTol);
+	bool solveInverseKinematics(JointVector &q, const blaze::StaticVector<double, 3UL> &targetTip, double posTol, PosCtrlReport *report = nullptr);
 	bool resetStartState(const JointVector &q0);
 	bool resetGoalState(const JointVector &qf);
 	bool resetStartAndGoalStates(const JointVector &q0, const JointVector &qf);
@@ -386,9 +386,12 @@ Planner<controlInputs>::Planner(PINNs<controlInputs> &CTR_model)
 	// beta_2
 	m_coordBound->setLow(1, pr[2UL]);
 	m_coordBound->setHigh(1, pr[3UL]);
-	// alpha_1
-	m_coordBound->setLow(2, rr[0UL]);
-	m_coordBound->setHigh(2, rr[1UL]);
+	// alpha_1: trained absolute envelope is ±2.5π (α₂ ±1.5π plus α₁−α₂ ±π), but the
+	// inner-tube drive is limited to ±2π (robot_node k_*StaticLimitAll). Rotating a
+	// tube by 2π gives the same shape, and posCTRL keeps |α₁| < 2π, so intersecting
+	// the two ranges loses no reachable configuration.
+	m_coordBound->setLow(2, std::max(rr[0UL], -2.0 * M_PI));
+	m_coordBound->setHigh(2, std::min(rr[1UL], 2.0 * M_PI));
 	// alpha_2
 	m_coordBound->setLow(3, rr[2UL]);
 	m_coordBound->setHigh(3, rr[3UL]);
@@ -2738,10 +2741,10 @@ void Planner<controlInputs>::setCTR_externalForce(const blaze::StaticVector<doub
 }
 
 template <size_t controlInputs>
-bool Planner<controlInputs>::solveInverseKinematics(JointVector &q, const blaze::StaticVector<double, 3UL> &targetTip, const double posTol)
+bool Planner<controlInputs>::solveInverseKinematics(JointVector &q, const blaze::StaticVector<double, 3UL> &targetTip, const double posTol, PosCtrlReport *report)
 {
 	// IK on the loaded robot: Jacobian and forward model both see f_ext.
-	this->m_CTR_model.posCTRL(q, targetTip, posTol, this->m_externalForce);
+	this->m_CTR_model.posCTRL(q, targetTip, posTol, this->m_externalForce, report);
 
 	blaze::StaticVector<double, 3UL> tip;
 	this->m_CTR_model.getPosDistal(q, this->m_externalForce, tip);

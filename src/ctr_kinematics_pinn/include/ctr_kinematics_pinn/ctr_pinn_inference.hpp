@@ -47,6 +47,26 @@ struct DatasetParameters
     std::array<double, 2UL> alpha3_range;
 };
 
+/// Diagnostic report for posCTRL(), filled only when a non-null pointer is
+/// passed in. Plain data: this package stays ROS-free, so callers (e.g. the
+/// planner node) format/log it themselves.
+struct PosCtrlReport
+{
+    enum class Termination
+    {
+        AlreadyWithinTolerance, // target was already inside posTol before the first iteration
+        Converged,              // dist2Tgt <= posTol when the loop exited
+        Stalled,                // resolved-rate step collapsed (linfNorm(dtau_dt) <= 1e-6)
+        MaxIterations           // hit the 750-iteration cap without converging
+    };
+
+    std::size_t iterations = 0UL;         // resolved-rate iterations actually run
+    double initialError = 0.0;            // ||target - x_CTR|| at the tau passed in [m]
+    double finalError = 0.0;              // ||target - x_CTR|| at the returned tau_min [m]
+    Termination termination = Termination::MaxIterations;
+    std::size_t prismaticLimitHits = 0UL; // iterations where a prismatic step was clamped to a joint limit
+};
+
 namespace detail
 {
     inline std::vector<int> vec_int_or_throw(const nlohmann::json &obj, const char *key)
@@ -280,6 +300,19 @@ public:
 
     // zero-force overload kept for callers that do not model tip loads
     void posCTRL(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target, const double posTol);
+
+    // same as above, additionally filling *report with diagnostics (iteration
+    // count, termination reason, initial/final error, limit hits) when report
+    // is non-null. Numerics/behaviour are byte-for-byte identical to the
+    // 4-argument overload; report is purely observational.
+    void posCTRL(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target, const double posTol,
+                 const blaze::StaticVector<double, kForceDim> &wf, PosCtrlReport *report);
+
+    // Returns an empty string if tau lies inside the trained 4-DoF domain
+    // (see README "Trained domain" table), otherwise a "; "-separated list of
+    // the violated bounds, e.g. "b1-b2=-0.0861 < -0.0840; |a2|=4.9000 > 4.7124".
+    // 6-DoF layouts are not domain-checked and always return empty.
+    [[nodiscard]] std::string domainViolation(const blaze::StaticVector<double, controlInputs> &tau, double tol = 1.00E-9) const;
 
 private:
     size_t m_batch_size;
@@ -1140,8 +1173,14 @@ blaze::StaticVector<double, controlInputs> PINNs<controlInputs>::getRevoluteJoin
     // Packed as [min, max] pairs per actuated revolute joint.
     if constexpr (controlInputs == 4)
     {
+        // alpha1_range stores offsets RELATIVE to α₂ (printed as "alpha1_range:
+        // alpha2 + [...]"; the model's input normaliser spans |α₁| ≈ 1.1·(|α₂|max + π)),
+        // exactly like beta1_range relative to β₂. The absolute α₁ envelope is
+        // therefore α₂range + α₁range; the coupling |α₁ − α₂| ≤ π is enforced
+        // separately by the planner's validity checker and by posCTRL.
         return {
-            m_dataset_params.alpha1_range[0UL], m_dataset_params.alpha1_range[1UL],
+            m_dataset_params.alpha2_range[0UL] + m_dataset_params.alpha1_range[0UL],
+            m_dataset_params.alpha2_range[1UL] + m_dataset_params.alpha1_range[1UL],
             m_dataset_params.alpha2_range[0UL], m_dataset_params.alpha2_range[1UL]};
     }
     else
@@ -1157,6 +1196,79 @@ template <size_t controlInputs>
 double PINNs<controlInputs>::getStageThickness() const
 {
     return 30.00E-3; // 30 mm
+}
+
+template <size_t controlInputs>
+std::string PINNs<controlInputs>::domainViolation(const blaze::StaticVector<double, controlInputs> &tau, double tol) const
+{
+    if constexpr (controlInputs != 4)
+    {
+        return {};
+    }
+    else
+    {
+        // lb/ub[0] = β1-β2 OFFSET range, lb/ub[1] = absolute β2 range,
+        // lb/ub[2] = α1-α2 OFFSET range, lb/ub[3] = absolute α2 range.
+        const auto [lb, ub] = this->getInputPosBounds();
+
+        const double b1 = tau[0UL], b2 = tau[1UL], a1 = tau[2UL], a2 = tau[3UL];
+        const double b1_rel = b1 - b2;
+        const double a1_rel = a1 - a2;
+        const double a2Bound = std::max(std::fabs(lb[3UL]), std::fabs(ub[3UL]));
+
+        auto fmt = [](double v)
+        {
+            std::ostringstream oss;
+            oss << std::fixed << std::setprecision(4) << v;
+            return oss.str();
+        };
+
+        std::ostringstream out;
+        bool any = false;
+        auto violate = [&](const std::string &text)
+        {
+            if (any)
+            {
+                out << "; ";
+            }
+            out << text;
+            any = true;
+        };
+
+        if (b2 < lb[1UL] - tol)
+        {
+            violate("b2=" + fmt(b2) + " < " + fmt(lb[1UL]));
+        }
+        else if (b2 > ub[1UL] + tol)
+        {
+            violate("b2=" + fmt(b2) + " > " + fmt(ub[1UL]));
+        }
+
+        if (b1_rel < lb[0UL] - tol)
+        {
+            violate("b1-b2=" + fmt(b1_rel) + " < " + fmt(lb[0UL]));
+        }
+        else if (b1_rel > ub[0UL] + tol)
+        {
+            violate("b1-b2=" + fmt(b1_rel) + " > " + fmt(ub[0UL]));
+        }
+
+        if (std::fabs(a2) > a2Bound + tol)
+        {
+            violate("|a2|=" + fmt(std::fabs(a2)) + " > " + fmt(a2Bound));
+        }
+
+        if (a1_rel < lb[2UL] - tol)
+        {
+            violate("a1-a2=" + fmt(a1_rel) + " < " + fmt(lb[2UL]));
+        }
+        else if (a1_rel > ub[2UL] + tol)
+        {
+            violate("a1-a2=" + fmt(a1_rel) + " > " + fmt(ub[2UL]));
+        }
+
+        return out.str();
+    }
 }
 
 template <size_t controlInputs>
@@ -1223,6 +1335,13 @@ template <size_t controlInputs>
 void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target, const double posTol,
                                    const blaze::StaticVector<double, kForceDim> &wf)
 {
+    this->posCTRL(tau, target, posTol, wf, nullptr);
+}
+
+template <size_t controlInputs>
+void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target, const double posTol,
+                                   const blaze::StaticVector<double, kForceDim> &wf, PosCtrlReport *report)
+{
     double minError = 1.00E3;                                                                    // minimum distance to target
     blaze::StaticMatrix<double, 3UL, controlInputs, blaze::columnMajor> J;                       // Jacobian matrix (3 × controlInputs)
     blaze::StaticMatrix<double, controlInputs, 3UL, blaze::columnMajor> J_inv;                   // Jacobian pseudoinverse (controlInputs × 3)
@@ -1260,13 +1379,27 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     // Euclidean distance to target
     double dist2Tgt = blaze::norm(tipError);
 
+    if (report)
+    {
+        report->initialError = dist2Tgt;
+        report->prismaticLimitHits = 0UL;
+    }
+
     if (dist2Tgt < minError)
     {
         minError = dist2Tgt;
         tau_min = tau;
 
         if (dist2Tgt <= posTol)
+        {
+            if (report)
+            {
+                report->iterations = 0UL;
+                report->finalError = minError;
+                report->termination = PosCtrlReport::Termination::AlreadyWithinTolerance;
+            }
             return;
+        }
     }
 
     // Nullspace vector (joint-limit avoidance gradient), zero-initialised;
@@ -1359,17 +1492,24 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         // rescaling linear joint variables for limit avoidance
         // nPrismatic = controlInputs/2: 2 for 4-DoF, 3 for 6-DoF
         constexpr size_t nPrismatic = controlInputs / 2UL;
+        bool limitHitThisIter = false;
         for (size_t i = 0; i < nPrismatic; ++i)
         {
             const double proposed = tau[i] + dtau_dt[i];
             if (proposed > betaMax[i])
             {
                 dtau_dt[i] = (betaMax[i] - tau[i]) * 0.50;
+                limitHitThisIter = true;
             }
             else if (proposed < betaMin[i])
             {
                 dtau_dt[i] = (betaMin[i] - tau[i]) * 0.50;
+                limitHitThisIter = true;
             }
+        }
+        if (report && limitHitThisIter)
+        {
+            ++report->prismaticLimitHits;
         }
 
         // updating the CTR joints: q = [beta, theta]
@@ -1378,10 +1518,15 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         // ---- Layout-specific: angle wrapping ----
         if constexpr (controlInputs == 4)
         {
-            // α₁ ∈ [−π, π] 
-            tau[2UL] = wrapToRange(tau[2UL], -M_PI, M_PI);
-            // α₂ ∈ [α₁ − π, α₁ + π]
-            tau[3UL] = wrapToRange(tau[3UL], tau[2UL] - M_PI, tau[2UL] + M_PI);
+            // Dataset structure: α₂ is absolute, α₁ is relative to α₂ (|α₁ − α₂| ≤ π).
+            // Shift the whole body by a multiple of 2π (physically the same shape)
+            // so α₂ ∈ [−π, π) — inside the trained/hardware α₂ range ±1.5π — then
+            // wrap α₁ into [α₂ − π, α₂ + π). The previous order (α₁ ∈ [−π, π), α₂
+            // relative to α₁) let α₂ reach ±2π, outside the trained domain and
+            // beyond the middle-tube drive limit of ±1.5π.
+            const double shift = wrapToRange(tau[3UL], -M_PI, M_PI) - tau[3UL];
+            tau[3UL] += shift;
+            tau[2UL] = wrapToRange(tau[2UL] + shift, tau[3UL] - M_PI, tau[3UL] + M_PI);
         }
         else // controlInputs == 6
         {
@@ -1419,11 +1564,25 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         if (blaze::linfNorm(dtau_dt) <= 1.00E-6)
         {
             tau = tau_min;
+            if (report)
+            {
+                report->iterations = N_itr;
+                report->finalError = minError;
+                report->termination = PosCtrlReport::Termination::Stalled;
+            }
             return;
         }
     }
 
     tau = tau_min;
+
+    if (report)
+    {
+        report->iterations = N_itr;
+        report->finalError = minError;
+        report->termination = (dist2Tgt <= posTol) ? PosCtrlReport::Termination::Converged
+                                                     : PosCtrlReport::Termination::MaxIterations;
+    }
 
     return;
 }

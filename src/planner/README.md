@@ -126,3 +126,44 @@ additivity under path splitting, mirror invariance, degenerate inputs.
 The `manual_target` service registration is commented out in `planner_node.cpp` — the
 `interfaces/srv/Config` service named `manual_target` is **not** available at runtime.
 `planner/command` is the only service this node provides.
+
+## Diagnostic logging
+
+`planner_node` installs a package log file (`ctr_common::installPackageFileLog`) as
+the first statement of its constructor body: every rcutils record from this process
+(console output included) is also teed to
+`<log_root>/[<CTR_RUN_ID>/]planner/<timestamp>_planner_node_<pid>.log`. See
+`ctr_common`'s `package_log.hpp` for `log_root` resolution.
+
+Every log line is tagged by pipeline stage:
+
+| Tag | Stage |
+|---|---|
+| `[lifecycle]` | startup config/domain summary, non-positive `solve_time` |
+| `[comm]` | service request/response (sequence number, target, timings, reason code), feedback-topic status |
+| `[pinn]` | PINN trained-domain checks on the IK start state and solution |
+| `[ik]` | `solveInverseKinematics`/`posCTRL` seed, result, convergence diagnostics |
+| `[plan]` | `planTwoPhase`/`planDeployment` start/goal, result, exceptions |
+| `[traj]` | CSV → task-space path conversion and publishing |
+
+A `generateTrajectory` request logs the trail `[comm] request` → `[plan]` force/force-aware
+setup → `[pinn]` start-domain check (if violated) → `[ik]` seed/result → `[plan]`
+start/goal/result → `[comm] response`, so a failed request can be diagnosed from the log
+alone. The `[comm] response` line carries a `reason` code:
+
+| Reason | Meaning |
+|---|---|
+| `OK` | planning succeeded and the IK solution converged within `posTol` |
+| `INVALID_TARGET` | the requested target had a non-finite coordinate |
+| `START_INVALID` | `Planner` rejected the current joint state as a start state |
+| `GOAL_INVALID` | `Planner` rejected the IK-derived joint state as a goal state |
+| `IK_NOT_CONVERGED` | planning succeeded but IK error exceeded its internal tolerance (the manager's separate accept threshold is 3 mm) |
+| `PLAN_FAILED` | `planTwoPhase` found no solution |
+| `EXCEPTION` | any other exception from `Planner`/OMPL |
+
+A non-finite target is rejected before any IK/plan work runs: `response->success =
+false`, `response->value = 0.0`, and a new `message` string
+("invalid target: non-finite value(s) in target") that neither `manager` nor
+`igtlink_bridge` pattern-match on — both only log/forward `response->message` verbatim.
+No other response message text changed; the success-path message
+("Path generated successfully.") is unchanged.
