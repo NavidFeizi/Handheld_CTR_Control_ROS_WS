@@ -158,7 +158,8 @@ alone. The `[comm] response` line carries a `reason` code:
 | `START_INVALID` | `Planner` rejected the current joint state as a start state |
 | `GOAL_INVALID` | `Planner` rejected the IK-derived joint state as a goal state |
 | `IK_NOT_CONVERGED` | planning succeeded but IK error exceeded its internal tolerance (the manager's separate accept threshold is 3 mm); `message` is `Path generated but IK did not converge: error=<e> mm > 0.50 mm` |
-| `FORCE_OUT_OF_DOMAIN` | the EKF force estimate snapshot has `‖f‖ ≥ f_max − 1e-6` (railed on the EKF's clamp or outside the trained force ball); request rejected before IK, `success=false`, `value=0.0` |
+| `FORCE_NON_FINITE` | the EKF force estimate snapshot contains NaN/Inf; request rejected before IK, `success=false`, `value=0.0` |
+| `INVALID_STATE` | the `joint_space/feedback` snapshot contains NaN/Inf; request rejected before IK, `success=false`, `value=0.0` |
 | `PLAN_FAILED` | `planTwoPhase` found no solution |
 | `EXCEPTION` | any other exception from `Planner`/OMPL |
 
@@ -166,11 +167,14 @@ A non-finite target is rejected before any IK/plan work runs: `response->success
 false`, `response->value = 0.0`, and a new `message` string
 ("invalid target: non-finite value(s) in target") that neither `manager` nor
 `igtlink_bridge` pattern-match on — both only log/forward `response->message` verbatim.
-The force estimate is checked against the model's trained `f_max` before IK, for both
-`generateTrajectory` and `replanDeployment`. A railed estimate is rejected rather than
-fed to the PINN: on 2026-10-12 a saturated estimate (`‖f‖ ≈ 0.6–0.8 N` with `f_max =
-0.5 N`) made every target with y < 0 fail IK at 25–43 mm — see
-[`docs/force_estimate_forensic_report.md`](docs/force_estimate_forensic_report.md).
-The rejection message is `force estimate outside trained domain (|f|=… N >= f_max=… N):
-EKF estimate is saturated; not planning` (replan: `replanDeployment rejected: force
-estimate outside trained domain (…)`); the manager shows it in its GUI "Message" column.
+The force estimate is checked before IK, for both `generateTrajectory` and
+`replanDeployment`. A non-finite estimate is rejected (`FORCE_NON_FINITE`). A railed
+estimate (`‖f‖ ≥ f_max − 1e-6`, on the EKF's clamp or outside the trained force ball) is
+not a measurement and is not fed to the PINN: on 2026-10-12 a saturated estimate
+(`‖f‖ ≈ 0.6–0.8 N` with `f_max = 0.5 N`) made every target with y < 0 fail IK at
+25–43 mm — see [`docs/force_estimate_forensic_report.md`](docs/force_estimate_forensic_report.md).
+Instead the request is planned with zero tip force, a `[pinn] force estimate saturated (…)
+- request #N planned with zero tip force` WARN is logged, and the response message gets
+the suffix ` (force estimate saturated: |f|=… N >= f_max=… N; planned with zero tip force)`
+(replan: appended to `Deployment replanned: <schedule>`); the manager shows it in its GUI
+"Message" column after `accepted: …`. The reason code stays `OK` / `IK_NOT_CONVERGED`.

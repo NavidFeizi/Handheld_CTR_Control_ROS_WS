@@ -339,6 +339,17 @@ public:
           }
         }
 
+        if (!(std::isfinite(q_snapshot[0UL]) && std::isfinite(q_snapshot[1UL]) && std::isfinite(q_snapshot[3UL]) && std::isfinite(q_snapshot[4UL])))
+        {
+          RCLCPP_ERROR(this->get_logger(), "[comm] request #%lu rejected: non-finite joint_space/feedback snapshot q=[%.4f, %.4f, %.4f, %.4f]",
+                       static_cast<unsigned long>(seq), q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]);
+          response->success = false;
+          response->value = 0.0;
+          response->message = "invalid joint state: non-finite value(s) in joint_space/feedback snapshot";
+          logResponse(response, "INVALID_STATE");
+          return;
+        }
+
         // Map the 6-element current configuration [β₁, β₂, β₃, α₁, α₂, α₃] (tube-3
         // entries are static/zero) down to the 4 actuated inputs [β₁, β₂, α₁, α₂].
         blaze::StaticVector<double, 4UL> q_initial = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
@@ -346,18 +357,29 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "[plan] force estimate f = [%.4f, %.4f, %.4f] N", force[0UL], force[1UL], force[2UL]);
 
+        // A non-finite estimate means the EKF itself is broken: refuse to plan.
+        if (!(std::isfinite(force[0UL]) && std::isfinite(force[1UL]) && std::isfinite(force[2UL])))
+        {
+          RCLCPP_ERROR(this->get_logger(), "[pinn] force estimate non-finite - request #%lu rejected: f=[%.4f, %.4f, %.4f] N",
+                       static_cast<unsigned long>(seq), force[0UL], force[1UL], force[2UL]);
+          response->success = false;
+          response->value = 0.0;
+          response->message = "force estimate non-finite; not planning";
+          logResponse(response, "FORCE_NON_FINITE");
+          return;
+        }
+
         // A force estimate on/outside the trained force ball is a railed EKF value, not a
-        // measurement; solving IK against it drives the PINN out of its domain.
+        // measurement; solving IK against it drives the PINN out of its domain. Plan with
+        // zero tip force instead and say so in the response.
+        std::string forceNote;
         const std::string forceViolation = m_ctr_pinn.forceDomainViolation(force);
         if (!forceViolation.empty())
         {
-          RCLCPP_WARN(this->get_logger(), "[pinn] force estimate outside trained domain - request #%lu rejected: %s",
-                      static_cast<unsigned long>(seq), forceViolation.c_str());
-          response->success = false;
-          response->value = 0.0;
-          response->message = "force estimate outside trained domain (" + forceViolation + "): EKF estimate is saturated; not planning";
-          logResponse(response, "FORCE_OUT_OF_DOMAIN");
-          return;
+          RCLCPP_WARN(this->get_logger(), "[pinn] force estimate saturated (%s) - request #%lu planned with zero tip force",
+                      forceViolation.c_str(), static_cast<unsigned long>(seq));
+          force = blaze::StaticVector<double, 3UL>(0.0);
+          forceNote = " (force estimate saturated: " + forceViolation + "; planned with zero tip force)";
         }
 
         // Safe here: no solve is in flight (mutually exclusive service group).
@@ -384,14 +406,14 @@ public:
           response->value = error;
           if (ik_converged)
           {
-            response->message = "Path generated successfully.";
+            response->message = "Path generated successfully." + forceNote;
           }
           else
           {
             std::ostringstream msg;
             msg << std::fixed << std::setprecision(2) << "Path generated but IK did not converge: error="
                 << error * 1.00E3 << " mm > " << kIkPosTol * 1.00E3 << " mm";
-            response->message = msg.str();
+            response->message = msg.str() + forceNote;
           }
           logResponse(response, ik_converged ? "OK" : "IK_NOT_CONVERGED");
         }
@@ -443,6 +465,17 @@ public:
         return;
       }
 
+      if (!(std::isfinite(q_snapshot[0UL]) && std::isfinite(q_snapshot[1UL]) && std::isfinite(q_snapshot[3UL]) && std::isfinite(q_snapshot[4UL])))
+      {
+        RCLCPP_ERROR(this->get_logger(), "[comm] request #%lu rejected: non-finite joint_space/feedback snapshot q=[%.4f, %.4f, %.4f, %.4f]",
+                     static_cast<unsigned long>(seq), q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]);
+        response->success = false;
+        response->value = 0.0;
+        response->message = "invalid joint state: non-finite value(s) in joint_space/feedback snapshot";
+        logResponse(response, "INVALID_STATE");
+        return;
+      }
+
       try
       {
         blaze::StaticVector<double, 4UL> q_now = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
@@ -452,16 +485,26 @@ public:
                     m_force_at_plan[0UL], m_force_at_plan[1UL], m_force_at_plan[2UL],
                     q_now[0UL], q_now[1UL], q_now[2UL], q_now[3UL]);
 
+        if (!(std::isfinite(force[0UL]) && std::isfinite(force[1UL]) && std::isfinite(force[2UL])))
+        {
+          RCLCPP_ERROR(this->get_logger(), "[pinn] force estimate non-finite - request #%lu rejected: f=[%.4f, %.4f, %.4f] N",
+                       static_cast<unsigned long>(seq), force[0UL], force[1UL], force[2UL]);
+          response->success = false;
+          response->value = 0.0;
+          response->message = "replanDeployment rejected: force estimate non-finite";
+          logResponse(response, "FORCE_NON_FINITE");
+          return;
+        }
+
+        // Same policy as generateTrajectory: a railed estimate is replaced by zero tip force.
+        std::string forceNote;
         const std::string forceViolation = m_ctr_pinn.forceDomainViolation(force);
         if (!forceViolation.empty())
         {
-          RCLCPP_WARN(this->get_logger(), "[pinn] force estimate outside trained domain - request #%lu rejected: %s",
-                      static_cast<unsigned long>(seq), forceViolation.c_str());
-          response->success = false;
-          response->value = 0.0;
-          response->message = "replanDeployment rejected: force estimate outside trained domain (" + forceViolation + ")";
-          logResponse(response, "FORCE_OUT_OF_DOMAIN");
-          return;
+          RCLCPP_WARN(this->get_logger(), "[pinn] force estimate saturated (%s) - request #%lu planned with zero tip force",
+                      forceViolation.c_str(), static_cast<unsigned long>(seq));
+          force = blaze::StaticVector<double, 3UL>(0.0);
+          forceNote = " (force estimate saturated: " + forceViolation + "; planned with zero tip force)";
         }
 
         // Safe here: no solve is in flight (mutually exclusive service group).
@@ -480,7 +523,7 @@ public:
 
           response->success = true;
           response->value = m_motionPlan.lastDeploymentCost();
-          response->message = "Deployment replanned: " + m_motionPlan.lastDeploymentScheduleName();
+          response->message = "Deployment replanned: " + m_motionPlan.lastDeploymentScheduleName() + forceNote;
           RCLCPP_INFO(this->get_logger(), "[plan] replanned deployment in %ld ms: %s (FTL cost %.6f)",
                       static_cast<long>(elapsed), m_motionPlan.lastDeploymentScheduleName().c_str(), m_motionPlan.lastDeploymentCost());
           logResponse(response, "OK");
@@ -561,6 +604,7 @@ public:
       case PosCtrlReport::Termination::AlreadyWithinTolerance: terminationStr = "AlreadyWithinTolerance"; break;
       case PosCtrlReport::Termination::Converged: terminationStr = "Converged"; break;
       case PosCtrlReport::Termination::Stalled: terminationStr = "Stalled"; break;
+      case PosCtrlReport::Termination::LimitStalled: terminationStr = "LimitStalled"; break;
       case PosCtrlReport::Termination::MaxIterations: terminationStr = "MaxIterations"; break;
     }
 

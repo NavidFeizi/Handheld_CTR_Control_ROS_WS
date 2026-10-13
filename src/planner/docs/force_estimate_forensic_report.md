@@ -199,3 +199,21 @@ All of this ran in the `ctr-jazzy-build` container. No hardware.
 - `sendConfigCommand` in the manager gives no GUI feedback while its services are not ready.
 - CiA-402 enable fault on joints 0/2 at 17:43:53 during `findLinearHome`, then normal homing at
   17:45. The clearing edge is now logged.
+
+## 9 Follow-up (2026-10-12, 20:21 run)
+
+The second field run of the day went NaN during `findLinearHome`: the tool quaternion added
+to `Taskspace.h` (§7, F5) is NaN whenever the tracker sensor is missing, the EKF's
+all-components-NaN check let the finite position through, and the correction poisoned the
+state and covariance permanently. Every later request was rejected with `|f|=nan N`.
+Changes since this report:
+
+- `emtracker` no longer publishes the quaternion; `Taskspace.h` is back to zeros.
+- The EKF skips the correction on any non-finite joint or tip input and resets a
+  non-finite state (`robot` README, status notes).
+- The planner no longer rejects a railed estimate (`FORCE_OUT_OF_DOMAIN` is gone): it plans
+  with zero tip force and appends `(force estimate saturated: …; planned with zero tip
+  force)` to the response message. A non-finite estimate is rejected with
+  `FORCE_NON_FINITE`, a non-finite joint snapshot with `INVALID_STATE`.
+- `posCTRL` stops a solve after 100 consecutive limit-clamped iterations without progress
+  (`LimitStalled`) instead of running a pinned solve to the 750-iteration cap (§8).

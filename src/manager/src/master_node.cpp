@@ -739,7 +739,7 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
                 std::lock_guard<std::mutex> lock(m_deploy_mutex);
                 waypoints = m_q_list_adjusted.size();
             }
-            setPlannerMessage("accepted: ik_error=" + fmt2(response->value * 1000.0) + " mm, " + std::to_string(waypoints) + " waypoints");
+            setPlannerMessage("accepted: ik_error=" + fmt2(response->value * 1000.0) + " mm, " + std::to_string(waypoints) + " waypoints - " + response->message);
         }
         else
         {
