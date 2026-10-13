@@ -174,8 +174,8 @@ Log lines are tagged by stage:
 | `[comm]` | `get_transformation` service response, `freeze_phantom`/`freeze_robot` state changes |
 | `[pose]` | per-sample tool pose (DEBUG, 40 Hz) — enable with `ros2 run ... --ros-args --log-level emt_node:=debug` |
 
-`task_space/feedback/base_tool` (`Taskspace.h`) now also carries the tool orientation as a
-scalar-first quaternion, consumed by the robot EKF's orientation correction.
+`task_space/feedback/base_tool` (`Taskspace.h`) is left at its zero default; the robot EKF's
+orientation residual is therefore identically zero (orientation correction inactive).
 
 ## Status notes
 

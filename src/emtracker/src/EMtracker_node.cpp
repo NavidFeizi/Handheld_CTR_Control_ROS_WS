@@ -259,10 +259,6 @@ private:
     msg_base.p[0] = tool_pos_flt[0]; // to align with cathter robot system
     msg_base.p[1] = tool_pos_flt[1];
     msg_base.p[2] = tool_pos_flt[2];
-    msg_base.h[0] = tool_in_robot.rotation[0]; // scalar-first, matches interfaces/Taskspace and robot/quat_utils
-    msg_base.h[1] = tool_in_robot.rotation[1];
-    msg_base.h[2] = tool_in_robot.rotation[2];
-    msg_base.h[3] = tool_in_robot.rotation[3];
 
     msg_phantom_base.p[0] = m_robot_in_phantom.translation[0];
     msg_phantom_base.p[1] = m_robot_in_phantom.translation[1];
