@@ -51,6 +51,7 @@ private:
   double m_f_dot;
   double m_force_threshold = 0.0; // N, set from the model's f_max in initKalmanFilter()
   bool m_force_saturated_prev = false;
+  bool m_correction_skipped_prev = false;
   bool m_first_measurement_received = false;
 
   blaze::StaticVector<double, nx> m_x_pred;
@@ -472,19 +473,31 @@ private:
     }
   }
 
-  /// @brief Check if all measurement values are NaN
-  bool measurementIsMissing(const blaze::StaticVector<double, ny> &z) const
+  /// @brief True if every element of the vector is finite (no NaN/Inf)
+  template <size_t N>
+  static bool allFinite(const blaze::StaticVector<double, N> &v)
   {
-    bool all_nan = true;
-    for (size_t i = 0; i < ny; ++i)
+    for (size_t i = 0; i < N; ++i)
     {
-      if (std::isfinite(z[i]))
+      if (!std::isfinite(v[i]))
+        return false;
+    }
+    return true;
+  }
+
+  /// @brief True if every element of the matrix is finite (no NaN/Inf)
+  template <size_t R, size_t C>
+  static bool allFinite(const blaze::StaticMatrix<double, R, C> &M)
+  {
+    for (size_t i = 0; i < R; ++i)
+    {
+      for (size_t j = 0; j < C; ++j)
       {
-        all_nan = false;
-        break;
+        if (!std::isfinite(M(i, j)))
+          return false;
       }
     }
-    return all_nan;
+    return true;
   }
 
   /// @brief EKF step
@@ -524,7 +537,21 @@ private:
     // 1c) Prediction system output
     this->m_pinn->getPosDistal(q, m_x_pred, z_pred);
 
-    if (first_measurement_received && !measurementIsMissing(z_meas))
+    // A single non-finite component (e.g. the tracker's quaternion while the sensor is
+    // missing) would poison m_x_pred and m_P permanently, so the correction only runs on
+    // fully finite joint feedback and tip measurement.
+    const bool inputs_finite = allFinite(q) && allFinite(z_meas);
+    const bool skip_correction = first_measurement_received && !inputs_finite;
+    if (skip_correction != m_correction_skipped_prev)
+    {
+      if (skip_correction)
+        RCLCPP_WARN(this->get_logger(), "[ekf] non-finite joint feedback or tip measurement - holding the force estimate until finite data returns: q=[%.4f, %.4f, %.4f, %.4f] p=[%.4f, %.4f, %.4f] h=[%.4f, %.4f, %.4f, %.4f]", q[0], q[1], q[2], q[3], z_meas[0], z_meas[1], z_meas[2], z_meas[3], z_meas[4], z_meas[5], z_meas[6]);
+      else
+        RCLCPP_INFO(this->get_logger(), "[ekf] finite feedback restored - correction resumed");
+      m_correction_skipped_prev = skip_correction;
+    }
+
+    if (first_measurement_received && inputs_finite)
     {
       // Correction
       if constexpr (!use_orientation)
@@ -709,6 +736,14 @@ private:
           m_P = temp * m_P * blaze::trans(temp) + L * R * blaze::trans(L); // Joseph form
         }
       }
+    }
+
+    // Last line of defence: never let a non-finite state persist (it would never recover).
+    if (!allFinite(m_x_pred) || !allFinite(m_P))
+    {
+      RCLCPP_ERROR(this->get_logger(), "[ekf] state became non-finite after the correction step - resetting the force estimate to 0 N and P to its initial value");
+      m_x_pred = blaze::StaticVector<double, nx>(0.0);
+      m_P = blaze::IdentityMatrix<double>(nx) * 1e-4;
     }
 
     // Clamp m_x_pred to the trained force ball. Per-axis clipping admitted ‖f‖ up to

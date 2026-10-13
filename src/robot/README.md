@@ -273,6 +273,14 @@ conversion — so they can be tested without Torch or hardware.
   FP64/v3 models; 0.50 N fallback with a WARN for models without the key). It was a
   per-axis ±0.5 N clip, which admitted `‖f‖` up to 0.87 N — outside the domain of the
   PINN used for the prediction itself. A published estimate with `magnitude` equal to
-  `f_max` is railed, not measured; the planner rejects such requests
-  (`FORCE_OUT_OF_DOMAIN`). See
+  `f_max` is railed, not measured; the planner then plans with zero tip force and says
+  so in its response. See
   [`force_estimate_forensic_report.md`](../planner/docs/force_estimate_forensic_report.md).
+- **The EKF never goes NaN on non-finite input.** The correction step runs only when
+  the joint feedback and the full tip measurement (`p` and `h`) are finite; otherwise
+  it is skipped with an edge-triggered `[ekf] non-finite joint feedback or tip
+  measurement - holding the force estimate` WARN (and `finite feedback restored` INFO).
+  Previously one NaN component (the tracker quaternion while the sensor was missing,
+  2026-10-12) passed the all-NaN check and poisoned the state and covariance
+  permanently. If the state ever becomes non-finite anyway, it is reset to 0 N with the
+  initial covariance and an `[ekf] state became non-finite` ERROR.
