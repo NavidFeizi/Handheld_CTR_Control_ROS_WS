@@ -17,6 +17,7 @@
 #include "interfaces/msg/jointspace.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/msg/force.hpp"
+#include "interfaces/msg/ekf_residual.hpp"
 #include "interfaces/srv/recording.hpp"
 #include "ctr_common/output_session.hpp"
 #include "ctr_common/runtime_paths.hpp"
@@ -83,6 +84,8 @@ private:
     
     // Subscribe to force estimation from EKF
     m_subs_force = create_subscription<interfaces::msg::Force>("task_space/force_estimate", 10, std::bind(&RecorderNode::update_force_callback, this, _1));
+    // EKF innovation magnitudes: shows when the force estimate stopped tracking the tracker
+    m_subs_ekf_residual = create_subscription<interfaces::msg::EKFResidual>("EKF/residual_error", 10, std::bind(&RecorderNode::update_ekf_residual_callback, this, _1));
 
     /// listener to tf2 transormation messages
     m_tf_buffer = std::make_unique<tf2_ros::Buffer>(this->get_clock());
@@ -156,6 +159,12 @@ private:
     m_force_magnitude = msg->magnitude;
   }
 
+  void update_ekf_residual_callback(const interfaces::msg::EKFResidual::ConstSharedPtr msg)
+  {
+    m_ekf_pos_residual = msg->pos_mag;
+    m_ekf_rot_residual_deg = msg->orientation_mag; // already in degrees
+  }
+
   // Function to capture a single frame of data and write to dump files for a specific session
   void capture_frame(RecordingSession& session)
   {
@@ -191,7 +200,8 @@ private:
                           << m_x_sim[0] << ',' << m_x_sim[1] << ',' << m_x_sim[2] << ','
                           << m_force_est[0] << ',' << m_force_est[1] << ',' << m_force_est[2] << ','
                           << m_force_magnitude << ','
-                          << m_ctrl_time << '\n';
+                          << m_ctrl_time << ','
+                          << m_ekf_pos_residual * 1.0e3 << ',' << m_ekf_rot_residual_deg << '\n';
     session.computed_file.flush();
   }
 
@@ -306,7 +316,7 @@ private:
       return false;
     }
     session.computed_file << "t,x_r,y_r,z_r,x_sim,y_sim,z_sim";
-    session.computed_file << ",f_x,f_y,f_z,f_mag,ctrl_time";
+    session.computed_file << ",f_x,f_y,f_z,f_mag,ctrl_time,ekf_pos_residual_mm,ekf_rot_residual_deg";
     session.computed_file << "\n";
 
     RCLCPP_INFO(this->get_logger(), "[lifecycle] [%s] Dump files opened - folder: %s", session_name.c_str(), folder_address.c_str());
@@ -489,6 +499,7 @@ private:
   rclcpp::Subscription<interfaces::msg::Jointspace>::SharedPtr m_subs_q, m_subs_q_r;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr m_subs_ctrl_time;
   rclcpp::Subscription<interfaces::msg::Force>::SharedPtr m_subs_force;
+  rclcpp::Subscription<interfaces::msg::EKFResidual>::SharedPtr m_subs_ekf_residual;
 
   rclcpp::CallbackGroup::SharedPtr m_callback_group_read;
   rclcpp::CallbackGroup::SharedPtr m_callback_group_srv;
@@ -507,6 +518,8 @@ private:
 
   double m_ctrl_time = 0.0;
   double m_force_magnitude = 0.0;
+  double m_ekf_pos_residual = std::numeric_limits<double>::quiet_NaN();     // EKF position innovation norm [m]
+  double m_ekf_rot_residual_deg = std::numeric_limits<double>::quiet_NaN(); // EKF orientation innovation norm [deg]
 };
 
 int main(int argc, char *argv[])
