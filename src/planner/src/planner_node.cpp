@@ -7,6 +7,7 @@
 #include <iostream>
 #include <string>
 #include <iomanip>
+#include <sstream>
 #include "rclcpp/rclcpp.hpp"
 #include "interfaces/msg/taskspace.hpp"
 #include "interfaces/msg/jointspace.hpp"
@@ -97,10 +98,10 @@ public:
                 m_tempDir.c_str(), m_solve_time);
     RCLCPP_INFO(this->get_logger(),
                 "[lifecycle] trained domain (physics order b1,b2,a1,a2): b1=[%.4f, %.4f] m, b2=[%.4f, %.4f] m, "
-                "a1=[%.4f, %.4f] rad, a2=[%.4f, %.4f] rad, stage_clearance=%.4f m",
+                "a1=[%.4f, %.4f] rad, a2=[%.4f, %.4f] rad, stage_clearance=%.4f m, f_max=%.3f N",
                 prismaticRanges[0UL], prismaticRanges[1UL], prismaticRanges[2UL], prismaticRanges[3UL],
                 revoluteRanges[0UL], revoluteRanges[1UL], revoluteRanges[2UL], revoluteRanges[3UL],
-                stageClearance);
+                stageClearance, m_ctr_pinn.getMaxTipForce());
     if (m_solve_time <= 0.0)
     {
       RCLCPP_WARN(this->get_logger(), "[lifecycle] solve_time=%.3f s is non-positive; OMPL will return with no plan", m_solve_time);
@@ -343,10 +344,25 @@ public:
         blaze::StaticVector<double, 4UL> q_initial = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
         blaze::StaticVector<double, 4UL> q_final = q_initial;
 
+        RCLCPP_INFO(this->get_logger(), "[plan] force estimate f = [%.4f, %.4f, %.4f] N", force[0UL], force[1UL], force[2UL]);
+
+        // A force estimate on/outside the trained force ball is a railed EKF value, not a
+        // measurement; solving IK against it drives the PINN out of its domain.
+        const std::string forceViolation = m_ctr_pinn.forceDomainViolation(force);
+        if (!forceViolation.empty())
+        {
+          RCLCPP_WARN(this->get_logger(), "[pinn] force estimate outside trained domain - request #%lu rejected: %s",
+                      static_cast<unsigned long>(seq), forceViolation.c_str());
+          response->success = false;
+          response->value = 0.0;
+          response->message = "force estimate outside trained domain (" + forceViolation + "): EKF estimate is saturated; not planning";
+          logResponse(response, "FORCE_OUT_OF_DOMAIN");
+          return;
+        }
+
         // Safe here: no solve is in flight (mutually exclusive service group).
         // Propagates to the FTL objective (cache cleared) and informed samplers.
         m_motionPlan.setCTR_externalForce(force);
-        RCLCPP_INFO(this->get_logger(), "[plan] force estimate f = [%.4f, %.4f, %.4f] N", force[0UL], force[1UL], force[2UL]);
 
         const std::string startViolation = m_ctr_pinn.domainViolation(q_initial);
         if (!startViolation.empty())
@@ -366,7 +382,17 @@ public:
           m_target_last = target;
           response->success = true;
           response->value = error;
-          response->message = "Path generated successfully.";
+          if (ik_converged)
+          {
+            response->message = "Path generated successfully.";
+          }
+          else
+          {
+            std::ostringstream msg;
+            msg << std::fixed << std::setprecision(2) << "Path generated but IK did not converge: error="
+                << error * 1.00E3 << " mm > " << kIkPosTol * 1.00E3 << " mm";
+            response->message = msg.str();
+          }
           logResponse(response, ik_converged ? "OK" : "IK_NOT_CONVERGED");
         }
         else
@@ -425,6 +451,18 @@ public:
                     force[0UL], force[1UL], force[2UL],
                     m_force_at_plan[0UL], m_force_at_plan[1UL], m_force_at_plan[2UL],
                     q_now[0UL], q_now[1UL], q_now[2UL], q_now[3UL]);
+
+        const std::string forceViolation = m_ctr_pinn.forceDomainViolation(force);
+        if (!forceViolation.empty())
+        {
+          RCLCPP_WARN(this->get_logger(), "[pinn] force estimate outside trained domain - request #%lu rejected: %s",
+                      static_cast<unsigned long>(seq), forceViolation.c_str());
+          response->success = false;
+          response->value = 0.0;
+          response->message = "replanDeployment rejected: force estimate outside trained domain (" + forceViolation + ")";
+          logResponse(response, "FORCE_OUT_OF_DOMAIN");
+          return;
+        }
 
         // Safe here: no solve is in flight (mutually exclusive service group).
         m_motionPlan.setCTR_externalForce(force);

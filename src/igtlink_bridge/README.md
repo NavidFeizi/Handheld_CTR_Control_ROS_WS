@@ -122,6 +122,27 @@ which carries the 3.1 version that lands at that path.
 None. This package has no `test/` directory; its logic is mostly I/O against a live
 IGTL peer, which the workspace's hardware-free suites deliberately avoid.
 
+## Diagnostic logging
+
+`IGTLinkBridgeNode` installs a package log file (`ctr_common::installPackageFileLog`) as
+the first statement of its constructor body: every rcutils record from this process
+(console output included) is also teed to
+`<log_root>/[<CTR_RUN_ID>/]igtlink_bridge/<timestamp>_igtlink_bridge_<pid>.log`. See
+`ctr_common`'s `package_log.hpp` for `log_root` resolution.
+
+Log lines are tagged by stage:
+
+| Tag | Stage |
+|---|---|
+| `[lifecycle]` | startup/connection to the OpenIGTLink peer |
+| `[comm]` | IGTL message traffic (COMMAND/TRANSFORM/POINT/STATUS), tf lookups, and ROS
+  service responses |
+
+`robot_config` and `planner/command` response lines now carry `success`, and for
+`planner/command` the IK `value` (error metres), alongside the `message` text, e.g.
+`[comm] planner/command response: success=0 value=0.012500 message='rejected: ...'`.
+
+
 ## Status notes
 
 - **The module endpoint never starts.** `igtlink_bridge_module_node` is fully

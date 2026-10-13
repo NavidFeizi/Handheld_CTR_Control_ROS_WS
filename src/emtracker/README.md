@@ -158,6 +158,25 @@ colcon test --packages-select emtracker
 
 Both are pure math, with no ROS or hardware dependency.
 
+## Diagnostic logs
+
+`EMTrackerNode` installs a package log file (`ctr_common::installPackageFileLog`) as the
+first statement of its constructor body: every rcutils record from this process (console
+output included) is also teed to
+`<log_root>/[<CTR_RUN_ID>/]emtracker/<timestamp>_emtracker_<pid>.log`. See `ctr_common`'s
+`package_log.hpp` for `log_root` resolution.
+
+Log lines are tagged by stage:
+
+| Tag | Stage |
+|---|---|
+| `[lifecycle]` | config-dir resolution, filter-cutoff parameter updates |
+| `[comm]` | `get_transformation` service response, `freeze_phantom`/`freeze_robot` state changes |
+| `[pose]` | per-sample tool pose (DEBUG, 40 Hz) — enable with `ros2 run ... --ros-args --log-level emt_node:=debug` |
+
+`task_space/feedback/base_tool` (`Taskspace.h`) now also carries the tool orientation as a
+scalar-first quaternion, consumed by the robot EKF's orientation correction.
+
 ## Status notes
 
 - **`host_name` defaults disagree with the code**: the in-code `declare_parameter`

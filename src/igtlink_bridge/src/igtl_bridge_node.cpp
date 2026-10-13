@@ -28,6 +28,8 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include "tf2_eigen/tf2_eigen.hpp"
 
+#include <ctr_common/package_log.hpp>
+
 #include "igtlOSUtil.h"
 #include "igtlClientSocket.h"
 #include "igtlMessageHeader.h"
@@ -48,6 +50,7 @@ public:
   IGTLinkBridgeNode()
       : Node("igtlink_bridge")
   {
+    ctr_common::installPackageFileLog(*this, "igtlink_bridge");
     declare_parameters();
     setup_igtl(m_hostname, m_port);
     setup_ros_interfaces();
@@ -185,7 +188,7 @@ private:
   /// setup OpenIGTLink client
   bool setup_igtl(const std::string &hostname, int port)
   {
-    RCLCPP_INFO(get_logger(), "Connecting to server at %s:%d", hostname.c_str(), port);
+    RCLCPP_INFO(get_logger(), "[lifecycle] Connecting to server at %s:%d", hostname.c_str(), port);
 
     m_socket = igtl::ClientSocket::New();
 
@@ -193,13 +196,13 @@ private:
     if (r == 0)
     {
       m_connected = true;
-      RCLCPP_INFO(get_logger(), "Connected to the OpenIGTLink server.");
+      RCLCPP_INFO(get_logger(), "[lifecycle] Connected to the OpenIGTLink server.");
     }
     else
 
     {
       m_connected = false;
-      RCLCPP_INFO(get_logger(), "Fail to connect to %s:%d. Retrying...", hostname.c_str(), port);
+      RCLCPP_INFO(get_logger(), "[lifecycle] Fail to connect to %s:%d. Retrying...", hostname.c_str(), port);
       return false;
     }
     std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -294,7 +297,7 @@ private:
       catch (const tf2::TransformException &ex)
       {
         RCLCPP_INFO(
-            this->get_logger(), "Could not transform %s to %s: %s",
+            this->get_logger(), "[comm] Could not transform %s to %s: %s",
             targetFrame.c_str(), sourceFrame.c_str(), ex.what());
         return;
       }
@@ -337,7 +340,7 @@ private:
     catch (const tf2::TransformException &ex)
     {
       RCLCPP_INFO(
-          this->get_logger(), "Could not transform %s to %s: %s",
+          this->get_logger(), "[comm] Could not transform %s to %s: %s",
           targetFrame.c_str(), sourceFrame.c_str(), ex.what());
       return;
     }
@@ -419,7 +422,7 @@ private:
         std::string commandName = msg->GetCommandName();
         std::string commandContent = msg->GetCommandContent();
 
-        RCLCPP_INFO(this->get_logger(), "Received IGTL COMMAND: \n \t\t deviceName: %s \n \t\t commandName: %s \n \t\t commandContent %s", deviceName.c_str(), commandName.c_str(), commandContent.c_str());
+        RCLCPP_INFO(this->get_logger(), "[comm] Received IGTL COMMAND: \n \t\t deviceName: %s \n \t\t commandName: %s \n \t\t commandContent %s", deviceName.c_str(), commandName.c_str(), commandContent.c_str());
 
         if (commandName == "RobotSetup")
         {
@@ -445,7 +448,7 @@ private:
             std::istringstream value_stream(value_str);
             if (!(value_stream >> request->value[0] >> request->value[1] >> request->value[2]))
             {
-              RCLCPP_WARN(this->get_logger(), "Expected 3 target coordinates in commandContent, got: '%s'", value_str.c_str());
+              RCLCPP_WARN(this->get_logger(), "[comm] Expected 3 target coordinates in commandContent, got: '%s'", value_str.c_str());
               request->value = {0.0, 0.0, 0.0};
             }
           }
@@ -484,7 +487,7 @@ private:
 
         std::string deviceName = trans_msg->GetDeviceName();
 
-        RCLCPP_INFO(this->get_logger(), "Received IGTL TRANSFORM: \n \t\t deviceName: %s", deviceName.c_str());
+        RCLCPP_INFO(this->get_logger(), "[comm] Received IGTL TRANSFORM: \n \t\t deviceName: %s", deviceName.c_str());
 
         igtl::Matrix4x4 matrix;
         trans_msg->GetMatrix(matrix);
@@ -495,13 +498,13 @@ private:
         if (deviceName == "TargetTransform")
         {
           tf2_broadcast_transformation("path_target", matrix);
-          RCLCPP_INFO(get_logger(), "TargetTransform sent");
+          RCLCPP_INFO(get_logger(), "[comm] TargetTransform sent");
         }
 
         else if (deviceName == "BaseTransform")
         {
           tf2_broadcast_transformation("path_base", matrix);
-          RCLCPP_INFO(get_logger(), "BaseTransform sent");
+          RCLCPP_INFO(get_logger(), "[comm] BaseTransform sent");
         }
       }
 
@@ -524,7 +527,7 @@ private:
         std::string deviceName = msg->GetDeviceName();
         int numPoints = msg->GetNumberOfPointElement();
 
-        RCLCPP_INFO(this->get_logger(), "Received IGTL POINT: \n \t\t deviceName: %s \n \t\t numPoints: %d", deviceName.c_str(), numPoints);
+        RCLCPP_INFO(this->get_logger(), "[comm] Received IGTL POINT: \n \t\t deviceName: %s \n \t\t numPoints: %d", deviceName.c_str(), numPoints);
 
         blaze::HybridMatrix<double, 1000UL, 3UL, blaze::rowMajor> mat;
         // Extract points
@@ -572,12 +575,12 @@ private:
         std::string deviceName = msg->GetDeviceName();
         int code = msg->GetCode();
 
-        RCLCPP_INFO(this->get_logger(), "Received IGTL STATUS: \n \t\t deviceName: %s  \n \t\t code: %d", deviceName.c_str(), code);
+        RCLCPP_INFO(this->get_logger(), "[comm] Received IGTL STATUS: \n \t\t deviceName: %s  \n \t\t code: %d", deviceName.c_str(), code);
       }
 
       else
       {
-        RCLCPP_INFO(this->get_logger(), "Received unsupported IGTL Message - type: %s", type.c_str());
+        RCLCPP_INFO(this->get_logger(), "[comm] Received unsupported IGTL Message - type: %s", type.c_str());
       }
 
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -771,11 +774,11 @@ private:
 
     if (response->success)
     {
-      RCLCPP_INFO(this->get_logger(), "Response: %s", response->message.c_str());
+      RCLCPP_INFO(this->get_logger(), "[comm] robot_config response: success=%d message='%s'", response->success, response->message.c_str());
     }
     else
     {
-      RCLCPP_ERROR(this->get_logger(), "Error: %s", response->message.c_str());
+      RCLCPP_ERROR(this->get_logger(), "[comm] robot_config response: success=%d message='%s'", response->success, response->message.c_str());
     }
     rts_str->SetString(response->message.c_str());
     rts_str->Pack();
@@ -794,11 +797,11 @@ private:
 
     if (response->success)
     {
-      RCLCPP_INFO(this->get_logger(), "Response:\n\t\t%s", response->message.c_str());
+      RCLCPP_INFO(this->get_logger(), "[comm] planner/command response: success=%d value=%.6f message='%s'", response->success, response->value, response->message.c_str());
     }
     else
     {
-      RCLCPP_ERROR(this->get_logger(), "Error: %s", response->message.c_str());
+      RCLCPP_ERROR(this->get_logger(), "[comm] planner/command response: success=%d value=%.6f message='%s'", response->success, response->value, response->message.c_str());
     }
     rts_str->SetString(response->message.c_str());
     rts_str->Pack();
@@ -874,7 +877,7 @@ private:
         << "Z:" << print_with_space_if_positive(position[2]) << " [m]"
         << "  |  dT:" << std::fixed << std::setprecision(1) << sample_time * 1e3 << " [ms]";
 
-    RCLCPP_INFO(get_logger(), "%s", oss.str().c_str());
+    RCLCPP_INFO(get_logger(), "[comm] %s", oss.str().c_str());
   }
 
   double m_sample_time;

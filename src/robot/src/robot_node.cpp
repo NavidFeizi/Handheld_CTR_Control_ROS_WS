@@ -345,8 +345,10 @@ private:
     {
       if (en_fault_status[i] && !m_enable_fault_prev[i])
         RCLCPP_ERROR(get_logger(),
-                     "Joint %d (%s) failed the CiA-402 enable transition - that joint is NOT under control",
+                     "[procedure] Joint %d (%s) failed the CiA-402 enable transition - that joint is NOT under control",
                      i, k_joint_names[i]);
+      else if (!en_fault_status[i] && m_enable_fault_prev[i])
+        RCLCPP_INFO(get_logger(), "[procedure] Joint %d (%s) CiA-402 enable fault cleared", i, k_joint_names[i]);
       m_enable_fault_prev[i] = en_fault_status[i];
     }
 

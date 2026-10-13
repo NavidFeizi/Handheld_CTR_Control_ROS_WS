@@ -141,7 +141,7 @@ Every log line is tagged by pipeline stage:
 |---|---|
 | `[lifecycle]` | startup config/domain summary, non-positive `solve_time` |
 | `[comm]` | service request/response (sequence number, target, timings, reason code), feedback-topic status |
-| `[pinn]` | PINN trained-domain checks on the IK start state and solution |
+| `[pinn]` | PINN trained-domain checks on the IK start state, the solution, and the force estimate (`‖f‖` vs the model's `f_max`) |
 | `[ik]` | `solveInverseKinematics`/`posCTRL` seed, result, convergence diagnostics |
 | `[plan]` | `planTwoPhase`/`planDeployment` start/goal, result, exceptions |
 | `[traj]` | CSV → task-space path conversion and publishing |
@@ -157,7 +157,8 @@ alone. The `[comm] response` line carries a `reason` code:
 | `INVALID_TARGET` | the requested target had a non-finite coordinate |
 | `START_INVALID` | `Planner` rejected the current joint state as a start state |
 | `GOAL_INVALID` | `Planner` rejected the IK-derived joint state as a goal state |
-| `IK_NOT_CONVERGED` | planning succeeded but IK error exceeded its internal tolerance (the manager's separate accept threshold is 3 mm) |
+| `IK_NOT_CONVERGED` | planning succeeded but IK error exceeded its internal tolerance (the manager's separate accept threshold is 3 mm); `message` is `Path generated but IK did not converge: error=<e> mm > 0.50 mm` |
+| `FORCE_OUT_OF_DOMAIN` | the EKF force estimate snapshot has `‖f‖ ≥ f_max − 1e-6` (railed on the EKF's clamp or outside the trained force ball); request rejected before IK, `success=false`, `value=0.0` |
 | `PLAN_FAILED` | `planTwoPhase` found no solution |
 | `EXCEPTION` | any other exception from `Planner`/OMPL |
 
@@ -165,5 +166,11 @@ A non-finite target is rejected before any IK/plan work runs: `response->success
 false`, `response->value = 0.0`, and a new `message` string
 ("invalid target: non-finite value(s) in target") that neither `manager` nor
 `igtlink_bridge` pattern-match on — both only log/forward `response->message` verbatim.
-No other response message text changed; the success-path message
-("Path generated successfully.") is unchanged.
+The force estimate is checked against the model's trained `f_max` before IK, for both
+`generateTrajectory` and `replanDeployment`. A railed estimate is rejected rather than
+fed to the PINN: on 2026-10-12 a saturated estimate (`‖f‖ ≈ 0.6–0.8 N` with `f_max =
+0.5 N`) made every target with y < 0 fail IK at 25–43 mm — see
+[`docs/force_estimate_forensic_report.md`](docs/force_estimate_forensic_report.md).
+The rejection message is `force estimate outside trained domain (|f|=… N >= f_max=… N):
+EKF estimate is saturated; not planning` (replan: `replanDeployment rejected: force
+estimate outside trained domain (…)`); the manager shows it in its GUI "Message" column.

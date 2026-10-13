@@ -7,6 +7,7 @@
 #include "ctr_common/package_log.hpp"
 
 #include <algorithm>
+#include <sstream>
 
 using namespace std::chrono_literals;
 
@@ -678,6 +679,24 @@ void MasterNode::handle_service_response(const std::string &command, const rclcp
     }
 }
 
+// Single emit point for the GUI planner-status row; the message is written by the
+// service-response executor thread and read here from any thread.
+void MasterNode::emitPlannerStatus()
+{
+    std::string message;
+    {
+        std::lock_guard<std::mutex> lock(m_planner_msg_mutex);
+        message = m_planner_message;
+    }
+    emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error, QString::fromStdString(message));
+}
+
+void MasterNode::setPlannerMessage(const std::string &message)
+{
+    std::lock_guard<std::mutex> lock(m_planner_msg_mutex);
+    m_planner_message = message;
+}
+
 void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future)
 {
     auto response = future.get();
@@ -697,36 +716,57 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
 
     RCLCPP_DEBUG(this->get_logger(), "[plan] bypass_error_check=%s", bypass_error_check ? "true" : "false");
 
+    auto fmt2 = [](double v)
+    {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2) << v;
+        return oss.str();
+    };
+
     if ((m_planner_success || bypass_error_check) && m_planner_ik_error < k_ik_error_threshold)
     {
         if (loadPlannedPath())
         {
-            std::lock_guard<std::mutex> lock(m_force_mutex);
-            m_f_at_plan = m_f_pending;
-            m_f_at_plan_valid = true;
-            m_replan_attempts = 0;
-            m_replan_backoff_s = m_replan_cooldown_s;
+            {
+                std::lock_guard<std::mutex> lock(m_force_mutex);
+                m_f_at_plan = m_f_pending;
+                m_f_at_plan_valid = true;
+                m_replan_attempts = 0;
+                m_replan_backoff_s = m_replan_cooldown_s;
+            }
+            size_t waypoints = 0;
+            {
+                std::lock_guard<std::mutex> lock(m_deploy_mutex);
+                waypoints = m_q_list_adjusted.size();
+            }
+            setPlannerMessage("accepted: ik_error=" + fmt2(response->value * 1000.0) + " mm, " + std::to_string(waypoints) + " waypoints");
         }
         else
         {
             RCLCPP_ERROR(this->get_logger(), "[plan] Failed to load plannedPath.csv - path will be empty");
             m_planner_success = false;
+            setPlannerMessage("accepted by planner but plannedPath.csv failed to load");
         }
     }
     else if (!response->success)
     {
         RCLCPP_WARN(this->get_logger(), "[plan] plan rejected: planner reported failure: %s", response->message.c_str());
+        setPlannerMessage("rejected: " + response->message);
     }
     else if (response->value >= k_ik_error_threshold)
     {
         RCLCPP_WARN(this->get_logger(), "[plan] plan rejected: ik_error=%.3f mm >= threshold=%.3f mm",
                     response->value * 1000.0, k_ik_error_threshold * 1000.0);
+        // the planner's success only means OMPL found a path; the plan is not accepted
+        m_planner_success = false;
+        setPlannerMessage("rejected: ik_error=" + fmt2(response->value * 1000.0) + " mm >= " +
+                          fmt2(k_ik_error_threshold * 1000.0) + " mm - " + response->message);
     }
 
     std::this_thread::sleep_for(10ms);
 
     m_flag_planning = false;
-    emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
+    emitPlannerStatus();
 }
 
 // Replan responses are handled separately from full-plan responses: `value`
@@ -748,6 +788,7 @@ void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Pl
         RCLCPP_INFO(this->get_logger(),
                     "[plan] replanDeployment response #%d: accepted: %s (FTL cost %.6f, round_trip=%.1f ms) - resuming deployment on the new schedule",
                     m_planner_request_seq.load(), response->message.c_str(), response->value, round_trip_ms);
+        setPlannerMessage("replan accepted: " + response->message);
     }
     else
     {
@@ -760,10 +801,11 @@ void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Pl
         RCLCPP_WARN(this->get_logger(),
                     "[plan] replanDeployment response #%d: rejected (%s, round_trip=%.1f ms) - continuing previous plan (attempt %d/%d, next in >= %.1f s)",
                     m_planner_request_seq.load(), response->message.c_str(), round_trip_ms, m_replan_attempts, k_max_replan_attempts, m_replan_backoff_s);
+        setPlannerMessage("replan rejected: " + response->message);
     }
 
     m_flag_planning = false;
-    emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
+    emitPlannerStatus();
 }
 
 // ============================================================================
@@ -842,7 +884,7 @@ void MasterNode::maybeRequestDeploymentReplan()
     auto response_callback = std::bind(&MasterNode::handle_replan_response, this, std::placeholders::_1);
     (void)m_planner_client->async_send_request(request, response_callback);
 
-    emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
+    emitPlannerStatus();
     RCLCPP_INFO(this->get_logger(),
                 "[comm] planner/command replanDeployment request #%d sent: |df|=%.3f N at waypoint %d (%zu remaining) - pausing deployment to replan (#%d)",
                 seq, df, index, remaining, m_replan_count);
@@ -989,7 +1031,7 @@ void MasterNode::control_loop()
                 m_q_prev = m_q;
                 m_flag_planning = true;
                 m_flag_planner_updated = true;
-                emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
+                emitPlannerStatus();
                 RCLCPP_INFO(this->get_logger(),
                             "[comm] planner/command generateTrajectory request #%d sent at %.3f: target=[%.4f, %.4f, %.4f] "
                             "q(wire) alpha1=%.4f beta1=%.4f alpha2=%.4f beta2=%.4f alpha_diff1=%.4f alpha_diff2=%.4f",
@@ -1152,7 +1194,7 @@ void MasterNode::control_loop()
         if (m_reached && !m_flag_planning && (target_changed || q_changed) && !m_retracting && (Xe > (k_target_threshold / 2)))
         {
             m_flag_planning = true;
-            emit plannerStatusUpdated(m_flag_planning, m_planner_success, m_planner_ik_error);
+            emitPlannerStatus();
 
             {
                 std::lock_guard<std::mutex> lock(m_force_mutex);

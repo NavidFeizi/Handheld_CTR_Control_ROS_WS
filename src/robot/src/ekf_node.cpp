@@ -49,7 +49,8 @@ private:
   blaze::StaticMatrix<double, 6UL, 6UL> m_R; // measurement noise covariance (top-left block used when !exclude_roll; 5x5 when exclude_roll)
 
   double m_f_dot;
-  double m_force_threshold = 0.50; // N
+  double m_force_threshold = 0.0; // N, set from the model's f_max in initKalmanFilter()
+  bool m_force_saturated_prev = false;
   bool m_first_measurement_received = false;
 
   blaze::StaticVector<double, nx> m_x_pred;
@@ -97,7 +98,7 @@ private:
 
     if (R_flat.size() == 6UL)
     {
-      RCLCPP_INFO(this->get_logger(), "Using diagonal R measurement noise (6 elements)");
+      RCLCPP_INFO(this->get_logger(), "[lifecycle] Using diagonal R measurement noise (6 elements)");
       blaze::StaticVector<double, 6UL> R_vec;
       reset(R_vec);
       for (size_t i = 0; i < R_vec.size(); ++i)
@@ -117,7 +118,7 @@ private:
     }
     else if (R_flat.size() == 36UL)
     {
-      RCLCPP_INFO(this->get_logger(), "Using full 6x6 R measurement noise matrix (36 elements)");
+      RCLCPP_INFO(this->get_logger(), "[lifecycle] Using full 6x6 R measurement noise matrix (36 elements)");
       blaze::StaticMatrix<double, 6UL, 6UL> R;
       reset(R);
       // Convert flat vector to blaze matrix (row-major)
@@ -205,10 +206,19 @@ private:
     }
 
     const size_t backbonePoints = 20UL;
-    RCLCPP_INFO(this->get_logger(), "Model: %s", m_model_name.c_str());
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] Model: %s", m_model_name.c_str());
 
     // instantiate EKF model object
     m_pinn = std::make_shared<PINNs<nu>>(ctr_common::resolveModelsDir(*this).string(), m_model_name, 1UL, backbonePoints);
+
+    // clamp the estimate to the force domain the PINN was trained on (‖f‖ ≤ f_max)
+    m_force_threshold = m_pinn->getMaxTipForce();
+    if (!(m_force_threshold > 0.0))
+    {
+      RCLCPP_WARN(this->get_logger(), "[lifecycle] model '%s' has no f_max; clamping force estimate at 0.50 N", m_model_name.c_str());
+      m_force_threshold = 0.50;
+    }
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] force estimate clamp: |f| <= %.3f N (trained f_max)", m_force_threshold);
 
     const double alpha = 1.0;
     m_A = alpha * blaze::IdentityMatrix<double>(nx);
@@ -239,7 +249,7 @@ private:
           double sigma_df = m_f_dot * m_sample_time;
           m_Q_vec = blaze::StaticVector<double, nx>(1.0) * sigma_df * sigma_df;
           updateProcessNoiseCovariance(m_Q_vec);
-          RCLCPP_INFO(this->get_logger(), "Updated f_dot: %f N/s", m_f_dot);
+          RCLCPP_INFO(this->get_logger(), "[lifecycle] Updated f_dot: %f N/s", m_f_dot);
         }
       }
 
@@ -281,7 +291,7 @@ private:
     {
       m_Q(i, i) = Q_diag[i];
     }
-    RCLCPP_INFO(this->get_logger(), "Updated process noise covariance:");
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] Updated process noise covariance:");
     logMatrix("Q", m_Q);
   }
 
@@ -298,7 +308,7 @@ private:
       m_R(i, i) = R_diag[i];
     }
 
-    RCLCPP_INFO(this->get_logger(), "Updated measurement noise covariance:");
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] Updated measurement noise covariance:");
     logMatrix("R", m_R);
   }
 
@@ -319,7 +329,7 @@ private:
       }
     }
 
-    RCLCPP_INFO(this->get_logger(), "Updated measurement noise covariance:");
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] Updated measurement noise covariance:");
     logMatrix("R", m_R);
   }
 
@@ -701,14 +711,21 @@ private:
       }
     }
 
-    // Clip m_x_pred to force threshold
-    for (size_t i = 0; i < nx; ++i)
+    // Clamp m_x_pred to the trained force ball. Per-axis clipping admitted ‖f‖ up to
+    // sqrt(3)·f_max, outside the domain of the very PINN used for the prediction.
+    const double f_norm = blaze::norm(m_x_pred);
+    const bool saturated = f_norm > m_force_threshold;
+    if (saturated)
     {
-      double magnitude = std::abs(m_x_pred[i]);
-      if (magnitude > m_force_threshold)
-      {
-        m_x_pred[i] = (m_x_pred[i] / magnitude) * m_force_threshold;
-      }
+      m_x_pred *= m_force_threshold / f_norm;
+    }
+    if (saturated != m_force_saturated_prev)
+    {
+      if (saturated)
+        RCLCPP_WARN(this->get_logger(), "[ekf] force estimate saturated: |f|=%.3f N > f_max=%.3f N - estimate is not trustworthy until it leaves the clamp", f_norm, m_force_threshold);
+      else
+        RCLCPP_INFO(this->get_logger(), "[ekf] force estimate left saturation: |f|=%.3f N", f_norm);
+      m_force_saturated_prev = saturated;
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -772,7 +789,7 @@ private:
     std::ostringstream oss;
     oss << name << " =\n"
         << M;
-    RCLCPP_INFO(this->get_logger(), "%s", oss.str().c_str());
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] %s", oss.str().c_str());
   }
 };
 

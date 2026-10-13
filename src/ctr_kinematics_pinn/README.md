@@ -96,6 +96,14 @@ domain (absolute, physics order):
 
 Stage clearance (`getStageThickness()`) is `0.030` m, enforced as `β1 ≤ β2 - 0.030`.
 
+Tip-force domain: `getMaxTipForce()` returns the trained bound `f_max` (N) from
+`dataset_params.f_max` (`0.5` for the `_FP32`/`_FP64`/`_v3` models, `0.25` for the
+unsuffixed one; `0` for models whose metadata lacks the key, e.g. `grassmann_*`,
+`handheld_*`). `[[nodiscard]] std::string forceDomainViolation(wf, tol = 1e-6) const`
+returns empty when `‖wf‖ < f_max − tol` (or `f_max == 0`), otherwise e.g.
+`"|f|=0.6403 N >= f_max=0.5000 N"`. A value on the surface counts as a violation:
+the robot EKF clamps its estimate to that surface, so a value there is railed.
+
 ## LibTorch pin
 
 `cmake/torch_pin.cmake` pins Torch to the self-contained install at

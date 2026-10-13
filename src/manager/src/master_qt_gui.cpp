@@ -57,8 +57,8 @@ void QtGuiManager::createTables(QVBoxLayout* layout)
     tableTitle->setAlignment(Qt::AlignCenter);
     layout->addWidget(tableTitle);
     
-    mp_planner_status_table = new QTableWidget(1, 3, m_master_node);
-    mp_planner_status_table->setHorizontalHeaderLabels({"Status", "Success", "IK Error"});
+    mp_planner_status_table = new QTableWidget(1, 4, m_master_node);
+    mp_planner_status_table->setHorizontalHeaderLabels({"Status", "Success", "IK Error", "Message"});
     mp_planner_status_table->setVerticalHeaderLabels({" Planner  "});
     mp_planner_status_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mp_planner_status_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -240,8 +240,8 @@ void QtGuiManager::connectSignals()
         }, Qt::QueuedConnection);
     
     QObject::connect(m_master_node, &MasterNode::plannerStatusUpdated,
-        m_master_node, [this](bool planning, bool success, double ik_error) {
-            updatePlannerStatusTable(planning, success, ik_error);
+        m_master_node, [this](bool planning, bool success, double ik_error, QString message) {
+            updatePlannerStatusTable(planning, success, ik_error, message);
         }, Qt::QueuedConnection);
 }
 
@@ -299,7 +299,7 @@ void QtGuiManager::updateEmtTable(Eigen::Vector3d tip, Eigen::Vector3d probe, Ei
     mp_emt_status_table->setItem(4, 3, new QTableWidgetItem(QString::number(error.norm(), 'f', 3)));
 }
 
-void QtGuiManager::updatePlannerStatusTable(bool planning, bool success, double ik_error)
+void QtGuiManager::updatePlannerStatusTable(bool planning, bool success, double ik_error, const QString &message)
 {
     // Create status item and color "Planning" orange
     QTableWidgetItem* status_item = new QTableWidgetItem(planning ? "Planning" : "Idle");
@@ -324,4 +324,13 @@ void QtGuiManager::updatePlannerStatusTable(bool planning, bool success, double 
         ik_error_item->setForeground(QBrush(QColor(255, 0, 0))); // Red text
     }
     mp_planner_status_table->setItem(0, 2, ik_error_item);
+
+    // Planner outcome / rejection reason; full text in the tooltip if the cell is too narrow
+    QTableWidgetItem* message_item = new QTableWidgetItem(message);
+    message_item->setToolTip(message);
+    if (!success)
+    {
+        message_item->setForeground(QBrush(QColor(255, 0, 0))); // Red text
+    }
+    mp_planner_status_table->setItem(0, 3, message_item);
 }

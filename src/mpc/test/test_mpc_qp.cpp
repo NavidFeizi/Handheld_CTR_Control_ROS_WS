@@ -4,6 +4,7 @@
 
 #include "mpc.hpp"
 #include "mpc.tpp"
+#include "joint_box.hpp"
 
 // QP-level tests with a trivial LINEAR plant standing in for the PINN:
 // tip position = first three joints (integrator dynamics through the input).
@@ -116,6 +117,43 @@ TEST(MpcQp, WarmStartMatchesReinit)
 
   for (size_t i = 0; i < N4; ++i)
     EXPECT_NEAR(u_warm[i], u_cold[i], 5e-3);
+}
+
+TEST(MpcJointBox, AbsoluteBoxContainsRobotHome)
+{
+  // Stub model exposing the trained absolute envelopes (handheld CTR), mirroring
+  // ctr_kinematics_pinn::PINNs<4>::getPrismaticJointRanges()/getRevoluteJointRanges().
+  struct FakeModel
+  {
+    auto getPrismaticJointRanges() const { return blaze::StaticVector<double, 4>{-0.156, -0.064, -0.072, -0.034}; }
+    auto getRevoluteJointRanges() const { return blaze::StaticVector<double, 4>{-2.5 * M_PI, 2.5 * M_PI, -1.5 * M_PI, 1.5 * M_PI}; }
+  };
+
+  FakeModel model;
+  Mpc::VecN q_min, q_max;
+  absoluteJointBox(model, q_min, q_max);
+
+  EXPECT_DOUBLE_EQ(q_min[0], -0.156);
+  EXPECT_DOUBLE_EQ(q_min[1], -0.072);
+  EXPECT_DOUBLE_EQ(q_min[2], -2.0 * M_PI);
+  EXPECT_DOUBLE_EQ(q_min[3], -1.5 * M_PI);
+
+  EXPECT_DOUBLE_EQ(q_max[0], -0.064);
+  EXPECT_DOUBLE_EQ(q_max[1], -0.034);
+  EXPECT_DOUBLE_EQ(q_max[2], 2.0 * M_PI);
+  EXPECT_DOUBLE_EQ(q_max[3], 1.5 * M_PI);
+
+  // yaml seed config/mpc_params.yaml:7 must clear the per-joint safety margin
+  // (mpc_node.cpp m_margin_q) on both sides of the box. The robot home β2 = -0.0719
+  // lies exactly on the margin surface (-0.072 + 1e-4), so allow FP rounding only.
+  const Mpc::VecN q0 = {-0.1558, -0.0719, 0.0, 0.0};
+  const Mpc::VecN margin_q = {1e-4, 1e-4, 1e-2, 1e-2};
+  constexpr double kRound = 1e-12;
+  for (size_t i = 0; i < N4; ++i)
+  {
+    EXPECT_LE(q_min[i] + margin_q[i], q0[i] + kRound);
+    EXPECT_GE(q_max[i] - margin_q[i], q0[i] - kRound);
+  }
 }
 
 int main(int argc, char **argv)

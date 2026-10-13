@@ -37,7 +37,7 @@ public:
     // Update table functions
     void updateRobotStatusTable(bool enable, bool procedure, bool head, bool attached, int locked);
     void updateEmtTable(Eigen::Vector3d tip, Eigen::Vector3d probe, Eigen::Vector3d pinns);
-    void updatePlannerStatusTable(bool planning, bool success, double ik_error);
+    void updatePlannerStatusTable(bool planning, bool success, double ik_error, const QString &message);
     
     // Getters for widgets that need to be accessed from MasterNode
     QTableWidget* getRobotStatusTable() { return mp_robot_status_table; }

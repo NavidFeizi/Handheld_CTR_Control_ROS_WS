@@ -48,6 +48,9 @@ ament_target_dependencies(bridge
                           OpenIGTLink 
                           tf2 tf2_ros geometry_msgs tf2_eigen Eigen3)
 
+find_package(ctr_common REQUIRED)
+target_link_libraries(bridge ctr_common::ctr_common)
+
 install(TARGETS
   bridge
   DESTINATION lib/${PROJECT_NAME})

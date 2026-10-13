@@ -19,8 +19,10 @@
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
+#include "ctr_common/package_log.hpp"
 #include "mpc.hpp"
 #include "mpc.tpp"
+#include "joint_box.hpp"
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
@@ -102,6 +104,7 @@ private:
 public:
   MpcNode() : Node("mpc")
   {
+    ctr_common::installPackageFileLog(*this, "mpc");
     this->initNodeParameters();
     this->setupDynamicParameterUpdates();
     this->setupRosInterfaces();
@@ -136,7 +139,12 @@ private:
     declare_parameter<std::string>("model_name", "ctr_8x91_0.18_tanh_9K_9K_50K_v3");
     m_model_name = get_parameter("model_name").as_string();
 
-    declare_parameter<std::vector<double>>("q0", {-0.156, -0.072, 0.0, 0.0});
+    // Declared here, before the set-parameters callback is registered: that callback
+    // rejects unknown names, so ctr_common::resolveModelsDir() declaring it later
+    // aborted the node with "Parameter models_dir not recognized".
+    declare_parameter<std::string>("models_dir", "");
+
+    declare_parameter<std::vector<double>>("q0", {-0.1558, -0.0719, 0.0, 0.0});
     std::vector<double> q0Vec = get_parameter("q0").as_double_array();
 
     declare_parameter<std::vector<double>>("u_max", {0.012, 0.012, 3.0, 3.0});
@@ -353,7 +361,7 @@ private:
           }
           auto value = parameter.as_double();
           m_q_proc_var = value;
-          RCLCPP_INFO(this->get_logger(), "Kalman filter process variance updated: q_proc_var = %f", m_q_proc_var);
+          RCLCPP_INFO(this->get_logger(), "[lifecycle] Kalman filter process variance updated: q_proc_var = %f", m_q_proc_var);
         }
 
         else if (name == "q_meas_var")
@@ -366,7 +374,7 @@ private:
           }
           auto value = parameter.as_double();
           m_q_meas_var = value;
-          RCLCPP_INFO(this->get_logger(), "Kalman filter measurement variance updated: q_meas_var = %f", m_q_meas_var);
+          RCLCPP_INFO(this->get_logger(), "[lifecycle] Kalman filter measurement variance updated: q_meas_var = %f", m_q_meas_var);
         }
 
         else
@@ -418,7 +426,7 @@ private:
     m_publisher_time = this->create_publisher<std_msgs::msg::Float64>("mpc/computation_time", 10);
 
     // Create wall timers with different callback groups
-    RCLCPP_INFO(this->get_logger(), "MPC sample_time: %.6f s", m_sample_time);
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] MPC sample_time: %.6f s", m_sample_time);
     auto control_sample_time = std::chrono::microseconds(static_cast<int>(m_sample_time * 1.00E6));
     m_control_timer = this->create_wall_timer(control_sample_time, std::bind(&MpcNode::mpcStep, this), m_callback_group_mpc);
 
@@ -427,15 +435,6 @@ private:
 
     // Recorder service
     m_record_client = this->create_client<interfaces::srv::Recording>("recording");
-    // while (!m_record_client->wait_for_service(std::chrono::seconds(1)))
-    // {
-    //     if (!rclcpp::ok())
-    //     {
-    //         RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for the service. Exiting.");
-    //         return;
-    //     }
-    //     RCLCPP_INFO(this->get_logger(), "Record service not available, waiting again...");
-    // }
   }
 
   /// @brief Initialize MPC
@@ -443,12 +442,12 @@ private:
   {
     if (m_model_name.empty())
     {
-      RCLCPP_ERROR(this->get_logger(), "Model name is not set!");
+      RCLCPP_ERROR(this->get_logger(), "[lifecycle] Model name is not set!");
       throw std::runtime_error("Model name parameter is required");
     }
 
     const size_t backbonePoints = 10UL;
-    RCLCPP_INFO(this->get_logger(), "Model: %s", m_model_name.c_str());
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] Model: %s", m_model_name.c_str());
 
     // instantiate MPC model object
     m_mpc_model = std::make_shared<PINNs<N>>(ctr_common::resolveModelsDir(*this).string(), m_model_name, h, backbonePoints);
@@ -472,19 +471,14 @@ private:
     blaze::StaticVector<double, m> x;
     blaze::StaticMatrix<double, h, m, blaze::columnMajor> x_ref(0.0);
 
-    auto q_bound = m_mpc_model->getInputPosBounds();
-    m_q_min = std::get<0UL>(q_bound);
-    m_q_max = std::get<1UL>(q_bound);
-
-    m_q_min[2] *= 1.0;
-    m_q_max[2] *= 1.0;
+    absoluteJointBox(*m_mpc_model, m_q_min, m_q_max);
 
 
     RCLCPP_INFO(this->get_logger(),
-                "q_min: [%.4f, %.4f, %.4f, %.4f]",
+                "[lifecycle] q_min: [%.4f, %.4f, %.4f, %.4f]",
                 m_q_min[0], m_q_min[1], m_q_min[2], m_q_min[3]);
     RCLCPP_INFO(this->get_logger(),
-                "q_max: [%.4f, %.4f, %.4f, %.4f]",
+                "[lifecycle] q_max: [%.4f, %.4f, %.4f, %.4f]",
                 m_q_max[0], m_q_max[1], m_q_max[2], m_q_max[3]);
 
     
@@ -502,7 +496,7 @@ private:
 
     m_ref = blaze::StaticVector<double, m>({0.00, 0.00, 0.140});
 
-    RCLCPP_INFO(this->get_logger(), "MPC initialized");
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] MPC initialized");
   }
 
   /// @brief update current robot end effector position
@@ -530,7 +524,7 @@ private:
       }
     }
 
-    RCLCPP_DEBUG(this->get_logger(), "x: %0.2f, %0.2f, %0.2f", m_x[0], m_x[1], m_x[2]);
+    RCLCPP_DEBUG(this->get_logger(), "[mpc] x: %0.2f, %0.2f, %0.2f", m_x[0], m_x[1], m_x[2]);
   }
 
   /// @brief update current robot joints position
@@ -539,7 +533,7 @@ private:
     std::lock_guard<std::mutex> lock(m_state_mutex);
     m_q = ctr_common::wireToPhysics4(msg->position);
 
-    RCLCPP_DEBUG(this->get_logger(), "q: %0.2f, %0.2f, %0.2f, %0.2f", m_q[0], m_q[1], m_q[2], m_q[3]);
+    RCLCPP_DEBUG(this->get_logger(), "[mpc] q: %0.2f, %0.2f, %0.2f, %0.2f", m_q[0], m_q[1], m_q[2], m_q[3]);
   }
 
   /// @brief update target position in task space
@@ -547,7 +541,7 @@ private:
   {
     std::lock_guard<std::mutex> lock(m_state_mutex);
     m_ref = blaze::StaticVector<double, m>({msg->p[0], msg->p[1], msg->p[2]});
-    RCLCPP_DEBUG(this->get_logger(), "ref: %0.2f, %0.2f, %0.2f", m_ref[0], m_ref[1], m_ref[2]);
+    RCLCPP_DEBUG(this->get_logger(), "[mpc] ref: %0.2f, %0.2f, %0.2f", m_ref[0], m_ref[1], m_ref[2]);
   }
 
   /// @brief Update disterbance distal force (m_wf = f)
@@ -564,7 +558,7 @@ private:
 
     // kill the force for testing
     // m_wf *= 0.0; // Temp
-    RCLCPP_DEBUG(this->get_logger(), "u: [%.3f, %.3f, %.3f] N", m_wf[0UL], m_wf[1UL], m_wf[2UL]);
+    RCLCPP_DEBUG(this->get_logger(), "[mpc] u: [%.3f, %.3f, %.3f] N", m_wf[0UL], m_wf[1UL], m_wf[2UL]);
   }
 
   /// @brief MPC control step
@@ -648,7 +642,7 @@ private:
     time_msg.data = static_cast<double>(elapsed.count()) * 1.0E-3;
     m_publisher_time->publish(time_msg);
 
-    RCLCPP_DEBUG(this->get_logger(), "q: %0.3f, %0.3f, %0.3f, %0.3f, %0.3f, %0.3f - x: %0.3f, %0.3f, %0.3f - u: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f - eps: %0.3f [ms]", q[0], q[1], q[2], q[3], q[4], q[5], m_x[0], m_x[1], m_x[2], u_apply[0], u_apply[1], u_apply[2], u_apply[3], u_apply[4], u_apply[5], static_cast<double>(elapsed.count()) * 1e-3);
+    RCLCPP_DEBUG(this->get_logger(), "[mpc] q: %0.3f, %0.3f, %0.3f, %0.3f, %0.3f, %0.3f - x: %0.3f, %0.3f, %0.3f - u: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f - eps: %0.3f [ms]", q[0], q[1], q[2], q[3], q[4], q[5], m_x[0], m_x[1], m_x[2], u_apply[0], u_apply[1], u_apply[2], u_apply[3], u_apply[4], u_apply[5], static_cast<double>(elapsed.count()) * 1e-3);
   }
 
   /// @brief 1D per-joint Kalman filter: fuse integrated velocity and noisy measurement.
@@ -695,11 +689,11 @@ private:
     auto response = future.get();
     if (response->success)
     {
-      RCLCPP_INFO(this->get_logger(), "Recording started successfully: %s", response->message.c_str());
+      RCLCPP_INFO(this->get_logger(), "[comm] Recording started successfully: %s", response->message.c_str());
     }
     else
     {
-      RCLCPP_ERROR(this->get_logger(), "Failed to start recording: %s", response->message.c_str());
+      RCLCPP_ERROR(this->get_logger(), "[comm] Failed to start recording: %s", response->message.c_str());
     }
   }
 };

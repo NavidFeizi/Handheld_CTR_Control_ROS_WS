@@ -5,6 +5,7 @@
 #include <cmath>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 // posCTRL must search the whole trained joint domain. beta1_range in the
@@ -150,5 +151,46 @@ TEST_F(PosCtrl, RevoluteRangesAreAbsoluteAndMatchTrainedDomain)
   EXPECT_NEAR(rr[1], 2.5 * M_PI, 1e-9);
   EXPECT_NEAR(rr[2], -1.5 * M_PI, 1e-9);
   EXPECT_NEAR(rr[3], 1.5 * M_PI, 1e-9);
+}
+
+// The FP64 model is trained on tip forces with ||f|| <= f_max = 0.5 N. A value on
+// the surface is what the robot EKF publishes when its estimate is clamped
+// (railed), so it must be reported as a violation, not accepted.
+TEST_F(PosCtrl, ForceDomainMatchesTrainedFmax)
+{
+  EXPECT_DOUBLE_EQ(pinn_->getMaxTipForce(), 0.5);
+  EXPECT_TRUE(pinn_->forceDomainViolation(Vec3{0.10, 0.27, 0.06}).empty());
+  EXPECT_TRUE(pinn_->forceDomainViolation(Vec3{0.0, 0.5 - 1.0e-3, 0.0}).empty());
+
+  // 2026-10-12 field estimate: each axis within the old per-axis ±0.5 N clip, norm 0.64 N
+  const std::string railed = pinn_->forceDomainViolation(Vec3{-0.35, 0.50, 0.19});
+  EXPECT_FALSE(railed.empty());
+  EXPECT_NE(railed.find("f_max=0.5000"), std::string::npos) << railed;
+
+  EXPECT_FALSE(pinn_->forceDomainViolation(Vec3{0.0, 0.5, 0.0}).empty());
+}
+
+// 2026-10-12 field target (y < 0) that failed at 25-43 mm while the EKF estimate
+// was railed. With no tip force it, and its y-mirror, must be solved from the
+// home configuration with the tubes pre-aligned the way the manager does it
+// (theta = atan2(y, x) + pi/2, wrapped to [-pi, pi]).
+TEST_F(PosCtrl, FieldTargetBelowAxisConvergesWithoutForceBias)
+{
+  auto solveAligned = [](const Vec3 &target)
+  {
+    double theta = std::atan2(target[1], target[0]) + M_PI / 2.0;
+    if (theta > M_PI)
+      theta -= 2.0 * M_PI;
+    else if (theta < -M_PI)
+      theta += 2.0 * M_PI;
+    Tau q = {-0.1558, -0.0719, theta, theta};
+    pinn_->posCTRL(q, target, kPosTol, kZeroForce);
+    return blaze::norm(tipOf(q) - target);
+  };
+
+  const double err = solveAligned(Vec3{-0.0036, -0.0261, 0.1252});
+  const double errMirror = solveAligned(Vec3{-0.0036, 0.0261, 0.1252});
+  EXPECT_LE(err, kPosTol) << "y<0 field target: " << err * 1e3 << " mm";
+  EXPECT_LE(errMirror, kPosTol) << "y>0 mirror: " << errMirror * 1e3 << " mm";
 }
 }  // namespace

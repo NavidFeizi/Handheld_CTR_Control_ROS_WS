@@ -108,7 +108,7 @@ signals:
     void robotStatusUpdated(bool enable, bool procedure, bool head, bool attached, int locked);
     void emtUpdated(double tx, double ty, double tz, double px, double py, double pz, 
                     double pinnx, double pinny, double pinnz);
-    void plannerStatusUpdated(bool planning, bool success, double ik_error);
+    void plannerStatusUpdated(bool planning, bool success, double ik_error, QString message);
 
 public slots:
     void onClosedLoopToggled(bool checked);
@@ -131,6 +131,8 @@ private:
     void handle_service_response(const std::string &command, const rclcpp::Client<interfaces::srv::Config>::SharedFuture future);
     void handle_planner_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future);
     void handle_replan_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future);
+    void emitPlannerStatus();
+    void setPlannerMessage(const std::string &message);
 
     // Control functions
     void control_loop();
@@ -185,6 +187,8 @@ private:
     bool m_flag_planner_updated = false;
     std::atomic<bool> m_planner_success{false};
     std::atomic<double> m_planner_ik_error{0.0};
+    std::mutex m_planner_msg_mutex;
+    std::string m_planner_message; // last planner outcome shown in the GUI (guarded by m_planner_msg_mutex)
     
     blaze::StaticVector<double, 4> m_com_vel;
     blaze::StaticVector<double, 4UL> m_q, m_q_des, m_q_error, m_q_abs, m_q_prev;

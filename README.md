@@ -359,16 +359,24 @@ For manual joint control, set the **Control Mode** radio button to **Manual**. Y
 
 ### Diagnosing a procedure that does not start
 
-Each node also writes its log to a file for its package:
+Each node also writes its log to a file for its package (`manager`, `planner`, `robot`,
+`mpc`, `emtracker`, `igtlink_bridge`):
 `<log_root>/[<CTR_RUN_ID>/]<package>/<timestamp>_<node>_<pid>.log`. The default
 `log_root` is `<data_root>/log`. You can override it with `CTR_LOG_DIR`, or per node
 with the `log_dir` parameter. Export the same `CTR_RUN_ID` in every terminal so that one
-session's files share a single directory:
+session's files share a single directory, and name the console tee directory after it:
 
 ```bash
-export CTR_RUN_ID=$(date +%F_%H-%M-%S)   # in every terminal before launching
-grep -h '\[procedure\]\|\[cmd\]\|\[comm\]' "$CTR_LOG_DIR/$CTR_RUN_ID"/{manager,robot}/*.log
-grep -h '\[ik\]\|\[pinn\]\|\[plan\]' "$CTR_LOG_DIR/$CTR_RUN_ID"/planner/*.log
+export CTR_RUN_ID=$(date +%F_%H-%M-%S)              # same value in every terminal
+export LOGDIR=~/ctr_logs/$CTR_RUN_ID; mkdir -p "$LOGDIR"
+export CTR_LOG_DIR=${CTR_LOG_DIR:-<data_root>/log}  # default shown; set explicitly to grep below
+export RCUTILS_LOGGING_BUFFERED_STREAM=0 RCUTILS_COLORIZED_OUTPUT=0 PYTHONUNBUFFERED=1
+ros2 launch launch/system_bringup.launch.py 2>&1 | tee "$LOGDIR/bringup.log"
+ros2 launch planner launch.py               2>&1 | tee "$LOGDIR/planner.log"
+ros2 launch manager launch.py               2>&1 | tee "$LOGDIR/manager.log"
+grep -h '\[procedure\]\|\[cmd\]\|\[comm\]' "$CTR_LOG_DIR/$CTR_RUN_ID"/{manager,robot,emtracker,igtlink_bridge}/*.log
+grep -h '\[ik\]\|\[pinn\]\|\[plan\]'        "$CTR_LOG_DIR/$CTR_RUN_ID"/planner/*.log
+grep -h '\[ekf\]'                           "$CTR_LOG_DIR/$CTR_RUN_ID"/robot/*ekf*.log
 ```
 
 Each failure has its own signature:
@@ -379,7 +387,8 @@ Each failure has its own signature:
 | Tubes never align, so the planner is never called | `manager` `[procedure]` WARN after 10 s of aligning |
 | Planner does not answer | `manager` `[comm]` ERROR `planner/command response timeout` (`planner_timeout_s`) |
 | IK does not converge, or the solution is outside the trained domain | `planner` `[ik]` / `[pinn]` WARN; the response line carries a reason code |
-| Planned path is rejected | `manager` `[plan]` WARN: ik_error ≥ 3 mm, or the planner failed |
+| Planned path is rejected | `manager` `[plan]` WARN: ik_error ≥ 3 mm, or the planner failed; the GUI "Message" column shows the same reason |
+| Every target on one side of the workspace fails; planner reports `FORCE_OUT_OF_DOMAIN` | `planner` `[comm] response … reason=FORCE_OUT_OF_DOMAIN` plus `robot` `[ekf] force estimate saturated`: the EKF force estimate is railed at the model's `f_max` (EKF bias, not a planner fault). GUI Message: `rejected: force estimate outside trained domain …` |
 
 The CANopen driver keeps its own log, `log/Robot/<timestamp>.txt`, relative to the
 robot's working directory.

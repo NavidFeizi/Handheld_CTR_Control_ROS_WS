@@ -49,7 +49,7 @@ YAML's and are what the node actually receives; the launch file does not shadow 
 | `sample_time` | 0.025 | s |
 | `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | PINN model |
 | `models_dir` | `""` | Empty → installed `share/ctr_kinematics_pinn/models` |
-| `q0` | `[-0.156, -0.072, 0.0, 0.0]` | Initial configuration, SI units |
+| `q0` | `[-0.1558, -0.0719, 0.0, 0.0]` | Initial configuration, SI units — robot home incl. `k_home_pos_margin` (`robot_node.cpp`) |
 | `u_max` | `[0.012, 0.012, 3.0, 3.0]` | Input magnitude bound (m, m, rad, rad) |
 | `u_dot_max` | `[0.03, 0.03, 5.0, 5.0]` | Input rate bound |
 | `q_scale` | `[0.5, 0.5, 0.2, 0.2]` | Per-joint scaling in the QP |
@@ -57,6 +57,15 @@ YAML's and are what the node actually receives; the launch file does not shadow 
 | `R_du` | 0.5 | Input-rate weight |
 | `Q` | 2000.0 | Tracking-error weight |
 | `error_c` | 1.0 | Error scaling constant |
+
+The QP joint box (`m_q_min`/`m_q_max`) comes from the PINN model's absolute trained
+envelopes, `getPrismaticJointRanges()`/`getRevoluteJointRanges()` — **not** from
+`getInputPosBounds()`, whose β1/α1 entries are ranges *relative* to β2/α2. α1 is
+additionally clipped to ±2π, same as the planner's OMPL box
+(`Planner.hpp:378-395`). The QP enforces this box only: the β1 ≤ β2 − 0.030 m and
+|α1 − α2| ≤ π coupling constraints are **not** enforced here (the planner's validity
+checker and `posCTRL` enforce them elsewhere); an MPC solution can therefore land
+outside the trained coupled region even though every joint is within its own box.
 
 ## Topics
 
@@ -104,7 +113,26 @@ colcon test --packages-select mpc --ctest-args -R test_mpc_qp
 
 `test/test_mpc_qp.cpp` substitutes a linear plant for the PINN so the QP layer can be
 tested without Torch: drives toward the target, respects input bounds, commands near
-zero at the target, and warm-start results match a fresh re-initialization.
+zero at the target, warm-start results match a fresh re-initialization, and the
+absolute joint box built from `getPrismaticJointRanges()`/`getRevoluteJointRanges()`
+contains the `config/mpc_params.yaml` `q0` seed with its safety margin
+(`MpcJointBox.AbsoluteBoxContainsRobotHome`).
+
+## Diagnostic logging
+
+`MpcNode` installs a package log file (`ctr_common::installPackageFileLog`) as the
+first statement of its constructor body: every rcutils record from this process
+(console output included) is also teed to
+`<log_root>/[<CTR_RUN_ID>/]mpc/<timestamp>_mpc_<pid>.log`. See `ctr_common`'s
+`package_log.hpp` for `log_root` resolution.
+
+Every log line is tagged by pipeline stage:
+
+| Tag | Stage |
+|---|---|
+| `[lifecycle]` | startup/model load, joint box (`q_min`/`q_max`), dynamic-parameter updates |
+| `[comm]` | recording-service request/response |
+| `[mpc]` | per-cycle debug: measured state, target, command, solve time |
 
 ## Status notes
 

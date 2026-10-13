@@ -45,6 +45,7 @@ struct DatasetParameters
     std::array<double, 2UL> alpha1_range;
     std::array<double, 2UL> alpha2_range;
     std::array<double, 2UL> alpha3_range;
+    double f_max = 0.0; // N, trained tip-force magnitude bound; 0 = metadata absent (force-less model)
 };
 
 /// Diagnostic report for posCTRL(), filled only when a non-null pointer is
@@ -284,6 +285,9 @@ public:
     // function that returns the stage thickness of the linear guide actuators
     [[nodiscard]] double getStageThickness() const;
 
+    // trained tip-force magnitude bound ||wf|| <= f_max (N); 0 when the model carries no f_max
+    [[nodiscard]] double getMaxTipForce() const { return m_dataset_params.f_max; }
+
     // damped pseudoinverse of a 3x6 Jacobian: M+ = M^T (M M^T + lambda*I)^-1
     blaze::StaticMatrix<double, 6UL, 3UL, blaze::columnMajor> pInv(const blaze::StaticMatrix<double, 3UL, 6UL, blaze::columnMajor> &M);
 
@@ -313,6 +317,12 @@ public:
     // the violated bounds, e.g. "b1-b2=-0.0861 < -0.0840; |a2|=4.9000 > 4.7124".
     // 6-DoF layouts are not domain-checked and always return empty.
     [[nodiscard]] std::string domainViolation(const blaze::StaticVector<double, controlInputs> &tau, double tol = 1.00E-9) const;
+
+    // Empty when ||wf|| < f_max - tol or the model has no f_max (f_max == 0). Otherwise a
+    // human-readable description, e.g. "|f|=0.6403 N >= f_max=0.5000 N". A value ON the
+    // surface counts as a violation: the EKF clamps its estimate to that surface, so a
+    // value there is a railed (saturated) estimate, not a measurement.
+    [[nodiscard]] std::string forceDomainViolation(const blaze::StaticVector<double, 3UL> &wf, double tol = 1.00E-6) const;
 
 private:
     size_t m_batch_size;
@@ -1040,6 +1050,8 @@ void PINNs<controlInputs>::loadParameters(const std::string &params_path)
     m_dataset_params.alpha1_range = {dataset.at("alpha1_range").at(0).get<double>(), dataset.at("alpha1_range").at(1).get<double>()};
     m_dataset_params.alpha2_range = {dataset.at("alpha2_range").at(0).get<double>(), dataset.at("alpha2_range").at(1).get<double>()};
     m_dataset_params.alpha3_range = {dataset.at("alpha3_range").at(0).get<double>(), dataset.at("alpha3_range").at(1).get<double>()};
+    // older models (grassmann_*, handheld_*) carry no force domain; 0 disables the check
+    m_dataset_params.f_max = dataset.value("f_max", 0.0);
 
     std::cout << "Parameters loaded successfully from:\n    " << params_path << std::endl;
 
@@ -1083,6 +1095,7 @@ void PINNs<controlInputs>::loadParameters(const std::string &params_path)
     print_vec("    alpha1_range: alpha2 + ", m_dataset_params.alpha1_range);
     print_vec("    alpha2_range: alpha3 + ", m_dataset_params.alpha2_range);
     print_vec("    alpha3_range: ", m_dataset_params.alpha3_range);
+    std::cout << "    f_max: " << m_dataset_params.f_max << " N\n";
     std::cout << std::endl;
 
     return;
@@ -1269,6 +1282,21 @@ std::string PINNs<controlInputs>::domainViolation(const blaze::StaticVector<doub
 
         return out.str();
     }
+}
+
+template <size_t controlInputs>
+std::string PINNs<controlInputs>::forceDomainViolation(const blaze::StaticVector<double, 3UL> &wf, double tol) const
+{
+    const double f_max = m_dataset_params.f_max;
+    const double f_norm = blaze::norm(wf);
+    if (!(f_max > 0.0) || f_norm < f_max - tol)
+    {
+        return {};
+    }
+
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(4) << "|f|=" << f_norm << " N >= f_max=" << f_max << " N";
+    return out.str();
 }
 
 template <size_t controlInputs>

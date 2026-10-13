@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <sstream>
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <ctr_common/package_log.hpp>
 #include <blaze/Blaze.h>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -32,6 +33,8 @@ public:
   EMTrackerNode()
       : Node("emtracker"), count_(0)
   {
+    ctr_common::installPackageFileLog(*this, "emtracker");
+
     // Set default parameteres and allow it to be overridden by a launch file or command line parameter
     this->declare_parameter<double>("sample_time", 25E-3);
     m_sample_time = this->get_parameter("sample_time").as_double();
@@ -94,9 +97,9 @@ private:
     }
     else
     {
-      RCLCPP_WARN(this->get_logger(), "No installed config seeds found at %s", seeds.c_str());
+      RCLCPP_WARN(this->get_logger(), "[lifecycle] No installed config seeds found at %s", seeds.c_str());
     }
-    RCLCPP_INFO(this->get_logger(), "EM tracker config directory: %s", dir.c_str());
+    RCLCPP_INFO(this->get_logger(), "[lifecycle] EM tracker config directory: %s", dir.c_str());
     return dir;
   }
 
@@ -156,7 +159,7 @@ private:
       // Update control logic if parameters are successfully updated
       if (result.successful)
       {
-        RCLCPP_INFO(this->get_logger(), "Updated filter cutoff: %.2f Hz", m_cutoff_freq);
+        RCLCPP_INFO(this->get_logger(), "[lifecycle] Updated filter cutoff: %.2f Hz", m_cutoff_freq);
       }
       return result;
     };
@@ -256,6 +259,10 @@ private:
     msg_base.p[0] = tool_pos_flt[0]; // to align with cathter robot system
     msg_base.p[1] = tool_pos_flt[1];
     msg_base.p[2] = tool_pos_flt[2];
+    msg_base.h[0] = tool_in_robot.rotation[0]; // scalar-first, matches interfaces/Taskspace and robot/quat_utils
+    msg_base.h[1] = tool_in_robot.rotation[1];
+    msg_base.h[2] = tool_in_robot.rotation[2];
+    msg_base.h[3] = tool_in_robot.rotation[3];
 
     msg_phantom_base.p[0] = m_robot_in_phantom.translation[0];
     msg_phantom_base.p[1] = m_robot_in_phantom.translation[1];
@@ -423,7 +430,7 @@ private:
     std::cout << "CT-SCAN -> CTR transformation: \n"
               << tran_matrix_robot << std::endl;
 
-    RCLCPP_INFO(this->get_logger(), "Sending transformation matrix");
+    RCLCPP_INFO(this->get_logger(), "[comm] Sending transformation matrix");
   }
 
   void igtl_points_callback()
@@ -544,14 +551,14 @@ private:
       m_emt->freeze_phantom(true);
       response->success = true;
       response->message = "Phantom frozen";
-      RCLCPP_INFO(this->get_logger(), "Phantom is frozen");
+      RCLCPP_INFO(this->get_logger(), "[comm] Phantom is frozen");
     }
     else
     {
       m_emt->freeze_phantom(false);
       response->success = true;
       response->message = "Phantom defrozen";
-      RCLCPP_INFO(this->get_logger(), "Phantom is active");
+      RCLCPP_INFO(this->get_logger(), "[comm] Phantom is active");
     }
   }
 
@@ -562,14 +569,14 @@ private:
       m_emt->freeze_robot(true);
       response->success = true;
       response->message = "Robot frozen";
-      RCLCPP_INFO(this->get_logger(), "Robot is frozen");
+      RCLCPP_INFO(this->get_logger(), "[comm] Robot is frozen");
     }
     else
     {
       m_emt->freeze_robot(false);
       response->success = true;
       response->message = "Robot defrozen";
-      RCLCPP_INFO(this->get_logger(), "Robot is active");
+      RCLCPP_INFO(this->get_logger(), "[comm] Robot is active");
     }
   }
 
@@ -601,7 +608,7 @@ private:
         << "qz:" << print_with_space_if_positive(tool_in_robot.rotation[3]) << "  "
         << "dt:" << std::fixed << std::setprecision(1) << sample_time * 1e3 << " [ms]";
 
-    RCLCPP_INFO(get_logger(), "%s", oss.str().c_str());
+    RCLCPP_DEBUG(get_logger(), "[pose] %s", oss.str().c_str());
   }
 
   void log_position(blaze::StaticVector<double, 3> position, double sample_time, std::string prefix = "")
@@ -628,7 +635,7 @@ private:
         << "z:" << print_with_space_if_positive(position[2]) << " [m]"
         << " | dt:" << std::fixed << std::setprecision(1) << sample_time * 1e3 << " [ms]";
 
-    RCLCPP_INFO(get_logger(), "%s", oss.str().c_str());
+    RCLCPP_DEBUG(get_logger(), "[pose] %s", oss.str().c_str());
   }
 
   size_t count_;

@@ -222,8 +222,10 @@ node itself does (service calls, mode transitions, target handling, task dispatc
 Messages are grep-able by stage tag: `[lifecycle]` (parameters, limits, CAN bring-up),
 `[comm]` (`robot_config`/`robot_enable` requests and responses), `[procedure]` (control
 mode, start/end procedure, enable/disable, homing and collet task dispatch, reached
-status), `[cmd]` (`joint_space/target` handling, including the dropped-target and
-out-of-limit warnings and the periodic control-loop summary).
+status, CiA-402 enable fault raised/cleared), `[cmd]` (`joint_space/target` handling,
+including the dropped-target and out-of-limit warnings and the periodic control-loop
+summary). `ekf_node` adds `[ekf]`: `force estimate saturated: |f|=… N > f_max=… N`
+(WARN) and `force estimate left saturation` (INFO), both edge-triggered.
 
 Default level is INFO; per-cycle/per-message detail is DEBUG. Raise it for one node at
 launch time or via `ros2 param`:
@@ -260,8 +262,17 @@ conversion — so they can be tested without Torch or hardware.
   beat the YAML; all three now default to unset, so every entry point gets the YAML's
   0.2. Pass `f_dot:=` explicitly to deviate for a single run.
 - **A drive that refuses to enable is now visible.** `robot_status` carries
-  `bool[4] enable_fault`; `ctr_robot` logs it at `ERROR` on the false→true edge and
+  `bool[4] enable_fault`; `ctr_robot` logs it at `ERROR` on the false→true edge (and at
+  `INFO` when it clears) and
   `qt_gui` shows the joint as `FAULT` (red) instead of an ordinary `OFF`. Previously
   the latch existed only inside the driver and nothing above it read the flag, so a
   single joint failing the CiA-402 transition looked identical to one that was simply
   disabled. See [`ctr_robot_driver`](../ctr_robot_driver/README.md).
+- **The EKF force estimate is clamped to the model's trained force ball.** The clamp
+  is `‖f‖ ≤ f_max` with `f_max` read from the model's `parameters.json` (0.5 N for the
+  FP64/v3 models; 0.50 N fallback with a WARN for models without the key). It was a
+  per-axis ±0.5 N clip, which admitted `‖f‖` up to 0.87 N — outside the domain of the
+  PINN used for the prediction itself. A published estimate with `magnitude` equal to
+  `f_max` is railed, not measured; the planner rejects such requests
+  (`FORCE_OUT_OF_DOMAIN`). See
+  [`force_estimate_forensic_report.md`](../planner/docs/force_estimate_forensic_report.md).
