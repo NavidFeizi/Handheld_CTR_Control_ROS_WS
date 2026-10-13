@@ -193,4 +193,29 @@ TEST_F(PosCtrl, FieldTargetBelowAxisConvergesWithoutForceBias)
   EXPECT_LE(err, kPosTol) << "y<0 field target: " << err * 1e3 << " mm";
   EXPECT_LE(errMirror, kPosTol) << "y>0 mirror: " << errMirror * 1e3 << " mm";
 }
+
+// The same field target with the railed EKF force the planner received in the field
+// (||f|| > f_max) cannot be reached: every step is clamped to a prismatic limit and
+// the error stays near 30 mm. It used to burn all 750 iterations; a solve pinned
+// against a limit with no useful progress must stop early.
+TEST_F(PosCtrl, LimitPinnedSolveStopsEarly)
+{
+  const Vec3 target{-0.0036, -0.0261, 0.1252};
+  const Vec3 railedForce{-0.35, 0.50, 0.19};
+  double theta = std::atan2(target[1], target[0]) + M_PI / 2.0;
+  if (theta > M_PI)
+    theta -= 2.0 * M_PI;
+  else if (theta < -M_PI)
+    theta += 2.0 * M_PI;
+  Tau q = {-0.1558, -0.0719, theta, theta};
+
+  PosCtrlReport report;
+  pinn_->posCTRL(q, target, kPosTol, railedForce, &report);
+
+  EXPECT_GT(report.finalError, kPosTol);
+  EXPECT_EQ(report.termination, PosCtrlReport::Termination::LimitStalled)
+      << "termination=" << static_cast<int>(report.termination);
+  EXPECT_LE(report.iterations, 300UL) << "limit_hits=" << report.prismaticLimitHits
+                                      << " error=" << report.finalError * 1e3 << " mm";
+}
 }  // namespace

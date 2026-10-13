@@ -58,6 +58,7 @@ struct PosCtrlReport
         AlreadyWithinTolerance, // target was already inside posTol before the first iteration
         Converged,              // dist2Tgt <= posTol when the loop exited
         Stalled,                // resolved-rate step collapsed (linfNorm(dtau_dt) <= 1e-6)
+        LimitStalled,           // every step of a 100-iteration window was clamped to a prismatic limit and the window's error reduction, extrapolated to the remaining iterations, cannot reach posTol
         MaxIterations           // hit the 750-iteration cap without converging
     };
 
@@ -1438,6 +1439,10 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     size_t N_itr = 0UL;
     // maximum admissible number of iterations in the position control loop
     static constexpr size_t maxIter = 750UL;
+    // consecutive prismatic-limit-clamped iterations after which a flat (non-improving) solve is abandoned
+    static constexpr size_t kLimitStreakWindow = 100UL;
+    size_t limitStreak = 0UL;
+    double streakBestError = minError;
     // parameters for local optimization (joint limits avoidance)
     static constexpr double ke = 4.00;
 
@@ -1586,6 +1591,38 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         {
             minError = dist2Tgt;
             tau_min = tau;
+        }
+
+        // A solve pinned against a prismatic limit that cannot reach posTol within the
+        // remaining iteration budget at its current rate of progress is abandoned
+        // instead of burning the remaining iterations. A solve whose gain over the last
+        // window, extrapolated to the remaining budget, still closes the gap keeps going.
+        if (limitHitThisIter)
+        {
+            ++limitStreak;
+        }
+        else
+        {
+            limitStreak = 0UL;
+            streakBestError = minError;
+        }
+        if ((limitStreak >= kLimitStreakWindow) && (dist2Tgt > posTol))
+        {
+            const double windowGain  = streakBestError - minError;
+            const double windowsLeft = static_cast<double>(maxIter - N_itr) / static_cast<double>(kLimitStreakWindow);
+            if (windowGain * windowsLeft < minError - posTol)
+            {
+                tau = tau_min;
+                if (report)
+                {
+                    report->iterations = N_itr;
+                    report->finalError = minError;
+                    report->termination = PosCtrlReport::Termination::LimitStalled;
+                }
+                return;
+            }
+            limitStreak = 0UL;
+            streakBestError = minError;
         }
 
         // stops the control loop when the position update becomes significantly small

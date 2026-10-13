@@ -66,7 +66,7 @@ dataset ranges, so its β1 entry is that relative offset. `posCTRL` clamps β1 t
 ```cpp
 struct PosCtrlReport
 {
-    enum class Termination { AlreadyWithinTolerance, Converged, Stalled, MaxIterations };
+    enum class Termination { AlreadyWithinTolerance, Converged, Stalled, LimitStalled, MaxIterations };
     std::size_t iterations;         // resolved-rate iterations run
     double initialError;            // ||target - x_CTR|| at the tau passed in [m]
     double finalError;              // ||target - x_CTR|| at the returned tau (tau_min) [m]
@@ -75,10 +75,13 @@ struct PosCtrlReport
 };
 ```
 
-`Stalled` is the `linfNorm(dtau_dt) <= 1e-6` early exit; `MaxIterations` is the
-750-iteration cap; `Converged` means the loop exited because `dist2Tgt <= posTol`.
-The 3- and 4-argument overloads are unaffected — they call the report overload
-with `nullptr` and behave exactly as before.
+`Stalled` is the `linfNorm(dtau_dt) <= 1e-6` early exit; `LimitStalled` means every step
+of the last 100 iterations was clamped to a prismatic joint limit and the error reduction
+over that window, extrapolated to the remaining iteration budget, cannot reach `posTol`
+(a solve pinned against a limit); `MaxIterations` is the 750-iteration cap; `Converged` means the loop
+exited because `dist2Tgt <= posTol`. The 3- and 4-argument overloads call the report
+overload with `nullptr`, so the limit-streak exit applies to them too; the report itself
+is purely observational.
 
 `[[nodiscard]] std::string domainViolation(tau, tol = 1e-9) const` checks a
 4-DoF `tau` (physics order `[β1, β2, α1, α2]`) against the trained domain and
