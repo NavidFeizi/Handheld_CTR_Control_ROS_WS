@@ -134,8 +134,8 @@ The pool installs to `share/ctr_kinematics_pinn/models`:
 |---|---|
 | `ctr_8x91_0.18_tanh_9K_9K_50K` | — |
 | `ctr_8x91_0.18_tanh_9K_9K_50K_FP32` | — |
-| `ctr_8x91_0.18_tanh_9K_9K_50K_FP64` | `planner` (`model_name` default) |
-| `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | `robot` (`pinn_fk`, `ekf_node`) and `mpc` (`model_name` default) |
+| `ctr_8x91_0.18_tanh_9K_9K_50K_FP64` | `planner`, `robot` (`pinn_fk`, `ekf_node`) and `mpc` (`model_name` default) |
+| `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | — (different weights from `_FP64` despite the identical `parameters.json`: tip differs by 0.03 mm mean, 1.6 mm max over the trained domain) |
 | `grassmann_ctr_v4.2.7`, `v4.4.4`, `v4.4.5` | — (alternate Grassmann formulation) |
 | `handheld_ctr_v3.1.1`, `v3.4.1`, `v3.5.1` | — |
 

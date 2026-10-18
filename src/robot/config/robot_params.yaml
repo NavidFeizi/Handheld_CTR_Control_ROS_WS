@@ -20,14 +20,14 @@ pinn_fk_node:
   ros__parameters:
     sample_time: 0.025
     num_backbone: 50
-    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_v3"
+    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_FP64"   # same network as planner/mpc: the EKF force is only meaningful in the model that produced it
     models_dir: ""           # empty -> installed share/ctr_kinematics_pinn/models
     q0: [-0.100, -0.055, 0.0, 0.0]
 
 ekf_node:
   ros__parameters:
     sample_time: 0.025
-    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_v3"
+    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_FP64"   # same network as planner/mpc: the EKF force is only meaningful in the model that produced it
     models_dir: ""
     f_dot: 0.2               # N/s — production value from system_bringup (robot.py's old 0.1 lost)
     # 6x6 measurement covariance, row-major. Formerly built with numpy in three

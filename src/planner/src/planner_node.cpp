@@ -62,8 +62,9 @@ class PathPlannerNode : public rclcpp::Node
   const static size_t kBackbonePoints = 150UL; // number of discretized backbone points for the planning CTR
   const static size_t kControlInputs = 4UL;    // number of control inputs (actuated tubes)
   const static size_t kBatch = 1UL;
-  // IK convergence tolerance used by inverseKin()/solveInverseKinematics(); distinct
-  // from the manager's 3 mm plan-acceptance threshold.
+  // kIkPosTol is the solver's own IK convergence tolerance used by inverseKin()/
+  // solveInverseKinematics(); it is distinct from the plan-acceptance tolerance
+  // m_ik_accept_tol (ik_accept_tol parameter, 3 mm) that gates generateTrajectory.
   static constexpr double kIkPosTol = 5.00E-4;
 
   // Builds the PINN from parameters. Called from the member-initializer list,
@@ -120,6 +121,14 @@ public:
   void declare_parameters()
   {
     m_solve_time = this->declare_parameter<double>("solve_time", 3.0); // OMPL solve budget [s]
+    m_ik_accept_tol = this->declare_parameter<double>("ik_accept_tol", 3.0e-3); // m; generateTrajectory is rejected (nothing exported/published) above this IK tip error
+    const std::vector<double> home_beta = this->declare_parameter<std::vector<double>>("home_beta", {-0.1558, -0.0719});
+    if (home_beta.size() != 2UL)
+    {
+      throw std::invalid_argument("planner: parameter 'home_beta' must have 2 elements [beta1, beta2]");
+    }
+    m_home_beta = {home_beta[0UL], home_beta[1UL]};
+    m_local_force_min_extension = this->declare_parameter<double>("local_force_min_extension", 0.010);
 
     const std::string output_dir = (ctr_common::resolveDataRoot(*this, m_packageName) / "Shared_Files").string();
     this->declare_parameter<std::string>("temp_dir", output_dir);
@@ -282,6 +291,36 @@ public:
       }
   }
 
+  // The EKF estimate is a virtual tip force that makes the PINN reproduce the physical
+  // backbone at the pose where it was estimated, so it is only valid near that pose.
+  // Returns the force to plan with from q_now (planner order [b1, b2, a1, a2]): the
+  // estimate itself, or zero with `reason` set when it is railed/outside the trained
+  // force domain, or when the robot is still within local_force_min_extension of home,
+  // where the short exposed length makes the fit ill-conditioned and the planned path
+  // would carry it to far more extended poses.
+  blaze::StaticVector<double, 3UL> localPlanningForce(const blaze::StaticVector<double, 4UL> &q_now,
+                                                      const blaze::StaticVector<double, 3UL> &force,
+                                                      std::string &reason) const
+  {
+    reason.clear();
+    const std::string violation = m_ctr_pinn.forceDomainViolation(force);
+    if (!violation.empty())
+    {
+      reason = "force estimate outside trained domain: " + violation;
+      return blaze::StaticVector<double, 3UL>(0.0);
+    }
+    const double extension = std::max(q_now[0UL] - m_home_beta[0UL], q_now[1UL] - m_home_beta[1UL]);
+    if (extension < m_local_force_min_extension)
+    {
+      std::ostringstream msg;
+      msg << std::fixed << std::setprecision(1) << "robot within " << m_local_force_min_extension * 1.00E3
+          << " mm of home (extension " << extension * 1.00E3 << " mm)";
+      reason = msg.str();
+      return blaze::StaticVector<double, 3UL>(0.0);
+    }
+    return force;
+  }
+
   // Service callback to trigger commanding the robot
   void plannerService_callback(const std::shared_ptr<interfaces::srv::Planner::Request> request, std::shared_ptr<interfaces::srv::Planner::Response> response)
   {
@@ -303,8 +342,12 @@ public:
                   resp->message.c_str(), reason, elapsed_ms);
     };
 
-    if (request->command == "generateTrajectory")
+    // "generateTrajectory": open-loop plan, always zero tip force (repeatable IK from home).
+    // "generateTrajectoryClosedLoop": the manager's closed-loop re-plan; the EKF estimate
+    // is applied through localPlanningForce() so the model matches the robot at q_now.
+    if (request->command == "generateTrajectory" || request->command == "generateTrajectoryClosedLoop")
     {
+      const bool closedLoop = request->command == "generateTrajectoryClosedLoop";
       blaze::StaticVector<double, 3UL> target = request->value;
       double error = 0.0;
 
@@ -350,12 +393,11 @@ public:
           return;
         }
 
-        // Map the 6-element current configuration [β₁, β₂, β₃, α₁, α₂, α₃] (tube-3
-        // entries are static/zero) down to the 4 actuated inputs [β₁, β₂, α₁, α₂].
         blaze::StaticVector<double, 4UL> q_initial = {q_snapshot[0UL], q_snapshot[1UL], q_snapshot[3UL], q_snapshot[4UL]};
         blaze::StaticVector<double, 4UL> q_final = q_initial;
 
-        RCLCPP_INFO(this->get_logger(), "[plan] force estimate f = [%.4f, %.4f, %.4f] N", force[0UL], force[1UL], force[2UL]);
+        RCLCPP_INFO(this->get_logger(), "[plan] EKF force estimate f = [%.4f, %.4f, %.4f] N (%s)", force[0UL], force[1UL], force[2UL],
+                    closedLoop ? "closed-loop: applied unless gated" : "open-loop: IK and plan use zero tip force");
 
         // A non-finite estimate means the EKF itself is broken: refuse to plan.
         if (!(std::isfinite(force[0UL]) && std::isfinite(force[1UL]) && std::isfinite(force[2UL])))
@@ -369,22 +411,22 @@ public:
           return;
         }
 
-        // A force estimate on/outside the trained force ball is a railed EKF value, not a
-        // measurement; solving IK against it drives the PINN out of its domain. Plan with
-        // zero tip force instead and say so in the response.
         std::string forceNote;
-        const std::string forceViolation = m_ctr_pinn.forceDomainViolation(force);
-        if (!forceViolation.empty())
+        blaze::StaticVector<double, 3UL> planForce(0.0);
+        if (closedLoop)
         {
-          RCLCPP_WARN(this->get_logger(), "[pinn] force estimate saturated (%s) - request #%lu planned with zero tip force",
-                      forceViolation.c_str(), static_cast<unsigned long>(seq));
-          force = blaze::StaticVector<double, 3UL>(0.0);
-          forceNote = " (force estimate saturated: " + forceViolation + "; planned with zero tip force)";
+          std::string gateReason;
+          planForce = localPlanningForce(q_initial, force, gateReason);
+          if (!gateReason.empty())
+          {
+            RCLCPP_WARN(this->get_logger(), "[pinn] %s - request #%lu planned with zero tip force", gateReason.c_str(), static_cast<unsigned long>(seq));
+            forceNote = " (" + gateReason + "; planned with zero tip force)";
+          }
         }
 
         // Safe here: no solve is in flight (mutually exclusive service group).
         // Propagates to the FTL objective (cache cleared) and informed samplers.
-        m_motionPlan.setCTR_externalForce(force);
+        m_motionPlan.setCTR_externalForce(planForce);
 
         const std::string startViolation = m_ctr_pinn.domainViolation(q_initial);
         if (!startViolation.empty())
@@ -392,13 +434,25 @@ public:
           RCLCPP_WARN(this->get_logger(), "[pinn] start state outside trained domain: %s", startViolation.c_str());
         }
 
-        error = inverseKin(target, q_final, force);
+        error = inverseKin(target, q_final, planForce);
         const bool ik_converged = error <= kIkPosTol;
 
         RCLCPP_INFO(this->get_logger(), "[plan] initial q = [%.4f, %.4f, %.4f, %.4f]", q_initial[0UL], q_initial[1UL], q_initial[2UL], q_initial[3UL]);
         RCLCPP_INFO(this->get_logger(), "[plan] final q = [%.4f, %.4f, %.4f, %.4f]", q_final[0UL], q_final[1UL], q_final[2UL], q_final[3UL]);
 
-        bool planning_status = plan(q_initial, q_final, force);
+        if (error > m_ik_accept_tol)
+        {
+          std::ostringstream msg;
+          msg << std::fixed << std::setprecision(2) << "IK did not converge: error=" << error * 1.00E3
+              << " mm > accept " << m_ik_accept_tol * 1.00E3 << " mm";
+          response->success = false;
+          response->value = error;
+          response->message = msg.str();
+          logResponse(response, "IK_REJECTED");
+          return;
+        }
+
+        bool planning_status = plan(q_initial, q_final, planForce);
         if (planning_status)
         {
           m_target_last = target;
@@ -496,19 +550,17 @@ public:
           return;
         }
 
-        // Same policy as generateTrajectory: a railed estimate is replaced by zero tip force.
-        std::string forceNote;
-        const std::string forceViolation = m_ctr_pinn.forceDomainViolation(force);
-        if (!forceViolation.empty())
+        // The replan starts at q_now, where the estimate was fitted: plan with it in full.
+        std::string forceNote, gateReason;
+        const blaze::StaticVector<double, 3UL> planForce = localPlanningForce(q_now, force, gateReason);
+        if (!gateReason.empty())
         {
-          RCLCPP_WARN(this->get_logger(), "[pinn] force estimate saturated (%s) - request #%lu planned with zero tip force",
-                      forceViolation.c_str(), static_cast<unsigned long>(seq));
-          force = blaze::StaticVector<double, 3UL>(0.0);
-          forceNote = " (force estimate saturated: " + forceViolation + "; planned with zero tip force)";
+          RCLCPP_WARN(this->get_logger(), "[pinn] %s - request #%lu planned with zero tip force", gateReason.c_str(), static_cast<unsigned long>(seq));
+          forceNote = " (" + gateReason + "; planned with zero tip force)";
         }
 
         // Safe here: no solve is in flight (mutually exclusive service group).
-        m_motionPlan.setCTR_externalForce(force);
+        m_motionPlan.setCTR_externalForce(planForce);
 
         auto start = std::chrono::high_resolution_clock::now();
         const bool ok = m_motionPlan.planDeployment(q_now, m_q_goal_last);
@@ -517,7 +569,7 @@ public:
 
         if (ok)
         {
-          m_force_at_plan = force;
+          m_force_at_plan = planForce;
           m_motionPlan.writeSolutionToFile(m_tempDir + "/plannedPath.csv");
           publishTaskSpacePath();
 
@@ -903,6 +955,9 @@ private:
   blaze::StaticVector<double, 4UL> m_q_goal_last;   // joint goal of the active plan
   blaze::StaticVector<double, 3UL> m_target_last;   // task-space target of the active plan
   blaze::StaticVector<double, 3UL> m_force_at_plan; // force the active plan was computed with
+  blaze::StaticVector<double, 2UL> m_home_beta{-0.1558, -0.0719}; // physics [b1, b2] at the driver's home incl. k_home_pos_margin
+  double m_local_force_min_extension = 0.010;       // m; below this extension from home the EKF estimate is not used for planning
+  double m_ik_accept_tol = 3.0e-3;                  // m; generateTrajectory is rejected (nothing exported/published) above this IK tip error
   uint64_t m_request_seq = 0UL;                     // monotonically increasing planner/command request counter, for [comm] log correlation
 };
 

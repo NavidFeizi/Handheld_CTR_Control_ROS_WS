@@ -47,7 +47,7 @@ YAML's and are what the node actually receives; the launch file does not shadow 
 | Parameter | Default | Meaning |
 |---|---|---|
 | `sample_time` | 0.025 | s |
-| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | PINN model |
+| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_FP64` | PINN model; same network as `planner` and `ekf_node` |
 | `models_dir` | `""` | Empty → installed `share/ctr_kinematics_pinn/models` |
 | `q0` | `[-0.1558, -0.0719, 0.0, 0.0]` | Initial configuration, SI units — robot home incl. `k_home_pos_margin` (`robot_node.cpp`) |
 | `u_max` | `[0.012, 0.012, 3.0, 3.0]` | Input magnitude bound (m, m, rad, rad) |

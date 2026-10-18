@@ -2,6 +2,7 @@
 
 #include "ctr_common/csv_io.hpp"
 #include "manager/csv_path_io.hpp"
+#include "manager/deployment_path.hpp"
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
 #include "ctr_common/package_log.hpp"
@@ -672,6 +673,10 @@ void MasterNode::handle_service_response(const std::string &command, const rclcp
     if (response->success)
     {
         RCLCPP_DEBUG(this->get_logger(), "[comm] '%s' succeeded: %s", command.c_str(), response->message.c_str());
+        if (command == "goHome" || command == "findRotaryHomeAndGoHome" || command == "findLinearHome")
+        {
+            resetDeploymentState(command);
+        }
     }
     else
     {
@@ -710,12 +715,6 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
     m_planner_success = response->success;
     m_planner_ik_error = response->value;
 
-    // In closed-loop mode, bypass error check before first insertion to ensure initial plan exists
-    // bool bypass_error_check = m_closed_loop_enabled && m_q_list_actuated.empty();
-    bool bypass_error_check = false;
-
-    RCLCPP_DEBUG(this->get_logger(), "[plan] bypass_error_check=%s", bypass_error_check ? "true" : "false");
-
     auto fmt2 = [](double v)
     {
         std::ostringstream oss;
@@ -723,7 +722,7 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
         return oss.str();
     };
 
-    if ((m_planner_success || bypass_error_check) && m_planner_ik_error < k_ik_error_threshold)
+    if (response->success)
     {
         if (loadPlannedPath())
         {
@@ -748,19 +747,10 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
             setPlannerMessage("accepted by planner but plannedPath.csv failed to load");
         }
     }
-    else if (!response->success)
+    else
     {
         RCLCPP_WARN(this->get_logger(), "[plan] plan rejected: planner reported failure: %s", response->message.c_str());
         setPlannerMessage("rejected: " + response->message);
-    }
-    else if (response->value >= k_ik_error_threshold)
-    {
-        RCLCPP_WARN(this->get_logger(), "[plan] plan rejected: ik_error=%.3f mm >= threshold=%.3f mm",
-                    response->value * 1000.0, k_ik_error_threshold * 1000.0);
-        // the planner's success only means OMPL found a path; the plan is not accepted
-        m_planner_success = false;
-        setPlannerMessage("rejected: ik_error=" + fmt2(response->value * 1000.0) + " mm >= " +
-                          fmt2(k_ik_error_threshold * 1000.0) + " mm - " + response->message);
     }
 
     std::this_thread::sleep_for(10ms);
@@ -770,15 +760,17 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
 }
 
 // Replan responses are handled separately from full-plan responses: `value`
-// carries the FTL swept cost of the chosen schedule (not an IK error), so the
-// k_ik_error_threshold gate must not apply, and a rejected replan must not
-// overwrite the full-plan status consumed by the GUI and the test state machine.
+// carries the FTL swept cost of the chosen schedule, not an IK error, and a
+// rejected replan must not overwrite the full-plan status consumed by the GUI
+// and the test state machine. On acceptance the replanned tail is spliced
+// onto the executed prefix (spliceReplannedPath), not swapped in wholesale,
+// so retract still replays the waypoints the robot actually passed through.
 void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future)
 {
     auto response = future.get();
     const double round_trip_ms = (this->now().nanoseconds() - m_planning_started_ns.load()) / 1.0e6;
 
-    if (response->success && loadPlannedPath())
+    if (response->success && spliceReplannedPath())
     {
         std::lock_guard<std::mutex> lock(m_force_mutex);
         m_f_at_plan = m_f_pending;
@@ -919,13 +911,12 @@ void MasterNode::control_loop()
     updateTestStateMachine();
 
     // Snapshot the cross-thread feedback state once per cycle
-    Eigen::Vector3d X, Xd, Xsim;
+    Eigen::Vector3d X, Xd;
     blaze::StaticVector<double, 4UL> q_snapshot;
     {
         std::lock_guard<std::mutex> lock(m_feedback_mutex);
         X = m_X;
         Xd = m_Xd;
-        Xsim = m_Xsim;
         q_snapshot = m_q;
     }
 
@@ -938,12 +929,32 @@ void MasterNode::control_loop()
         m_alignment_start_diff = 0.0;
     }
 
+    // Select Target must not re-target while an executed insertion is outstanding:
+    // retract replays it back to its start; Go Home discards it.
+    bool planner_insertion_outstanding = false;
+    if (m_procedure && m_high_level_mode == HighLvlCtrMode::Planner)
+    {
+        std::lock_guard<std::mutex> lock(m_deploy_mutex);
+        planner_insertion_outstanding = manager_deploy::insertionOutstanding(m_q_list_adjusted.size(), m_current_config_index, m_q_list_actuated.size());
+    }
+
     if (m_high_level_mode == HighLvlCtrMode::Planner && !m_procedure)
     {
         if (m_planner_branch_reason_prev != "procedure inactive")
         {
             RCLCPP_INFO(get_logger(), "[procedure] not calling planner: procedure inactive");
             m_planner_branch_reason_prev = "procedure inactive";
+        }
+    }
+    else if (m_procedure && m_high_level_mode == HighLvlCtrMode::Planner && planner_insertion_outstanding)
+    {
+        const std::string reason = "insertion outstanding: retract to the plan start or Go Home first";
+        if (m_planner_branch_reason_prev != reason)
+        {
+            RCLCPP_INFO(get_logger(), "[procedure] not calling planner: %s", reason.c_str());
+            m_planner_branch_reason_prev = reason;
+            setPlannerMessage(reason);
+            emitPlannerStatus();
         }
     }
     else if (m_procedure && m_high_level_mode == HighLvlCtrMode::Planner)
@@ -1003,7 +1014,7 @@ void MasterNode::control_loop()
         else
         {
             // std::cout << "m_reached: " << m_reached << ", !m_flag_planning: " << (!m_flag_planning) << ", target_changed: " << target_changed << ", q_changed: " << q_changed << std::endl;
-            if (m_reached && (!m_flag_planning) && (target_changed || q_changed))
+            if (m_reached && (!m_flag_planning) && (target_changed || q_changed || m_plan_needed))
             {
                 {
                     std::lock_guard<std::mutex> lock(m_force_mutex);
@@ -1030,6 +1041,7 @@ void MasterNode::control_loop()
                 m_Xd_prev = Xd;
                 m_q_prev = m_q;
                 m_flag_planning = true;
+                m_plan_needed = false;
                 m_flag_planner_updated = true;
                 emitPlannerStatus();
                 RCLCPP_INFO(this->get_logger(),
@@ -1065,6 +1077,10 @@ void MasterNode::control_loop()
         const bool retracting_now = !m_flag_planning && (m_interface_key[k_backward_button_idx] || m_auto_retract);
         int snapshot_index;
         size_t snapshot_adjusted_size;
+
+        // Physics-order measured config for the stale-plan/retract tolerance checks below
+        // (same wire->physics mapping publish_position uses).
+        const blaze::StaticVector<double, 6> measured({q_snapshot[1], q_snapshot[3], 0.0, q_snapshot[0], q_snapshot[2], 0.0});
         {
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
             snapshot_index = m_current_config_index;
@@ -1079,6 +1095,13 @@ void MasterNode::control_loop()
             RCLCPP_INFO(get_logger(), "[cmd] retraction started at waypoint %d/%zu", snapshot_index + 1, snapshot_adjusted_size);
         else if (!retracting_now && m_retract_active_prev)
             RCLCPP_INFO(get_logger(), "[cmd] retraction stopped at waypoint %d/%zu", snapshot_index + 1, snapshot_adjusted_size);
+        if (!inserting_now)
+            m_insert_refused = false;
+        if (!retracting_now)
+        {
+            m_retract_checked = false;
+            m_retract_refused = false;
+        }
         m_retract_active_prev = retracting_now;
 
         if (!m_flag_planning && (m_interface_key[k_forward_button_idx] || m_auto_insert))
@@ -1093,38 +1116,57 @@ void MasterNode::control_loop()
             if (getReachStatus())
             {
                 m_waypoint_wait_index = -1;
-                m_current_config_index += 1;
-                if (m_current_config_index < m_q_list_adjusted.size())
+                if (m_current_config_index == 0 && !m_q_list_adjusted.empty() &&
+                    !manager_deploy::configMatches(m_q_list_adjusted[0], measured, k_plan_match_beta_tol, k_theta_threshold))
                 {
-                    // Capture frame in session A during auto-insertion
-                    if (m_test_running && m_auto_insert)
+                    m_auto_insert = false;
+                    m_plan_needed = true;
+                    const auto &plan_start = m_q_list_adjusted[0];
+                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                         "[cmd] insertion refused: measured q does not match the plan start (beta1 %.4f vs %.4f, beta2 %.4f vs %.4f, alpha1 %.4f vs %.4f, alpha2 %.4f vs %.4f) - re-plan in Select Target mode",
+                                         measured[0], plan_start[0], measured[1], plan_start[1], measured[3], plan_start[3], measured[4], plan_start[4]);
+                    if (!m_insert_refused)
                     {
-                        captureRecordingFrame("data");
+                        setPlannerMessage("insertion refused: robot is not at the plan start - re-plan");
+                        emitPlannerStatus();
+                        m_insert_refused = true;
                     }
-                    
-                    publish_position(m_q_list_adjusted[m_current_config_index]);
-
-                    const auto wire = ctr_common::physicsToWire(m_q_list_adjusted[m_current_config_index]);
-                    RCLCPP_DEBUG(this->get_logger(),
-                                 "[cmd] Sent q [%d/%zu]: physics beta1=%.3f beta2=%.3f alpha1=%.3f alpha2=%.3f, "
-                                 "wire alpha1=%.3f beta1=%.3f alpha2=%.3f beta2=%.3f",
-                                 m_current_config_index + 1, m_q_list_adjusted.size(),
-                                 m_q_list_adjusted[m_current_config_index][0],
-                                 m_q_list_adjusted[m_current_config_index][1],
-                                 m_q_list_adjusted[m_current_config_index][3],
-                                 m_q_list_adjusted[m_current_config_index][4],
-                                 wire[0], wire[1], wire[2], wire[3]);
-                    m_insert_complete_logged = false;
                 }
                 else
                 {
-                    m_auto_insert = false;
-                    m_current_config_index = m_q_list_adjusted.size() - 1;
-                    if (!m_insert_complete_logged)
+                    m_current_config_index += 1;
+                    if (m_current_config_index < m_q_list_adjusted.size())
                     {
-                        RCLCPP_INFO(this->get_logger(), "[cmd] insertion complete: max waypoint %d/%zu reached",
-                                    m_current_config_index + 1, m_q_list_adjusted.size());
-                        m_insert_complete_logged = true;
+                        // Capture frame in session A during auto-insertion
+                        if (m_test_running && m_auto_insert)
+                        {
+                            captureRecordingFrame("data");
+                        }
+
+                        publish_position(m_q_list_adjusted[m_current_config_index]);
+
+                        const auto wire = ctr_common::physicsToWire(m_q_list_adjusted[m_current_config_index]);
+                        RCLCPP_DEBUG(this->get_logger(),
+                                     "[cmd] Sent q [%d/%zu]: physics beta1=%.3f beta2=%.3f alpha1=%.3f alpha2=%.3f, "
+                                     "wire alpha1=%.3f beta1=%.3f alpha2=%.3f beta2=%.3f",
+                                     m_current_config_index + 1, m_q_list_adjusted.size(),
+                                     m_q_list_adjusted[m_current_config_index][0],
+                                     m_q_list_adjusted[m_current_config_index][1],
+                                     m_q_list_adjusted[m_current_config_index][3],
+                                     m_q_list_adjusted[m_current_config_index][4],
+                                     wire[0], wire[1], wire[2], wire[3]);
+                        m_insert_complete_logged = false;
+                    }
+                    else
+                    {
+                        m_auto_insert = false;
+                        m_current_config_index = m_q_list_adjusted.size() - 1;
+                        if (!m_insert_complete_logged)
+                        {
+                            RCLCPP_INFO(this->get_logger(), "[cmd] insertion complete: max waypoint %d/%zu reached",
+                                        m_current_config_index + 1, m_q_list_adjusted.size());
+                            m_insert_complete_logged = true;
+                        }
                     }
                 }
             }
@@ -1145,33 +1187,63 @@ void MasterNode::control_loop()
             if (getReachStatus())
             {
                 m_waypoint_wait_index = -1;
-                m_current_config_index--;
-                if (m_current_config_index >= 0)
+                // Checked once per retract episode, at the first settled cycle; a refusal stays
+                // latched until the retract command is released, so a held button cannot step.
+                if (m_retract_refused ||
+                    (!m_retract_checked && m_current_config_index > 0 &&
+                     static_cast<size_t>(m_current_config_index) < m_q_list_adjusted.size() &&
+                     !manager_deploy::configMatches(m_q_list_adjusted[m_current_config_index], measured, k_plan_match_beta_tol, k_theta_threshold)))
                 {
-                    publish_position(m_q_list_adjusted[m_current_config_index]);
-
-                    const auto wire = ctr_common::physicsToWire(m_q_list_adjusted[m_current_config_index]);
-                    RCLCPP_DEBUG(this->get_logger(),
-                                 "[cmd] Sent q [%d/%zu]: physics beta1=%.3f beta2=%.3f alpha1=%.3f alpha2=%.3f, "
-                                 "wire alpha1=%.3f beta1=%.3f alpha2=%.3f beta2=%.3f",
-                                 m_current_config_index + 1, m_q_list_adjusted.size(),
-                                 m_q_list_adjusted[m_current_config_index][0],
-                                 m_q_list_adjusted[m_current_config_index][1],
-                                 m_q_list_adjusted[m_current_config_index][3],
-                                 m_q_list_adjusted[m_current_config_index][4],
-                                 wire[0], wire[1], wire[2], wire[3]);
-                    m_retract_complete_logged = false;
+                    m_auto_retract = false;
+                    if (!m_retract_refused)
+                    {
+                        const auto &at_waypoint = m_q_list_adjusted[m_current_config_index];
+                        RCLCPP_WARN(this->get_logger(),
+                                    "[cmd] retraction refused: robot is not on the executed trajectory at waypoint %d (beta1 %.4f vs %.4f, beta2 %.4f vs %.4f, alpha1 %.4f vs %.4f, alpha2 %.4f vs %.4f) - use Go Home",
+                                    m_current_config_index, measured[0], at_waypoint[0], measured[1], at_waypoint[1], measured[3], at_waypoint[3], measured[4], at_waypoint[4]);
+                        setPlannerMessage("retraction refused: robot is off the executed trajectory - use Go Home");
+                        emitPlannerStatus();
+                        m_retract_refused = true;
+                    }
                 }
                 else
                 {
-                    m_auto_retract = false;
-                    m_current_config_index = 0;
-                    m_q_list_adjusted.clear();
-                    invalidateForceBaseline();
-                    if (!m_retract_complete_logged)
+                    m_retract_checked = true;
+                    m_current_config_index--;
+                    if (m_current_config_index >= 0)
                     {
-                        RCLCPP_INFO(this->get_logger(), "[cmd] retraction complete: min waypoint %d reached", m_current_config_index);
-                        m_retract_complete_logged = true;
+                        publish_position(m_q_list_adjusted[m_current_config_index]);
+
+                        const auto wire = ctr_common::physicsToWire(m_q_list_adjusted[m_current_config_index]);
+                        RCLCPP_DEBUG(this->get_logger(),
+                                     "[cmd] Sent q [%d/%zu]: physics beta1=%.3f beta2=%.3f alpha1=%.3f alpha2=%.3f, "
+                                     "wire alpha1=%.3f beta1=%.3f alpha2=%.3f beta2=%.3f",
+                                     m_current_config_index + 1, m_q_list_adjusted.size(),
+                                     m_q_list_adjusted[m_current_config_index][0],
+                                     m_q_list_adjusted[m_current_config_index][1],
+                                     m_q_list_adjusted[m_current_config_index][3],
+                                     m_q_list_adjusted[m_current_config_index][4],
+                                     wire[0], wire[1], wire[2], wire[3]);
+                        m_retract_complete_logged = false;
+                    }
+                    else
+                    {
+                        m_auto_retract = false;
+                        if (!m_retract_complete_logged)
+                        {
+                            if (!m_q_list_adjusted.empty())
+                            {
+                                const auto &plan_start = m_q_list_adjusted[0];
+                                RCLCPP_INFO(this->get_logger(),
+                                            "[cmd] retraction complete: plan start reached (physics beta1=%.4f beta2=%.4f alpha1=%.4f alpha2=%.4f)",
+                                            plan_start[0], plan_start[1], plan_start[3], plan_start[4]);
+                            }
+                            m_retract_complete_logged = true;
+                        }
+                        m_current_config_index = 0;
+                        m_q_list_adjusted.clear();
+                        invalidateForceBaseline();
+                        m_plan_needed = true;
                     }
                 }
             }
@@ -1183,10 +1255,10 @@ void MasterNode::control_loop()
     }
     else if (m_procedure && m_high_level_mode == HighLvlCtrMode::Deployment && m_closed_loop_enabled)
     {
-        Eigen::Vector3d Xsim_error(0.0, 0.0, 0.0);
-        Xsim_error = X - Xsim;
-        Eigen::Vector3d Xd_adj = Xd - Xsim_error;
-        bool target_changed = (Xd_adj - m_Xd_adj_prev).norm() > k_target_threshold;
+        // No Xd - (X - Xsim) target shift: Xsim = PINN(q, f_est) and the EKF fits f_est
+        // so that Xsim tracks X, so the shift is ~0 by construction. The model mismatch is
+        // corrected inside the planner instead (generateTrajectoryClosedLoop plans with f_est).
+        bool target_changed = (Xd - m_Xd_closed_loop_prev).norm() > k_target_threshold;
         bool q_changed = blaze::norm((m_q - m_q_prev) / k_input_scale) > k_q_threshold;
         double Xe = (X - Xd).norm();
 
@@ -1210,20 +1282,20 @@ void MasterNode::control_loop()
             m_planning_timeout_logged = false;
 
             auto request = std::make_shared<interfaces::srv::Planner::Request>();
-            request->command = "generateTrajectory";
-            request->value[0] = Xd_adj[0];
-            request->value[1] = Xd_adj[1];
-            request->value[2] = Xd_adj[2];
+            request->command = "generateTrajectoryClosedLoop";
+            request->value[0] = Xd[0];
+            request->value[1] = Xd[1];
+            request->value[2] = Xd[2];
 
             auto response_callback = std::bind(&MasterNode::handle_planner_response, this, std::placeholders::_1);
             auto future_result = m_planner_client->async_send_request(request, response_callback);
             RCLCPP_INFO(this->get_logger(),
-                        "[comm] planner/command generateTrajectory (closed-loop) request #%d sent at %.3f: "
-                        "target_adj=[%.4f, %.4f, %.4f] q(wire) alpha1=%.4f beta1=%.4f alpha2=%.4f beta2=%.4f",
-                        seq, send_ns / 1.0e9, Xd_adj[0], Xd_adj[1], Xd_adj[2],
+                        "[comm] planner/command generateTrajectoryClosedLoop request #%d sent at %.3f: "
+                        "target=[%.4f, %.4f, %.4f] q(wire) alpha1=%.4f beta1=%.4f alpha2=%.4f beta2=%.4f",
+                        seq, send_ns / 1.0e9, Xd[0], Xd[1], Xd[2],
                         q_snapshot[0], q_snapshot[1], q_snapshot[2], q_snapshot[3]);
 
-            m_Xd_adj_prev = Xd_adj;
+            m_Xd_closed_loop_prev = Xd;
             m_q_prev = m_q;
 
             std::this_thread::sleep_for(10ms);
@@ -1340,6 +1412,7 @@ void MasterNode::control_loop()
                 else
                 {
                     m_auto_retract = false;
+                    m_plan_needed = true;
                     m_q_list_actuated.clear();
                     m_q_list_adjusted.clear();
                     invalidateForceBaseline();
@@ -1480,6 +1553,64 @@ bool MasterNode::loadPlannedPath()
         return true;
     }
     return false;
+}
+
+// Splice an accepted replanDeployment response onto the executed trajectory
+// instead of replacing it: the CSV only covers the remaining deployment from
+// q_now, so swapping it in wholesale (like loadPlannedPath) would make a
+// subsequent retract stop at the replan's start instead of the original plan
+// start. Rejects (and keeps the old list) if the new tail does not start at
+// the waypoint the robot is currently on.
+bool MasterNode::spliceReplannedPath()
+{
+    std::vector<blaze::StaticVector<double, 6>> local;
+    if (!read_path_from_csv(local, "plannedPath.csv") || local.empty())
+    {
+        return false;
+    }
+    const auto adjusted = adjustConfigurationListStepSize(local, m_insertion_step);
+
+    std::lock_guard<std::mutex> lock(m_deploy_mutex);
+    auto spliced = manager_deploy::spliceReplan(m_q_list_adjusted, m_current_config_index, adjusted,
+                                                 k_plan_match_beta_tol, k_theta_threshold);
+    if (!spliced)
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "[traj] replanned path rejected: does not start at current waypoint %d of %zu (replan start beta1=%.4f beta2=%.4f alpha1=%.4f alpha2=%.4f)",
+                     m_current_config_index, m_q_list_adjusted.size(),
+                     adjusted.front()[0], adjusted.front()[1], adjusted.front()[3], adjusted.front()[4]);
+        return false;
+    }
+
+    const int index = m_current_config_index;
+    m_q_list_adjusted = std::move(*spliced);
+    m_waypoint_wait_index = -1;
+    m_insert_complete_logged = false;
+    RCLCPP_INFO(this->get_logger(),
+                "[traj] replan spliced at waypoint %d: %d executed + %zu new = %zu waypoints",
+                index, index + 1, adjusted.size() - 1, m_q_list_adjusted.size());
+    return true;
+}
+
+// Homing (goHome / findRotaryHomeAndGoHome / findLinearHome) physically moves
+// the robot back to its reference pose; any executed trajectory the deployment
+// loop was tracking is now stale. Discard it so a later Auto Retract does not
+// try to replay the pre-homing path, and force the next Select-Target request
+// so the operator gets a fresh plan from the homed configuration.
+void MasterNode::resetDeploymentState(const std::string &reason)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_deploy_mutex);
+        m_q_list_adjusted.clear();
+        m_q_list_actuated.clear();
+        m_current_config_index = 0;
+        m_waypoint_wait_index = -1;
+    }
+    m_auto_insert = false;
+    m_auto_retract = false;
+    m_plan_needed = true;
+    invalidateForceBaseline();
+    RCLCPP_INFO(this->get_logger(), "[cmd] deployment state reset after '%s': executed trajectory discarded", reason.c_str());
 }
 
 bool MasterNode::read_path_from_csv(std::vector<blaze::StaticVector<double, 6>> &init_q_list, const std::string &fileName)
@@ -1649,10 +1780,7 @@ void MasterNode::updateTestStateMachine()
         // Wait for planner to finish and reach target orientation
         if (!m_flag_planning && m_reached && time_in_state > 2.0)
         {
-            // bool bypass_error_check = m_closed_loop_enabled && m_q_list_actuated.empty();
-            bool bypass_error_check = false;
-
-            if ((m_planner_success || bypass_error_check) && m_planner_ik_error < k_ik_error_threshold && m_flag_planner_updated)
+            if (m_planner_success && m_flag_planner_updated)
             {
                 RCLCPP_INFO(get_logger(), "[Test] Planning successful, switching to Deployment mode");
                 m_test_state = TestState::SwitchingToDeployment;

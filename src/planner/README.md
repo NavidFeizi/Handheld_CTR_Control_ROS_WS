@@ -48,6 +48,9 @@ parameters](../../README.md#configuration-and-parameters).
 | `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_FP64` | PINN model; the planner uses the FP64 build for solver stability |
 | `models_dir` | `""` | Empty → installed `share/ctr_kinematics_pinn/models` |
 | `solve_time` | 3.0 | OMPL solve budget per request, seconds |
+| `ik_accept_tol` | 3.0e-3 | m; `generateTrajectory*` is rejected (`success=false`, nothing exported or published) when the IK tip error exceeds this |
+| `home_beta` | `[-0.1558, -0.0719]` | Physics `[β1, β2]` at the driver's home incl. `k_home_pos_margin`, m |
+| `local_force_min_extension` | 0.010 | m; the EKF force is used for planning only once `max(β − home_beta)` reaches this |
 | `data_root` | `""` | Empty → env `CTR_DATA_ROOT` → legacy workspace climb |
 
 `temp_dir` is deliberately **not** set in the YAML. The node defaults it to
@@ -97,6 +100,25 @@ the FTL formulation are analysed in [docs/ik_ftl_forensic_report.md](docs/ik_ftl
 
 Mid-deployment replanning re-solves only the remaining tail; `manager` decides when
 to ask, based on EKF force drift.
+
+### Tip force used for planning
+
+The EKF estimate is a virtual tip force that makes the PINN reproduce the physical
+backbone at the pose where it was estimated, so it is applied only from that pose:
+
+| Command | Sender | Tip force for IK and plan |
+|---|---|---|
+| `generateTrajectory` | manager, Planner mode (open loop) | always zero: repeatable IK from home |
+| `generateTrajectoryClosedLoop` | manager, closed-loop Deployment | the estimate at `q_now`, unless gated |
+| `replanDeployment` | manager, open-loop Deployment | the estimate at `q_now`, unless gated |
+
+Gated means zero force, a `[pinn] <reason> - request #N planned with zero tip force` WARN
+and the response-message suffix ` (<reason>; planned with zero tip force)`, when the
+estimate is railed or outside the trained force ball, or when the robot is within
+`local_force_min_extension` of `home_beta` (a short exposed length makes the fit
+ill-conditioned, and the path would carry it to far more extended poses). The
+estimate is defined relative to one network, so `ekf_node`, `pinn_fk_node`, `mpc` and the
+planner all load `ctr_8x91_0.18_tanh_9K_9K_50K_FP64`.
 
 ## Dependencies
 
@@ -157,7 +179,8 @@ alone. The `[comm] response` line carries a `reason` code:
 | `INVALID_TARGET` | the requested target had a non-finite coordinate |
 | `START_INVALID` | `Planner` rejected the current joint state as a start state |
 | `GOAL_INVALID` | `Planner` rejected the IK-derived joint state as a goal state |
-| `IK_NOT_CONVERGED` | planning succeeded but IK error exceeded its internal tolerance (the manager's separate accept threshold is 3 mm); `message` is `Path generated but IK did not converge: error=<e> mm > 0.50 mm` |
+| `IK_NOT_CONVERGED` | planning succeeded but IK error exceeded `posTol` (0.5 mm) while staying within `ik_accept_tol`; `message` is `Path generated but IK did not converge: error=<e> mm > 0.50 mm` |
+| `IK_REJECTED` | IK error exceeded `ik_accept_tol`; `success=false`, nothing exported or published, `message` is `IK did not converge: error=<e> mm > accept 3.00 mm` |
 | `FORCE_NON_FINITE` | the EKF force estimate snapshot contains NaN/Inf; request rejected before IK, `success=false`, `value=0.0` |
 | `INVALID_STATE` | the `joint_space/feedback` snapshot contains NaN/Inf; request rejected before IK, `success=false`, `value=0.0` |
 | `PLAN_FAILED` | `planTwoPhase` found no solution |
@@ -167,14 +190,12 @@ A non-finite target is rejected before any IK/plan work runs: `response->success
 false`, `response->value = 0.0`, and a new `message` string
 ("invalid target: non-finite value(s) in target") that neither `manager` nor
 `igtlink_bridge` pattern-match on — both only log/forward `response->message` verbatim.
-The force estimate is checked before IK, for both `generateTrajectory` and
-`replanDeployment`. A non-finite estimate is rejected (`FORCE_NON_FINITE`). A railed
-estimate (`‖f‖ ≥ f_max − 1e-6`, on the EKF's clamp or outside the trained force ball) is
-not a measurement and is not fed to the PINN: on 2026-10-12 a saturated estimate
-(`‖f‖ ≈ 0.6–0.8 N` with `f_max = 0.5 N`) made every target with y < 0 fail IK at
-25–43 mm — see [`docs/force_estimate_forensic_report.md`](docs/force_estimate_forensic_report.md).
-Instead the request is planned with zero tip force, a `[pinn] force estimate saturated (…)
-- request #N planned with zero tip force` WARN is logged, and the response message gets
-the suffix ` (force estimate saturated: |f|=… N >= f_max=… N; planned with zero tip force)`
-(replan: appended to `Deployment replanned: <schedule>`); the manager shows it in its GUI
-"Message" column after `accepted: …`. The reason code stays `OK` / `IK_NOT_CONVERGED`.
+The force estimate is checked before IK, for all three commands. A non-finite estimate
+is rejected (`FORCE_NON_FINITE`). A railed estimate (`‖f‖ ≥ f_max − 1e-6`, on the EKF's
+clamp or outside the trained force ball) is not a measurement and is not fed to the
+PINN: on 2026-10-12 a saturated estimate (`‖f‖ ≈ 0.6–0.8 N` with `f_max = 0.5 N`) made
+every target with y < 0 fail IK at 25–43 mm — see
+[`docs/force_estimate_forensic_report.md`](docs/force_estimate_forensic_report.md).
+The gating and message suffix are described in
+[Tip force used for planning](#tip-force-used-for-planning); the manager shows the
+message in its GUI "Message" column. The reason code stays `OK` / `IK_NOT_CONVERGED`.

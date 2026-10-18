@@ -88,7 +88,7 @@ private:
     declare_parameter<double>("sample_time", 25E-3);
     m_sample_time = get_parameter("sample_time").as_double();
 
-    declare_parameter<std::string>("model_name", "ctr_8x91_0.18_tanh_9K_9K_50K_v3");
+    declare_parameter<std::string>("model_name", "ctr_8x91_0.18_tanh_9K_9K_50K_FP64");
     m_model_name = get_parameter("model_name").as_string();
 
     declare_parameter<double>("f_dot", 0.2); // N/s

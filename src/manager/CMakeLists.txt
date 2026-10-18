@@ -73,6 +73,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_csv_path_io test/test_csv_path_io.cpp)
   target_include_directories(test_csv_path_io PRIVATE include)
   target_link_libraries(test_csv_path_io ctr_common::ctr_common)
+
+  ament_add_gtest(test_deployment_path test/test_deployment_path.cpp)
+  target_include_directories(test_deployment_path PRIVATE include)
+  target_link_libraries(test_deployment_path ctr_common::ctr_common)
 endif()
 
 ament_package()

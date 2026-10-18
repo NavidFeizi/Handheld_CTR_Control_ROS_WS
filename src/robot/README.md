@@ -107,7 +107,7 @@ Raise `boot_max_attempts` if a drive is a slow starter: bring-up gives up after
 |---|---|---|
 | `sample_time` | 0.025 | s |
 | `num_backbone` | 50 | Backbone nodes per tube shape |
-| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | Model in the PINN pool |
+| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_FP64` | Model in the PINN pool; same network as `planner`, `mpc` and `ekf_node` |
 | `models_dir` | `""` | Empty → installed `share/ctr_kinematics_pinn/models` |
 | `q0` | `[-0.100, -0.055, 0.0, 0.0]` | Initial joint configuration |
 
@@ -116,7 +116,7 @@ Raise `boot_max_attempts` if a drive is a slow starter: bring-up gives up after
 | Parameter | Default | Meaning |
 |---|---|---|
 | `sample_time` | 0.025 | s |
-| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_v3` | Model in the PINN pool |
+| `model_name` | `ctr_8x91_0.18_tanh_9K_9K_50K_FP64` | Model in the PINN pool. Must match `planner`: the estimate is a virtual tip force defined relative to this network |
 | `models_dir` | `""` | Empty → installed pool |
 | `f_dot` | 0.2 | N/s — process-noise rate on the force state |
 | `R` | 36 elements | 6×6 measurement covariance, row-major |

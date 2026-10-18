@@ -121,7 +121,7 @@ public:
     }
     m_backbonePoints = static_cast<std::size_t>(backbonePoints);
 
-    declare_parameter<std::string>("model_name", "ctr_8x91_0.18_tanh_9K_9K_50K_v3");
+    declare_parameter<std::string>("model_name", "ctr_8x91_0.18_tanh_9K_9K_50K_FP64");
     m_model_name = get_parameter("model_name").as_string();
 
     declare_parameter<std::vector<double>>("q0", {-100.00E-3, -55.00E-3, 0.0, 0.0});

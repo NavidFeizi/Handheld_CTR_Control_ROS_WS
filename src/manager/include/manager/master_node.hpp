@@ -144,6 +144,8 @@ private:
 
     // Utility functions
     bool loadPlannedPath();
+    bool spliceReplannedPath();
+    void resetDeploymentState(const std::string& reason);
     bool read_path_from_csv(std::vector<blaze::StaticVector<double, 6>>& init_q_list,
                                const std::string& fileName);
     void read_targets_from_csv(std::vector<Eigen::Vector3d>& target_list, const std::string& fileName);
@@ -211,9 +213,9 @@ private:
     std::atomic<bool> m_auto_insert{false};   // GUI thread <-> control_loop
     std::atomic<bool> m_auto_retract{false};  // GUI thread <-> control_loop
     bool m_retracting = false;
+    static constexpr double k_plan_match_beta_tol = 5.0e-3; // m; measured-vs-plan tolerance for stale-plan/retract checks (alpha uses k_theta_threshold)
+    std::atomic<bool> m_plan_needed{false}; // active list discarded (retract complete / homing): force the next Select-Target request even if target and q are unchanged
 
-    double k_ik_error_threshold = 0.003;
-    
     // Automated test variables
     std::atomic<bool> m_test_running{false};
     TestState m_test_state = TestState::Idle;
@@ -243,7 +245,7 @@ private:
     Eigen::Matrix4d m_trans_tip = Eigen::Matrix4d::Identity();
     Eigen::Matrix4d m_trans_probe = Eigen::Matrix4d::Identity();
     // Eigen does not zero-initialise; m_Xd_prev feeds the "target changed" test.
-    Eigen::Vector3d m_Xd = Eigen::Vector3d::Zero(), m_Xd_prev = Eigen::Vector3d::Zero(), m_Xd_adj_prev = Eigen::Vector3d::Zero();
+    Eigen::Vector3d m_Xd = Eigen::Vector3d::Zero(), m_Xd_prev = Eigen::Vector3d::Zero(), m_Xd_closed_loop_prev = Eigen::Vector3d::Zero();
     Eigen::Vector3d m_X = Eigen::Vector3d::Zero(), m_Xsim = Eigen::Vector3d::Zero();
     std::mutex m_feedback_mutex; // guards m_X, m_Xsim, m_Xd, m_tip_position, m_q, m_qdot, m_current
     Eigen::Vector3d m_tip_position = Eigen::Vector3d::Zero();  // For CSV target error calculation
@@ -302,6 +304,8 @@ private:
     int m_control_mode_log_prev = -1;
     bool m_insert_active_prev = false, m_retract_active_prev = false; // deployment insertion/retraction start/stop edges
     bool m_insert_complete_logged = false, m_retract_complete_logged = false; // edge-trigger for the "complete" INFO
+    bool m_insert_refused = false; // stale-plan insertion refusal reported for the current insert episode
+    bool m_retract_checked = false, m_retract_refused = false; // retract-start trajectory check latched per retract episode
     rclcpp::Time m_waypoint_wait_start_time{0, 0, RCL_ROS_TIME};
     int m_waypoint_wait_index = -1; // "waiting for reached" stall timer, keyed by waypoint index
 };

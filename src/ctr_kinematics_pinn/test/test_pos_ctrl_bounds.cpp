@@ -218,4 +218,51 @@ TEST_F(PosCtrl, LimitPinnedSolveStopsEarly)
   EXPECT_LE(report.iterations, 300UL) << "limit_hits=" << report.prismaticLimitHits
                                       << " error=" << report.finalError * 1e3 << " mm";
 }
+
+// 2026-10-13 field log: the same probe point re-selected after Disable + Go Home
+// intermittently failed IK because the raw EKF force (0.3-0.5 N rest bias) was fed
+// into the solve. With zero tip force (the fixed generateTrajectory model), the
+// solve from the same seed must be bitwise deterministic and must converge within
+// the planner's plan-acceptance tolerance (ik_accept_tol = 3 mm), matching
+// Planner::solveInverseKinematics's own posCTRL(q, target, tol, force, report) call
+// with kBatch = 1 and kBackbonePoints = 150.
+TEST(PosCtrlFieldRetry, FieldRetrySameProbeIsDeterministicAndAccepted)
+{
+  constexpr double kAcceptTol = 3.0e-3;
+  PINNs<4> pinn(CTR_PINN_MODELS_DIR, "ctr_8x91_0.18_tanh_9K_9K_50K_FP64", 1, 150);
+  const Vec3 zeroForce{0.0, 0.0, 0.0};
+
+  struct Case
+  {
+    const char *name;
+    Tau seed;
+    Vec3 target;
+  };
+  const std::vector<Case> cases = {
+      {"A1", Tau{-0.1558, -0.0719, 1.6825, 1.6827}, Vec3{0.027713, 0.002467, 0.126148}},
+      {"A2", Tau{-0.1558, -0.0719, 1.6678, 1.6675}, Vec3{0.027785, 0.002732, 0.126414}},
+      {"B1", Tau{-0.1558, -0.0719, -1.8064, -1.8064}, Vec3{-0.027281, 0.006169, 0.136382}},
+      {"B2", Tau{-0.1558, -0.0719, -1.7813, -1.7806}, Vec3{-0.026589, 0.005689, 0.136562}},
+  };
+
+  for (const Case &c : cases)
+  {
+    Tau q1 = c.seed;
+    PosCtrlReport report1;
+    pinn.posCTRL(q1, c.target, kPosTol, zeroForce, &report1);
+
+    Tau q2 = c.seed;
+    PosCtrlReport report2;
+    pinn.posCTRL(q2, c.target, kPosTol, zeroForce, &report2);
+
+    for (std::size_t i = 0; i < 4; ++i)
+      EXPECT_EQ(q1[i], q2[i]) << c.name << ": joint " << i << " not bitwise deterministic";
+    EXPECT_EQ(report1.finalError, report2.finalError)
+        << c.name << ": error not bitwise deterministic";
+
+    EXPECT_LE(report1.finalError, kAcceptTol)
+        << c.name << ": error=" << report1.finalError * 1e3
+        << " mm, termination=" << static_cast<int>(report1.termination);
+  }
+}
 }  // namespace

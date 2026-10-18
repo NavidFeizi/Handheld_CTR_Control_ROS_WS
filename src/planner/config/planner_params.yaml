@@ -4,6 +4,9 @@ planner_node:
     model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_FP64"
     models_dir: ""    # empty -> installed share/ctr_kinematics_pinn/models
     solve_time: 3.0   # OMPL solve budget per request [s]
+    ik_accept_tol: 3.0e-3   # m; IK tip error above which generateTrajectory is rejected and nothing is exported or published
+    home_beta: [-0.1558, -0.0719]  # physics [beta1, beta2] at the driver's home incl. k_home_pos_margin (robot_node.cpp), m
+    local_force_min_extension: 0.010  # m; closed-loop plans and replans use the EKF force only once max(beta - home_beta) reaches this
     data_root: ""     # empty -> env CTR_DATA_ROOT -> legacy workspace climb
     # temp_dir intentionally not set here: the node defaults it to
     # <data_root>/Shared_Files, which is the live path channel to the manager.

@@ -2,7 +2,7 @@
 mpc:
   ros__parameters:
     sample_time: 0.025
-    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_v3"
+    model_name: "ctr_8x91_0.18_tanh_9K_9K_50K_FP64"   # same network as planner and the EKF
     models_dir: ""                       # empty -> installed share/ctr_kinematics_pinn/models
     q0: [-0.1558, -0.0719, 0.0, 0.0]   # robot home incl. k_home_pos_margin (robot_node.cpp); inside the box minus m_margin_q
     u_max: [0.012, 0.012, 3.0, 3.0]
