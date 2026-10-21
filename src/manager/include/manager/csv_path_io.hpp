@@ -4,7 +4,6 @@
 // Pure planned-path CSV semantics, extracted from MasterNode so they are
 // testable without ROS or a filesystem.
 
-#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -41,33 +40,6 @@ inline std::vector<blaze::StaticVector<double, 6>> parsePathRows(
     *bad_rows = bad;
   }
   return out;
-}
-
-/// Downsample a configuration list so consecutive kept waypoints differ by at
-/// least step_size in the FIRST coordinate (β1, the deployment translation).
-/// The first and last configurations are always kept.
-inline std::vector<blaze::StaticVector<double, 6>> adjustConfigurationListStepSize(
-    const std::vector<blaze::StaticVector<double, 6>> &q_list_in, double step_size)
-{
-  std::vector<blaze::StaticVector<double, 6>> q_list_out;
-  if (q_list_in.empty())
-  {
-    return q_list_out;
-  }
-
-  size_t prev_idx = 0;
-  q_list_out.push_back(q_list_in[0]);
-  for (size_t i = 1; i < q_list_in.size(); ++i)
-  {
-    if (std::abs(q_list_in[i][0] - q_list_in[prev_idx][0]) >= step_size)
-    {
-      prev_idx = i;
-      q_list_out.push_back(q_list_in[i]);
-    }
-  }
-  q_list_out.push_back(q_list_in.back());
-
-  return q_list_out;
 }
 
 }  // namespace manager_csv

@@ -32,6 +32,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_joint_conventions ctr_common)
   ament_add_gtest(test_csv_io test/test_csv_io.cpp)
   target_link_libraries(test_csv_io ctr_common)
+  ament_add_gtest(test_path_downsample test/test_path_downsample.cpp)
+  target_link_libraries(test_path_downsample ctr_common)
   # Own main(): the tee must be installed after rclcpp::init().
   ament_add_gtest(test_package_log test/test_package_log.cpp SKIP_LINKING_MAIN_LIBRARIES)
   target_link_libraries(test_package_log ctr_common)

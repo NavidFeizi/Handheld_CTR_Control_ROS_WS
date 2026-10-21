@@ -31,6 +31,8 @@
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
 #include "ctr_common/package_log.hpp"
+#include "ctr_common/path_downsample.hpp"
+#include "ctr_common/planner_protocol.hpp"
 
 #include "ctr_kinematics_pinn/ctr_pinn_inference.hpp"
 #include "Planner.hpp"
@@ -559,6 +561,17 @@ public:
           forceNote = " (" + gateReason + "; planned with zero tip force)";
         }
 
+        // Same planning force as the active plan: planDeployment() would recompute the
+        // schedule under an identical model, and the swap only churns execution.
+        if (blaze::norm(planForce - m_force_at_plan) <= 1.0e-9)
+        {
+          response->success = false;
+          response->value = 0.0;
+          response->message = ctr_common::planner_protocol::kReplanForceUnchanged;
+          logResponse(response, "FORCE_UNCHANGED");
+          return;
+        }
+
         // Safe here: no solve is in flight (mutually exclusive service group).
         m_motionPlan.setCTR_externalForce(planForce);
 
@@ -600,6 +613,29 @@ public:
         response->message = e.what();
         logResponse(response, "EXCEPTION");
       }
+    }
+    else if (request->command == "clearPath")
+    {
+      // The manager discarded the unexecuted plan after a rejected target: drop the
+      // active goal (no replan against it) and publish an empty path so the GUI
+      // stops drawing it.
+      m_has_active_plan = false;
+
+      std_msgs::msg::Float64MultiArray msg;
+      msg.layout.dim.resize(2);
+      msg.layout.dim[0].label = "rows";
+      msg.layout.dim[0].size = 0;
+      msg.layout.dim[0].stride = 0;
+      msg.layout.dim[1].label = "cols";
+      msg.layout.dim[1].size = 3;
+      msg.layout.dim[1].stride = 3;
+      m_publisher_path->publish(msg);
+      RCLCPP_INFO(get_logger(), "[traj] published empty task-space path (displayed path cleared).");
+
+      response->success = true;
+      response->value = 0.0;
+      response->message = "displayed path cleared";
+      logResponse(response, "OK");
     }
     else
     {
@@ -662,10 +698,11 @@ public:
 
     RCLCPP_INFO(this->get_logger(),
                 "[ik] q=[%.4f, %.4f, %.4f, %.4f] tip=[%.4f, %.4f, %.4f] error=%.4f mm iterations=%zu "
-                "termination=%s initial_error=%.4f mm final_error=%.4f mm limit_hits=%zu elapsed=%.2f ms",
+                "termination=%s initial_error=%.4f mm final_error=%.4f mm limit_hits=%zu elapsed=%.2f ms seed=%zu attempts=%zu",
                 q[0UL], q[1UL], q[2UL], q[3UL], tipPosition[0UL], tipPosition[1UL], tipPosition[2UL],
                 error * 1.00E3, report.iterations, terminationStr,
-                report.initialError * 1.00E3, report.finalError * 1.00E3, report.prismaticLimitHits, elapsed_ms);
+                report.initialError * 1.00E3, report.finalError * 1.00E3, report.prismaticLimitHits, elapsed_ms,
+                report.seedIndex, report.attempts);
 
     if (!converged)
     {
@@ -737,7 +774,6 @@ public:
   /// Load generated path in joint space, run it through FK to generate task-space path, and publish.
   void publishTaskSpacePath()
   {
-    const double step_size = 2e-3;
     std::vector<blaze::StaticVector<double, kControlInputs>> m_q_list;
     blaze::StaticVector<double, 3UL> tipPosition;
 
@@ -751,7 +787,7 @@ public:
       m_q = {m_current_q[0UL], m_current_q[1UL], m_current_q[3UL], m_current_q[4UL]};
     }
   
-    auto m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, step_size);
+    auto m_q_list_adjusted = ctr_common::downsamplePath(m_q_list, ctr_common::kWaypointBetaStep, ctr_common::kWaypointAlphaStep);
     // RCLCPP_INFO(get_logger(), "Checkpoint_1");
     // prepare message format
     size_t pathSize = m_q_list_adjusted.size();
@@ -857,32 +893,6 @@ public:
       }
 
       RCLCPP_INFO(get_logger(), "[traj] loaded %zu path points from CSV file.", init_q_list.size());
-  }
-
-  std::vector<blaze::StaticVector<double, kControlInputs>> adjustConfigurationListStepSize(const std::vector<blaze::StaticVector<double, kControlInputs>>& q_list_in, double step_size)
-  {
-      std::vector<blaze::StaticVector<double, kControlInputs>> q_list_out;
-
-      if (q_list_in.empty())
-      {
-          RCLCPP_WARN(this->get_logger(), "Empty list");
-          return q_list_out;
-      }
-
-      size_t prev_idx = 0;
-      q_list_out.push_back(q_list_in[0]);
-
-      for (size_t i = 1; i < q_list_in.size(); ++i)
-      {
-          if (std::abs(q_list_in[i][0] - q_list_in[prev_idx][0]) >= step_size)
-          {
-              prev_idx = i;
-              q_list_out.push_back(q_list_in[i]);
-          }
-      }
-      q_list_out.push_back(q_list_in.back());
-
-      return q_list_out;
   }
 
 private:

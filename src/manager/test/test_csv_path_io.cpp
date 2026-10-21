@@ -47,34 +47,6 @@ TEST(ParsePathRows, EndToEndFromCsvText)
   EXPECT_DOUBLE_EQ(qs[1][0], -0.078);
 }
 
-TEST(AdjustStepSize, EmptyInEmptyOut)
-{
-  EXPECT_TRUE(manager_csv::adjustConfigurationListStepSize({}, 1e-3).empty());
-}
-
-TEST(AdjustStepSize, KeepsFirstAndLast)
-{
-  std::vector<blaze::StaticVector<double, 6>> in;
-  for (int i = 0; i < 10; ++i)
-    in.push_back({i * 1e-4, 0, 0, 0, 0, 0}); // spacing below the step
-  const auto out = manager_csv::adjustConfigurationListStepSize(in, 2e-3);
-  ASSERT_EQ(out.size(), 2u); // first + last only
-  EXPECT_DOUBLE_EQ(out[0][0], 0.0);
-  EXPECT_DOUBLE_EQ(out[1][0], 9e-4);
-}
-
-TEST(AdjustStepSize, DownsamplesOnFirstCoordinate)
-{
-  std::vector<blaze::StaticVector<double, 6>> in;
-  for (int i = 0; i <= 10; ++i)
-    in.push_back({i * 1e-3, 0, 0, 0, 0, 0});
-  const auto out = manager_csv::adjustConfigurationListStepSize(in, 2e-3);
-  // kept: 0, 2e-3, 4e-3, 6e-3, 8e-3, 10e-3, + duplicated last (10e-3)
-  ASSERT_GE(out.size(), 6u);
-  for (size_t i = 1; i + 1 < out.size(); ++i)
-    EXPECT_GE(std::abs(out[i][0] - out[i - 1][0]), 2e-3 - 1e-12);
-}
-
 int main(int argc, char **argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

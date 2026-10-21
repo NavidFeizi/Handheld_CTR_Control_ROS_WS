@@ -113,7 +113,16 @@ the current EKF force estimate against the baseline captured when the plan was m
 If the difference exceeds `force_replan_threshold`, and the cooldown has elapsed, and
 more than `min_remaining_waypoints` remain, it requests a replan of the remaining
 tail. Rejected requests back off exponentially with hysteresis, and the previous plan
-keeps executing — a failed replan degrades to the old path rather than stopping.
+keeps executing — a failed replan degrades to the old path rather than stopping. A
+replan the planner skips because its planning force is unchanged (e.g. both gated to
+zero) is not a rejection: the current plan continues and the force baseline is reset.
+
+Waypoints are downsampled with `ctr_common::downsamplePath` (every 2 mm of any β or 5°
+of any α), the same function the planner uses for the drawn path. When the planner
+rejects a Select Target (`generateTrajectory`) request and no insertion is outstanding,
+the previous unexecuted plan is discarded and the planner is asked (`clearPath`) to
+clear the drawn path; Auto Insert then stops with `[cmd] no accepted plan` instead of
+driving to the old target. A rejected closed-loop re-plan keeps the active plan.
 
 Path CSVs are accepted in two layouts: a 6-column form and the planner's 4-column
 form, which is expanded with zero β3/α3. See `include/manager/csv_path_io.hpp`.
@@ -177,5 +186,4 @@ colcon test --packages-select manager --ctest-args -R test_csv_path_io
 
 `test/test_csv_path_io.cpp` covers the pure functions in `csv_path_io.hpp`:
 `parsePathRows` (6-column pass-through, 4-column expansion, malformed-row skipping,
-end-to-end text parse) and `adjustConfigurationListStepSize` (empty in/out, first and
-last preserved, downsampling on the deployment coordinate).
+end-to-end text parse).

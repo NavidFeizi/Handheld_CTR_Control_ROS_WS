@@ -107,6 +107,22 @@ Writes each package's diagnostic records to its own file:
 severity threshold are not written. To raise one node to debug, pass
 `--ros-args --log-level <node>:=debug`.
 
+## `path_downsample.hpp`
+
+Header-only (needs Blaze on the consumer's include path). `downsamplePath<N>(q,
+beta_step, alpha_step)` turns a planned joint path into waypoints: a row is kept when
+any β moved by `beta_step` or any α by `alpha_step` since the last kept row; the first
+row is always kept and the last appended once. `N = 4` is the planner layout
+`[β1, β2, α1, α2]`, `N = 6` the manager layout. `kWaypointBetaStep` (2 mm) and
+`kWaypointAlphaStep` (5°) are the steps both `planner` (drawn path) and `manager`
+(executed waypoints) use, so the GUI dots are the executed waypoints.
+
+## `planner_protocol.hpp`
+
+`planner/command` response messages the manager matches exactly, e.g.
+`planner_protocol::kReplanForceUnchanged` for a `replanDeployment` skipped because the
+planning force equals the active plan's.
+
 ## Tests
 
 ```bash
@@ -118,6 +134,8 @@ colcon test --packages-select ctr_common --ctest-args -R test_joint_conventions
   rotation coupling).
 - `test/test_csv_io.cpp` — numeric parsing, header and blank-line skipping, ragged
   rows preserved, scientific notation, missing file → `nullopt`.
+- `test/test_path_downsample.cpp` — pure α rotation and β2-only phases are split into
+  steps, empty/single-row inputs, and the last row is never duplicated.
 - `test/test_package_log.cpp` covers three things: the previous handler still runs,
   records longer than the 1 KiB stack buffer are kept whole, and both the
   `<log_dir>/<package>/` placement and the `latest` symlink are correct.

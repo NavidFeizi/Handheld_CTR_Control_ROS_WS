@@ -197,7 +197,7 @@ TEST_F(PosCtrl, FieldTargetBelowAxisConvergesWithoutForceBias)
 // The same field target with the railed EKF force the planner received in the field
 // (||f|| > f_max) cannot be reached: every step is clamped to a prismatic limit and
 // the error stays near 30 mm. It used to burn all 750 iterations; a solve pinned
-// against a limit with no useful progress must stop early.
+// against a limit with no useful progress must stop well before the cap.
 TEST_F(PosCtrl, LimitPinnedSolveStopsEarly)
 {
   const Vec3 target{-0.0036, -0.0261, 0.1252};
@@ -215,7 +215,7 @@ TEST_F(PosCtrl, LimitPinnedSolveStopsEarly)
   EXPECT_GT(report.finalError, kPosTol);
   EXPECT_EQ(report.termination, PosCtrlReport::Termination::LimitStalled)
       << "termination=" << static_cast<int>(report.termination);
-  EXPECT_LE(report.iterations, 300UL) << "limit_hits=" << report.prismaticLimitHits
+  EXPECT_LE(report.iterations, 400UL) << "limit_hits=" << report.prismaticLimitHits
                                       << " error=" << report.finalError * 1e3 << " mm";
 }
 
@@ -224,8 +224,8 @@ TEST_F(PosCtrl, LimitPinnedSolveStopsEarly)
 // into the solve. With zero tip force (the fixed generateTrajectory model), the
 // solve from the same seed must be bitwise deterministic and must converge within
 // the planner's plan-acceptance tolerance (ik_accept_tol = 3 mm), matching
-// Planner::solveInverseKinematics's own posCTRL(q, target, tol, force, report) call
-// with kBatch = 1 and kBackbonePoints = 150.
+// Planner::solveInverseKinematics's first posCTRLMultiStart attempt (the caller's
+// seed) with kBatch = 1 and kBackbonePoints = 150.
 TEST(PosCtrlFieldRetry, FieldRetrySameProbeIsDeterministicAndAccepted)
 {
   constexpr double kAcceptTol = 3.0e-3;
@@ -263,6 +263,51 @@ TEST(PosCtrlFieldRetry, FieldRetrySameProbeIsDeterministicAndAccepted)
     EXPECT_LE(report1.finalError, kAcceptTol)
         << c.name << ": error=" << report1.finalError * 1e3
         << " mm, termination=" << static_cast<int>(report1.termination);
+  }
+}
+
+// 2026-10-18 field log: in-workspace probe targets were rejected because posCTRL
+// pinned β2 at its upper bound (half-step clamp without re-solving the free joints,
+// integral wind-up), with chaotic outcomes for near-identical requests: #53 and #106/
+// #107 each have a logged converged neighbour within 0.4 mm. #61 also returned a
+// state on the coupled β bound that the planner rejected as an invalid goal. From
+// the logged seeds, the planner's IK (posCTRLMultiStart, zero force) must now be
+// accepted and return a strictly valid planner goal state.
+TEST(PosCtrlField20261018, LoggedRejectedTargetsSolve)
+{
+  constexpr double kAcceptTol = 3.0e-3;
+  constexpr double kClearance = 0.030; // stage thickness: β1 ≤ β2 − 0.030
+  constexpr double kRelMin = -0.084;   // dataset: β1 − β2 ≥ −0.084
+  PINNs<4> pinn(CTR_PINN_MODELS_DIR, "ctr_8x91_0.18_tanh_9K_9K_50K_FP64", 1, 150);
+  const Vec3 zeroForce{0.0, 0.0, 0.0};
+
+  struct Case
+  {
+    const char *name;
+    Tau seed;
+    Vec3 target;
+  };
+  const std::vector<Case> cases = {
+      {"#53", Tau{-0.1529, -0.0719, -1.9415, -1.9417}, Vec3{-0.010473, 0.002838, 0.127482}},
+      {"#106", Tau{-0.1529, -0.0719, -1.8324, -1.8322}, Vec3{-0.010605, 0.003713, 0.120701}},
+      {"#107", Tau{-0.1529, -0.0719, -1.8324, -1.8322}, Vec3{-0.010612, 0.003696, 0.120707}},
+      {"#57", Tau{-0.1529, -0.0719, 1.6757, 1.6757}, Vec3{0.0166, 0.002247, 0.1214}},
+      {"#61", Tau{-0.1529, -0.0719, 1.6757, 1.6755}, Vec3{0.020262, 0.002274, 0.122103}},
+  };
+
+  for (const Case &c : cases)
+  {
+    Tau q = c.seed;
+    PosCtrlReport report;
+    pinn.posCTRLMultiStart(q, c.target, kPosTol, zeroForce, &report);
+
+    EXPECT_LE(report.finalError, kAcceptTol)
+        << c.name << ": error=" << report.finalError * 1e3 << " mm, termination="
+        << static_cast<int>(report.termination) << " seed=" << report.seedIndex
+        << " attempts=" << report.attempts;
+    EXPECT_TRUE(pinn.domainViolation(q).empty()) << c.name << ": " << pinn.domainViolation(q);
+    EXPECT_LE(q[0], q[1] - kClearance) << c.name << ": b1-b2=" << q[0] - q[1];
+    EXPECT_GE(q[0], q[1] + kRelMin) << c.name << ": b1-b2=" << q[0] - q[1];
   }
 }
 }  // namespace

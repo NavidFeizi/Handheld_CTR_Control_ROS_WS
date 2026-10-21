@@ -8,6 +8,7 @@
 #include <blaze/Forward.h>
 
 #include <iostream>
+#include <algorithm>
 #include <memory>
 #include <cassert>
 #include <cmath>
@@ -67,6 +68,8 @@ struct PosCtrlReport
     double finalError = 0.0;              // ||target - x_CTR|| at the returned tau_min [m]
     Termination termination = Termination::MaxIterations;
     std::size_t prismaticLimitHits = 0UL; // iterations where a prismatic step was clamped to a joint limit
+    std::size_t seedIndex = 0UL;          // set by posCTRLMultiStart: 0 = caller's seed, k = k-th restart seed
+    std::size_t attempts = 1UL;           // posCTRL runs made by posCTRLMultiStart
 };
 
 namespace detail
@@ -312,6 +315,14 @@ public:
     // 4-argument overload; report is purely observational.
     void posCTRL(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target, const double posTol,
                  const blaze::StaticVector<double, kForceDim> &wf, PosCtrlReport *report);
+
+    // posCTRL from the caller's seed; if that misses posTol (4-input layout only),
+    // retries from up to 4 deterministic restart seeds (mid-range β, α₁ = α₂ =
+    // seed α₂ + {0, +π/2, −π/2, π}) and keeps the first converged attempt, else the
+    // attempt with the smallest final error (earliest wins ties). report may be null;
+    // when set, seedIndex/attempts identify the winning attempt.
+    void posCTRLMultiStart(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target,
+                           const double posTol, const blaze::StaticVector<double, kForceDim> &wf, PosCtrlReport *report);
 
     // Returns an empty string if tau lies inside the trained 4-DoF domain
     // (see README "Trained domain" table), otherwise a "; "-separated list of
@@ -1520,24 +1531,68 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
         }
 
         // Resolved rates with null-space local optimization (joint-limit avoidance).
-        dtau_dt = J_inv * (Kp * tipError + Kd * d_tipError + Ki * int_tipError) + (I - blaze::trans(J_inv * J)) * (-f);
+        const blaze::StaticVector<double, 3UL> v = Kp * tipError + Kd * d_tipError + Ki * int_tipError;
+        dtau_dt = J_inv * v + (I - blaze::trans(J_inv * J)) * (-f);
 
-        // rescaling linear joint variables for limit avoidance
+        // Saturation-aware limit handling: a prismatic joint whose step would cross its
+        // limit is locked to a half-step towards that limit, and the remaining free joints
+        // are re-solved for the task-space velocity the locked joints no longer deliver.
+        // Re-solving can push another free prismatic over its limit, hence up to
+        // nPrismatic passes (each pass locks at least one more joint or stops).
         // nPrismatic = controlInputs/2: 2 for 4-DoF, 3 for 6-DoF
         constexpr size_t nPrismatic = controlInputs / 2UL;
+        std::array<bool, nPrismatic> locked{};
+        std::array<double, nPrismatic> lockStep{};
         bool limitHitThisIter = false;
-        for (size_t i = 0; i < nPrismatic; ++i)
+        for (size_t pass = 0UL; pass < nPrismatic; ++pass)
         {
-            const double proposed = tau[i] + dtau_dt[i];
-            if (proposed > betaMax[i])
+            bool newlyLocked = false;
+            for (size_t i = 0UL; i < nPrismatic; ++i)
             {
-                dtau_dt[i] = (betaMax[i] - tau[i]) * 0.50;
-                limitHitThisIter = true;
+                if (locked[i])
+                {
+                    continue;
+                }
+                const double proposed = tau[i] + dtau_dt[i];
+                if (proposed > betaMax[i])
+                {
+                    locked[i] = true;
+                    lockStep[i] = (betaMax[i] - tau[i]) * 0.50;
+                    newlyLocked = true;
+                }
+                else if (proposed < betaMin[i])
+                {
+                    locked[i] = true;
+                    lockStep[i] = (betaMin[i] - tau[i]) * 0.50;
+                    newlyLocked = true;
+                }
             }
-            else if (proposed < betaMin[i])
+            if (!newlyLocked)
             {
-                dtau_dt[i] = (betaMin[i] - tau[i]) * 0.50;
-                limitHitThisIter = true;
+                break;
+            }
+            limitHitThisIter = true;
+
+            blaze::StaticMatrix<double, 3UL, controlInputs, blaze::columnMajor> J_free(J);
+            blaze::StaticVector<double, controlInputs> dLocked{0.0};
+            blaze::StaticVector<double, controlInputs> f_free(f);
+            for (size_t i = 0UL; i < nPrismatic; ++i)
+            {
+                if (locked[i])
+                {
+                    blaze::column(J_free, i) = 0.0;
+                    dLocked[i] = lockStep[i];
+                    f_free[i] = 0.0;
+                }
+            }
+            const blaze::StaticMatrix<double, controlInputs, 3UL, blaze::columnMajor> J_free_inv = PINNs<controlInputs>::pInvN(J_free);
+            dtau_dt = J_free_inv * (v - J * dLocked) + (I - blaze::trans(J_free_inv * J_free)) * (-f_free);
+            for (size_t i = 0UL; i < nPrismatic; ++i)
+            {
+                if (locked[i])
+                {
+                    dtau_dt[i] = lockStep[i];
+                }
             }
         }
         if (report && limitHitThisIter)
@@ -1560,6 +1615,18 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
             const double shift = wrapToRange(tau[3UL], -M_PI, M_PI) - tau[3UL];
             tau[3UL] += shift;
             tau[2UL] = wrapToRange(tau[2UL] + shift, tau[3UL] - M_PI, tau[3UL] + M_PI);
+
+            // Feasibility projection: the limits above are evaluated at start-of-iteration
+            // values, so the coupled β step can still leave the planner's validity region
+            // (CTR_StateValidityChecker::isValid). Clamp β₂ to its absolute range, then β₁
+            // to its β₂-relative range, so every returned tau is a valid planner state.
+            constexpr double kBoundMargin = 1.0e-9; // keeps the result strictly inside CTR_StateValidityChecker's inequalities
+            const double b2Lo = std::max(lb[1UL], L[2UL] - L[1UL]) + kBoundMargin;
+            const double b2Hi = std::min(ub[1UL], -stageThickness) - kBoundMargin;
+            tau[1UL] = std::clamp(tau[1UL], b2Lo, b2Hi);
+            const double b1Lo = std::max({tau[1UL] + lb[0UL], L[1UL] + tau[1UL] - L[0UL], L[2UL] - L[0UL]}) + kBoundMargin;
+            const double b1Hi = std::min(tau[1UL] + ub[0UL], tau[1UL] - stageThickness) - kBoundMargin;
+            tau[0UL] = (b1Lo <= b1Hi) ? std::clamp(tau[0UL], b1Lo, b1Hi) : b1Hi;
         }
         else // controlInputs == 6
         {
@@ -1578,8 +1645,12 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
 
         // current position error
         tipError = target - x_CTR;
-        // integrating the position error
-        int_tipError += tipError;
+        // integrating the position error; frozen while a prismatic joint is pinned to its
+        // limit so the integral does not wind up against a direction it cannot move in
+        if (!limitHitThisIter)
+        {
+            int_tipError += tipError;
+        }
         // derivative of the position error
         d_tipError = tipError - last_tipError;
         // updating the last tip error variable
@@ -1650,6 +1721,61 @@ void PINNs<controlInputs>::posCTRL(blaze::StaticVector<double, controlInputs> &t
     }
 
     return;
+}
+
+template <size_t controlInputs>
+void PINNs<controlInputs>::posCTRLMultiStart(blaze::StaticVector<double, controlInputs> &tau, const blaze::StaticVector<double, 3UL> &target,
+                                             const double posTol, const blaze::StaticVector<double, kForceDim> &wf, PosCtrlReport *report)
+{
+    const blaze::StaticVector<double, controlInputs> tau0(tau);
+
+    PosCtrlReport best;
+    this->posCTRL(tau, target, posTol, wf, &best);
+    best.seedIndex = 0UL;
+    best.attempts = 1UL;
+
+    if constexpr (controlInputs == 4)
+    {
+        if (best.finalError > posTol)
+        {
+            // Restart seeds: mid-range β (inside the planner's validity region), both tubes
+            // aligned at the caller's α₂ rotated by a fixed offset. Deterministic, so the
+            // same request always returns the same solution.
+            static constexpr std::array<double, 4UL> kAlphaOffsets{0.0, 0.5 * M_PI, -0.5 * M_PI, M_PI};
+            const auto [lb, ub] = this->getInputPosBounds();
+            const double beta2 = 0.5 * (lb[1UL] + ub[1UL]);
+            const double beta1 = beta2 + 0.5 * (lb[0UL] + ub[0UL]);
+
+            blaze::StaticVector<double, controlInputs> bestTau(tau);
+            std::size_t attempts = 1UL;
+            for (std::size_t k = 1UL; k <= kAlphaOffsets.size(); ++k)
+            {
+                const double alpha = std::remainder(tau0[3UL] + kAlphaOffsets[k - 1UL], 2.0 * M_PI);
+                blaze::StaticVector<double, controlInputs> seed{beta1, beta2, alpha, alpha};
+
+                PosCtrlReport attempt;
+                this->posCTRL(seed, target, posTol, wf, &attempt);
+                ++attempts;
+                if (attempt.finalError < best.finalError)
+                {
+                    best = attempt;
+                    best.seedIndex = k;
+                    bestTau = seed;
+                }
+                if (attempt.finalError <= posTol)
+                {
+                    break;
+                }
+            }
+            tau = bestTau;
+            best.attempts = attempts;
+        }
+    }
+
+    if (report)
+    {
+        *report = best;
+    }
 }
 
 #endif  // CTR_KINEMATICS_PINN__CTR_PINN_INFERENCE_HPP_

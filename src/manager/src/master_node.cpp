@@ -6,6 +6,8 @@
 #include "ctr_common/joint_conventions.hpp"
 #include "ctr_common/runtime_paths.hpp"
 #include "ctr_common/package_log.hpp"
+#include "ctr_common/path_downsample.hpp"
+#include "ctr_common/planner_protocol.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -393,9 +395,6 @@ void MasterNode::onCtrlModeClicked(int id)
     }
     case HighLvlCtrMode::Deployment:
     {
-        // read_path_from_csv(m_q_list, "plannedPath.csv");
-        // m_current_config_index = 0;
-        // m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
         mode_name = m_closed_loop_enabled ? "Deployment (Closed-Loop)" : "Deployment";
         m_auto_insert = false;
         m_retracting = false;
@@ -702,7 +701,7 @@ void MasterNode::setPlannerMessage(const std::string &message)
     m_planner_message = message;
 }
 
-void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future)
+void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future, const bool closed_loop)
 {
     auto response = future.get();
     const double round_trip_ms = (this->now().nanoseconds() - m_planning_started_ns.load()) / 1.0e6;
@@ -751,6 +750,39 @@ void MasterNode::handle_planner_response(const rclcpp::Client<interfaces::srv::P
     {
         RCLCPP_WARN(this->get_logger(), "[plan] plan rejected: planner reported failure: %s", response->message.c_str());
         setPlannerMessage("rejected: " + response->message);
+
+        // Select Target (open-loop) rejection: the previous plan targets a point the
+        // operator has moved away from. Unless an insertion along it is outstanding (it
+        // is then needed for retract), discard it so Auto Insert cannot drive to the old
+        // target, and clear its drawn path. A closed-loop re-plan rejection keeps the
+        // active plan: it is often transient and is re-requested as q or the target moves.
+        // m_plan_needed stays false: it would re-request the same rejected target.
+        bool discarded = false;
+        if (!closed_loop)
+        {
+            std::lock_guard<std::mutex> lock(m_deploy_mutex);
+            if (!manager_deploy::insertionOutstanding(m_q_list_adjusted.size(), m_current_config_index, m_q_list_actuated.size()))
+            {
+                m_q_list_adjusted.clear();
+                m_q_list_actuated.clear();
+                m_current_config_index = 0;
+                m_waypoint_wait_index = -1;
+                discarded = true;
+            }
+        }
+        if (discarded)
+        {
+            invalidateForceBaseline();
+            RCLCPP_INFO(this->get_logger(), "[plan] rejected target: previous unexecuted plan discarded and displayed path cleared");
+            auto request = std::make_shared<interfaces::srv::Planner::Request>();
+            request->command = "clearPath";
+            (void)m_planner_client->async_send_request(
+                request, [this](rclcpp::Client<interfaces::srv::Planner>::SharedFuture clear_future)
+                {
+                    RCLCPP_INFO(this->get_logger(), "[plan] clearPath response: success=%s",
+                                clear_future.get()->success ? "true" : "false");
+                });
+        }
     }
 
     std::this_thread::sleep_for(10ms);
@@ -770,7 +802,23 @@ void MasterNode::handle_replan_response(const rclcpp::Client<interfaces::srv::Pl
     auto response = future.get();
     const double round_trip_ms = (this->now().nanoseconds() - m_planning_started_ns.load()) / 1.0e6;
 
-    if (response->success && spliceReplannedPath())
+    if (!response->success && response->message == ctr_common::planner_protocol::kReplanForceUnchanged)
+    {
+        // Not a rejection: the planner would have replanned under the same force as the
+        // active plan. Re-baseline the drift so the same EKF delta does not re-trigger.
+        {
+            std::lock_guard<std::mutex> lock(m_force_mutex);
+            m_f_at_plan = m_f_pending;
+            m_f_at_plan_valid = true;
+            m_replan_attempts = 0;
+            m_replan_backoff_s = m_replan_cooldown_s;
+        }
+        RCLCPP_INFO(this->get_logger(),
+                    "[plan] replanDeployment response #%d: skipped (planning force unchanged) - continuing current plan",
+                    m_planner_request_seq.load());
+        setPlannerMessage("replan skipped: planning force unchanged");
+    }
+    else if (response->success && spliceReplannedPath())
     {
         std::lock_guard<std::mutex> lock(m_force_mutex);
         m_f_at_plan = m_f_pending;
@@ -1035,7 +1083,7 @@ void MasterNode::control_loop()
                 request->value[1] = Xd[1];
                 request->value[2] = Xd[2];
 
-                auto response_callback = std::bind(&MasterNode::handle_planner_response, this, std::placeholders::_1);
+                auto response_callback = [this](rclcpp::Client<interfaces::srv::Planner>::SharedFuture f) { handle_planner_response(f, false); };
                 auto future_result = m_planner_client->async_send_request(request, response_callback);
 
                 m_Xd_prev = Xd;
@@ -1110,10 +1158,11 @@ void MasterNode::control_loop()
             std::lock_guard<std::mutex> lock(m_deploy_mutex);
             if (m_q_list_adjusted.empty())
             {
-                RCLCPP_WARN(this->get_logger(), "[cmd] Adjusted deployment list is empty; cannot send positions.");
+                m_auto_insert = false;
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                     "[cmd] no accepted plan: select a reachable target before inserting");
             }
-
-            if (getReachStatus())
+            else if (getReachStatus())
             {
                 m_waypoint_wait_index = -1;
                 if (m_current_config_index == 0 && !m_q_list_adjusted.empty() &&
@@ -1170,7 +1219,7 @@ void MasterNode::control_loop()
                     }
                 }
             }
-            else if (!m_q_list_adjusted.empty())
+            else
             {
                 logWaypointWaitWarn(m_current_config_index, m_q_list_adjusted[m_current_config_index], q_snapshot);
             }
@@ -1287,7 +1336,7 @@ void MasterNode::control_loop()
             request->value[1] = Xd[1];
             request->value[2] = Xd[2];
 
-            auto response_callback = std::bind(&MasterNode::handle_planner_response, this, std::placeholders::_1);
+            auto response_callback = [this](rclcpp::Client<interfaces::srv::Planner>::SharedFuture f) { handle_planner_response(f, true); };
             auto future_result = m_planner_client->async_send_request(request, response_callback);
             RCLCPP_INFO(this->get_logger(),
                         "[comm] planner/command generateTrajectoryClosedLoop request #%d sent at %.3f: "
@@ -1497,14 +1546,14 @@ bool MasterNode::loadPlannedPath()
             RCLCPP_INFO(this->get_logger(), "[traj] plannedPath.csv loaded (written %.1f s ago)", age / 1000.0);
         }
 
-        m_q_list_adjusted = adjustConfigurationListStepSize(m_q_list, m_insertion_step);
+        m_q_list_adjusted = ctr_common::downsamplePath(m_q_list, ctr_common::kWaypointBetaStep, ctr_common::kWaypointAlphaStep);
         m_current_config_index = 0;
         m_waypoint_wait_index = -1;
         m_insert_complete_logged = false;
         m_retract_complete_logged = false;
 
-        RCLCPP_INFO(get_logger(), "[traj] %zu rows loaded, %zu rows after step-size adjustment (step=%.4f m)",
-                    m_q_list.size(), m_q_list_adjusted.size(), m_insertion_step);
+        RCLCPP_INFO(get_logger(), "[traj] %zu rows loaded, %zu rows after step-size adjustment (beta step=%.4f m, alpha step=%.4f rad)",
+                    m_q_list.size(), m_q_list_adjusted.size(), ctr_common::kWaypointBetaStep, ctr_common::kWaypointAlphaStep);
 
         if (!m_q_list_adjusted.empty())
         {
@@ -1568,7 +1617,7 @@ bool MasterNode::spliceReplannedPath()
     {
         return false;
     }
-    const auto adjusted = adjustConfigurationListStepSize(local, m_insertion_step);
+    const auto adjusted = ctr_common::downsamplePath(local, ctr_common::kWaypointBetaStep, ctr_common::kWaypointAlphaStep);
 
     std::lock_guard<std::mutex> lock(m_deploy_mutex);
     auto spliced = manager_deploy::spliceReplan(m_q_list_adjusted, m_current_config_index, adjusted,
@@ -1671,15 +1720,6 @@ void MasterNode::read_targets_from_csv(std::vector<Eigen::Vector3d> &target_list
 bool MasterNode::getReachStatus()
 {
     return m_reached;
-}
-
-std::vector<blaze::StaticVector<double, 6>> MasterNode::adjustConfigurationListStepSize(const std::vector<blaze::StaticVector<double, 6>> &q_list_in, double step_size)
-{
-    if (q_list_in.empty())
-    {
-        RCLCPP_WARN(this->get_logger(), "Empty list");
-    }
-    return manager_csv::adjustConfigurationListStepSize(q_list_in, step_size);
 }
 
 void MasterNode::log_position(Eigen::Vector3d position, std::string prefix)

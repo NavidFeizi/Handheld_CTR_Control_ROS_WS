@@ -129,7 +129,8 @@ private:
     void updateForceEstimate(const interfaces::msg::Force::SharedPtr msg);
     void tf2_receive_timer_callback();
     void handle_service_response(const std::string &command, const rclcpp::Client<interfaces::srv::Config>::SharedFuture future);
-    void handle_planner_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future);
+    // closed_loop: the request was generateTrajectoryClosedLoop (else Select Target generateTrajectory)
+    void handle_planner_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future, bool closed_loop);
     void handle_replan_response(const rclcpp::Client<interfaces::srv::Planner>::SharedFuture future);
     void emitPlannerStatus();
     void setPlannerMessage(const std::string &message);
@@ -152,8 +153,6 @@ private:
     void updateTestStateMachine();
     void captureRecordingFrame(const std::string& session_name);
     bool getReachStatus();
-    std::vector<blaze::StaticVector<double, 6>> adjustConfigurationListStepSize(
-        const std::vector<blaze::StaticVector<double, 6>>& q_list_in, double step_size);
     void log_position(Eigen::Vector3d position, std::string prefix = "");
     
     // Member constants
@@ -166,7 +165,7 @@ private:
     // Replanning tunables — declared as ROS parameters in the constructor
     double m_force_replan_threshold = 0.12; // N; ‖f_now − f_at_plan‖ that triggers a deployment replan
     double m_replan_cooldown_s = 2.0;       // s between replan requests (EKF ramps at f_dot ≈ 0.1 N/s)
-    size_t m_min_remaining_waypoints = 5;   // ≈10 mm at m_insertion_step; below this a replan is not worth the pause
+    size_t m_min_remaining_waypoints = 5;   // waypoints; below this a replan is not worth the pause
 
     // Rejected-replan backoff: after each rejection the wait doubles (capped);
     // after k_max_replan_attempts consecutive rejections replanning is
@@ -208,7 +207,6 @@ private:
     std::mutex m_deploy_mutex; // guards m_q_list, m_q_list_adjusted, m_q_list_actuated, m_current_config_index
                                // (written by planner-response callbacks, read/written by the control timer)
     int m_current_config_index = 0;
-    double m_insertion_step = 2e-3;
     bool m_deploy_button_held = false;
     std::atomic<bool> m_auto_insert{false};   // GUI thread <-> control_loop
     std::atomic<bool> m_auto_retract{false};  // GUI thread <-> control_loop

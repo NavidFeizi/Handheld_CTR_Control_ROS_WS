@@ -45,7 +45,7 @@ zero-force overload that omits `wf`.
 | Forward kinematics | `getPosDistal(tau[, wf], pos)` — `pos` is 3-element (position) or 7-element (position + quaternion); `getPosDistalBatched`; `getPosTubes(tau[, wf], pos_t3, pos_t2, pos_t1)` |
 | Shape | `getShape(tau[, wf], shape)` (`num_nodes × 3`); `getAllTubesShape(tau, wf)` → tuple of three matrices; `getEntireState(tau[, wf], states)` (`num_nodes × 15`) |
 | Jacobians | `jacobian(tau[, wf], J)` (3×N, autograd); `jacobianBatched(tau_batch, J)`; `jacobianFinDif(tau, J)` (central differences); `jacobian_wrt_force(tau, wf, J)` |
-| Inverse kinematics | `posCTRL(tau, target, posTol[, wf][, PosCtrlReport*])` — resolved-rate IK, mutates `tau` in place; the optional report pointer overload fills diagnostics without changing numerics |
+| Inverse kinematics | `posCTRL(tau, target, posTol[, wf][, PosCtrlReport*])` — resolved-rate IK, mutates `tau` in place; the optional report pointer overload fills diagnostics without changing numerics. `posCTRLMultiStart(tau, target, posTol, wf, report)` — `posCTRL` from the caller's seed, then (4-input only, if it misses `posTol`) from 4 deterministic restart seeds; used by the planner |
 | Geometry / limits | `getArclengthEnd`, `getStraightLen`, `getOverallLen`, `getInputPosBounds()` → `(lb, ub)`, `getPrismaticJointRanges`, `getRevoluteJointRanges`, `getNumNodes`, `getStageThickness` |
 | Pseudoinverse | `pInv` (fixed 3×6) and `static pInvN<N>` (damped, λ = 1e-12) |
 
@@ -57,6 +57,17 @@ Note that `getPrismaticJointRanges` accounts for `beta1_range` storing offsets
 **relative to β2**, not absolute values; `getInputPosBounds()` returns the raw
 dataset ranges, so its β1 entry is that relative offset. `posCTRL` clamps β1 to
 `[β2 + lb[0], β2 + ub[0]]` and β2 to `[lb[1], ub[1]]`, i.e. the trained domain.
+
+Limit handling: a prismatic joint whose step would cross its limit is locked to a
+half-step towards it, and the other joints are re-solved (locked Jacobian columns
+zeroed) for the task-space velocity it can no longer deliver; the integral term is
+frozen while any joint is pinned. For the 4-input layout every iterate is then
+projected onto the planner's validity region (`CTR_StateValidityChecker::isValid`,
+1e-9 inside), so the returned `tau` is always an acceptable planner goal state.
+
+`posCTRLMultiStart` restart seeds: β2 at the middle of its range, β1 − β2 at the middle
+of its offset range, α1 = α2 = seed α2 + {0, +π/2, −π/2, π}. It stops at the first
+attempt within `posTol`, else keeps the smallest final error (earliest wins ties).
 
 ### IK diagnostics
 
@@ -72,6 +83,8 @@ struct PosCtrlReport
     double finalError;              // ||target - x_CTR|| at the returned tau (tau_min) [m]
     Termination termination;
     std::size_t prismaticLimitHits; // iterations where a prismatic step was clamped
+    std::size_t seedIndex;          // posCTRLMultiStart: 0 = caller's seed, k = k-th restart seed
+    std::size_t attempts;           // posCTRLMultiStart: posCTRL runs made
 };
 ```
 
@@ -148,6 +161,9 @@ by setting the owning node's `model_name` parameter.
 model from the source `models/` directory, ~20 s) checks that `posCTRL` from the fully
 retracted home converges for targets that need a retracted inner tube, solves
 x-mirrored targets alike, and keeps every solution inside the dataset joint domain.
+`PosCtrlField20261018.LoggedRejectedTargetsSolve` replays targets rejected in the
+2026-10-18 field run through `posCTRLMultiStart` and requires an accepted error and a
+strictly valid planner goal state.
 
 ```bash
 colcon test --packages-select ctr_kinematics_pinn

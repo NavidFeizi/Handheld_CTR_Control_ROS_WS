@@ -87,7 +87,15 @@ without revisiting that ordering will corrupt the handoff.
 
 `plannedPath.csv` is written **atomically** — to a `.tmp` file, then renamed — so
 `manager`'s poll never observes a half-written path. The planner also publishes
-`task_space/path` for visualization through `igtlink_bridge`.
+`task_space/path` for visualization through `igtlink_bridge`. Both sides downsample the
+joint path with the same `ctr_common::downsamplePath` (a waypoint every 2 mm of any β or
+5° of any α), so the drawn dots are the waypoints `manager` executes, rotation phases
+included.
+
+The `clearPath` command (sent by `manager` after a rejected `generateTrajectory` while no insertion is
+outstanding) drops the active goal, so no `replanDeployment` runs against it, and
+publishes an empty `task_space/path` (0 rows) so the GUI stops drawing the old plan.
+It writes no CSV.
 
 ## Planning approach
 
@@ -99,7 +107,11 @@ schedule geometry, split out so it can be tested without OMPL or Torch;
 the FTL formulation are analysed in [docs/ik_ftl_forensic_report.md](docs/ik_ftl_forensic_report.md).
 
 Mid-deployment replanning re-solves only the remaining tail; `manager` decides when
-to ask, based on EKF force drift.
+to ask, based on EKF force drift. A `replanDeployment` whose planning force (after
+gating) equals the force of the active plan is skipped: `success=false`, `message =
+ctr_common::planner_protocol::kReplanForceUnchanged`, reason `FORCE_UNCHANGED`, nothing
+written or published. `manager` treats that response as "keep the current plan" and
+re-baselines its force drift.
 
 ### Tip force used for planning
 
@@ -164,7 +176,7 @@ Every log line is tagged by pipeline stage:
 | `[lifecycle]` | startup config/domain summary, non-positive `solve_time` |
 | `[comm]` | service request/response (sequence number, target, timings, reason code), feedback-topic status |
 | `[pinn]` | PINN trained-domain checks on the IK start state, the solution, and the force estimate (`‖f‖` vs the model's `f_max`) |
-| `[ik]` | `solveInverseKinematics`/`posCTRL` seed, result, convergence diagnostics |
+| `[ik]` | `solveInverseKinematics`/`posCTRLMultiStart` seed, result, convergence diagnostics, winning restart `seed` index and `attempts` |
 | `[plan]` | `planTwoPhase`/`planDeployment` start/goal, result, exceptions |
 | `[traj]` | CSV → task-space path conversion and publishing |
 
@@ -185,6 +197,7 @@ alone. The `[comm] response` line carries a `reason` code:
 | `INVALID_STATE` | the `joint_space/feedback` snapshot contains NaN/Inf; request rejected before IK, `success=false`, `value=0.0` |
 | `PLAN_FAILED` | `planTwoPhase` found no solution |
 | `EXCEPTION` | any other exception from `Planner`/OMPL |
+| `FORCE_UNCHANGED` | `replanDeployment` skipped: planning force equals the active plan's force |
 
 A non-finite target is rejected before any IK/plan work runs: `response->success =
 false`, `response->value = 0.0`, and a new `message` string

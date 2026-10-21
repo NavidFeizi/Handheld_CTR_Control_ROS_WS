@@ -2743,8 +2743,9 @@ void Planner<controlInputs>::setCTR_externalForce(const blaze::StaticVector<doub
 template <size_t controlInputs>
 bool Planner<controlInputs>::solveInverseKinematics(JointVector &q, const blaze::StaticVector<double, 3UL> &targetTip, const double posTol, PosCtrlReport *report)
 {
-	// IK on the loaded robot: Jacobian and forward model both see f_ext.
-	this->m_CTR_model.posCTRL(q, targetTip, posTol, this->m_externalForce, report);
+	// IK on the loaded robot: Jacobian and forward model both see f_ext. Multi-start:
+	// the caller's seed first, then deterministic restart seeds if it misses posTol.
+	this->m_CTR_model.posCTRLMultiStart(q, targetTip, posTol, this->m_externalForce, report);
 
 	blaze::StaticVector<double, 3UL> tip;
 	this->m_CTR_model.getPosDistal(q, this->m_externalForce, tip);
